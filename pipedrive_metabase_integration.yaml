@@ -1,0 +1,268 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prefect-orion
+  labels:
+    app: prefect-orion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prefect-orion
+  template:
+    metadata:
+      labels:
+        app: prefect-orion
+    spec:
+      containers:
+      - name: prefect-orion
+        image: pipedrive_metabase_integration-prefect-orion:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4200
+        env:
+        - name: APP_ROLE
+          value: "orion"
+        envFrom:
+        - configMapRef:
+            name: observability-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prefect-orion
+spec:
+  selector:
+    app: prefect-orion
+  ports:
+  - protocol: TCP
+    port: 4200
+    targetPort: 4200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etl
+  labels:
+    app: etl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etl
+  template:
+    metadata:
+      labels:
+        app: etl
+    spec:
+      containers:
+      - name: etl
+        image: pipedrive_metabase_integration-etl:latest
+        imagePullPolicy: Never
+        env:
+        - name: APP_ROLE
+          value: "etl"
+        - name: PREFECT_API_URL
+          value: "http://prefect-orion:4200/api"
+        envFrom:
+        - configMapRef:
+            name: observability-config
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etl
+spec:
+  selector:
+    app: etl
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: etl-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: etl
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics
+  labels:
+    app: metrics
+    environment: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics
+  template:
+    metadata:
+      labels:
+        app: metrics
+    spec:
+      containers:
+      - name: metrics
+        image: pipedrive_metabase_integration-metrics:latest
+        imagePullPolicy: Never
+        workingDir: /app
+        command: ["python", "-m", "infrastructure.monitoring.metrics_server"]
+        env:
+        - name: APP_ROLE
+          value: "metrics"
+        ports:
+        - containerPort: 8082
+        envFrom:
+        - configMapRef:
+            name: observability-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics
+spec:
+  selector:
+    app: metrics
+  ports:
+  - protocol: TCP
+    port: 8082
+    targetPort: 8082
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: metrics-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metrics
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:latest
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  selector:
+    app: redis
+  ports:
+  - protocol: TCP
+    port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  labels:
+    app: db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:14
+        ports:
+        - containerPort: 5432  
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: POSTGRES_DB
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 10
+          periodSeconds: 20
+      volumes:
+      - name: pgdata
+        persistentVolumeClaim:
+          claimName: pgdata-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+spec:
+  selector:
+    app: db
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
