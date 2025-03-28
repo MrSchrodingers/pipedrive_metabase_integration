@@ -1,0 +1,1022 @@
+[
+{"path": "pipedrive_metabase_integration.yaml", "encoding": "utf-8", "content": "apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prefect-orion
+  labels:
+    app: prefect-orion
+    environment: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prefect-orion
+  template:
+    metadata:
+      labels:
+        app: prefect-orion
+    spec:
+      containers:
+      - name: prefect-orion
+        image: yourregistry/pipedrive_metabase_integration:latest
+        ports:
+        - containerPort: 4200
+        env:
+        - name: APP_ROLE
+          value: \"orion\"
+        # Anota\u00e7\u00f5es para monitoramento de logs e m\u00e9tricas
+        envFrom:
+        - configMapRef:
+            name: observability-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prefect-orion
+spec:
+  selector:
+    app: prefect-orion
+  ports:
+  - protocol: TCP
+    port: 4200
+    targetPort: 4200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etl
+  labels:
+    app: etl
+    environment: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etl
+  template:
+    metadata:
+      labels:
+        app: etl
+    spec:
+      containers:
+      - name: etl
+        image: yourregistry/pipedrive_metabase_integration:latest
+        env:
+        - name: APP_ROLE
+          value: \"etl\"
+        - name: PREFECT_API_URL
+          value: \"http://prefect-orion:4200/api\"
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: observability-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etl
+spec:
+  selector:
+    app: etl
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: etl-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: etl
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics
+  labels:
+    app: metrics
+    environment: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics
+  template:
+    metadata:
+      labels:
+        app: metrics
+    spec:
+      containers:
+      - name: metrics
+        image: yourregistry/pipedrive_metabase_integration:latest
+        env:
+        - name: APP_ROLE
+          value: \"metrics\"
+        ports:
+        - containerPort: 8082
+        envFrom:
+        - configMapRef:
+            name: observability-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics
+spec:
+  selector:
+    app: metrics
+  ports:
+  - protocol: TCP
+    port: 8082
+    targetPort: 8082
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: metrics-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metrics
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+"}
+,
+{"path": "Dockerfile", "encoding": "utf-8", "content": "# ---- Etapa 1: Builder ----
+    FROM python:3.12-slim as builder
+
+    # Definir ambiente e diret\u00f3rio de trabalho
+    WORKDIR /app
+    ENV PYTHONUNBUFFERED=1
+    
+    # Instalar depend\u00eancias do sistema necess\u00e1rias para build
+    RUN apt-get update && \
+        apt-get install -y curl gcc libpq-dev && \
+        rm -rf /var/lib/apt/lists/*
+    
+    # Instalar o Poetry
+    RUN curl -sSL https://install.python-poetry.org | python3 -
+    ENV POETRY_HOME=\"/usr/local\"
+    RUN poetry config virtualenvs.create false
+    
+    # Copiar arquivos de depend\u00eancias e instalar pacotes
+    COPY pyproject.toml poetry.lock* ./
+    RUN poetry install --no-interaction --no-ansi --no-root
+    
+    # Copiar o c\u00f3digo-fonte completo
+    COPY . .
+    
+    # ---- Etapa 2: Imagem Final ----
+    FROM python:3.12-slim
+    
+    WORKDIR /app
+    ENV PYTHONUNBUFFERED=1
+    
+    # Instalar depend\u00eancias m\u00ednimas para rodar a aplica\u00e7\u00e3o
+    RUN apt-get update && \
+        apt-get install -y libpq-dev && \
+        rm -rf /var/lib/apt/lists/*
+    
+    # Copiar apenas os artefatos necess\u00e1rios do est\u00e1gio anterior
+    COPY --from=builder /app /app
+    
+    # Certifica-se de que o wait-for-it.sh esteja dispon\u00edvel e com permiss\u00e3o de execu\u00e7\u00e3o
+    COPY wait-for-it.sh /app/wait-for-it.sh
+    RUN chmod +x /app/wait-for-it.sh
+    
+    # Expor a porta padr\u00e3o (pode ser ajustada conforme o APP_ROLE)
+    EXPOSE 8080
+    
+    # Comando de entrada
+    CMD [\"/app/entrypoint.sh\"]
+    "}
+,
+{"path": "docker-compose.yml", "encoding": "utf-8", "content": "version: \"3.8\"
+services:
+  prefect-orion:
+    build:
+      context: ./infrastructure/prefect/orion
+      dockerfile: Dockerfile
+    container_name: prefect-orion
+    ports:
+      - \"4200:4200\"
+    networks:
+      - mynet
+
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: etl
+    environment:
+      APP_ROLE: etl
+      PREFECT_API_URL: \"http://prefect-orion:4200/api\"
+    depends_on:
+      - db
+      - prefect-orion
+    networks:
+      - mynet
+
+  metrics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: metrics
+    environment:
+      APP_ROLE: metrics
+    depends_on:
+      - db
+    ports:
+      - \"8082:8082\"
+    networks:
+      - mynet
+
+  db:
+    image: postgres:14
+    container_name: db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - \"${POSTGRES_PORT}:5432\"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - mynet
+
+volumes:
+  pgdata:
+
+networks:
+  mynet:
+    name: mynet
+"}
+,
+{"path": "observability-config.yaml", "encoding": "utf-8", "content": "apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-config
+data:
+  LOG_LEVEL: \"INFO\"
+  METRICS_ENDPOINT: \"/metrics\"
+"}
+,
+{"path": "infrastructure/monitoring/metrics_server.py", "encoding": "utf-8", "content": "from prometheus_client import start_http_server
+import time
+
+def start_metrics_server(port: int = 8082):
+    start_http_server(port)
+    print(f\"M\u00e9tricas expostas na porta {port}.\")
+    while True:
+        time.sleep(10)
+
+if __name__ == \"__main__\":
+    start_metrics_server(8082)
+"}
+,
+{"path": "infrastructure/monitoring/metrics.py", "encoding": "utf-8", "content": "from prometheus_client import Counter, Histogram
+
+# M\u00e9tricas de execu\u00e7\u00e3o do ETL
+etl_counter = Counter(\"etl_total_runs\", \"Total de execu\u00e7\u00f5es do ETL\")
+etl_failure_counter = Counter(\"etl_failures\", \"Total de falhas no ETL\")
+etl_duration = Histogram(\"etl_duration_seconds\", \"Dura\u00e7\u00e3o do processo ETL em segundos\")
+"}
+,
+{"path": "infrastructure/monitoring/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "infrastructure/config/settings.py", "encoding": "utf-8", "content": "import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Settings:
+    \"\"\"
+    Configura\u00e7\u00f5es da aplica\u00e7\u00e3o, lidas de vari\u00e1veis de ambiente.
+    \"\"\"
+    PIPEDRIVE_API_KEY = os.getenv(\"PIPEDRIVE_API_KEY\")
+    DATABASE_URL = os.getenv(\"DATABASE_URL\")
+
+settings = Settings()
+"}
+,
+{"path": "infrastructure/config/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "infrastructure/db.py", "encoding": "utf-8", "content": "import psycopg2
+from infrastructure.config.settings import settings
+
+def get_db_connection():
+    return psycopg2.connect(settings.DATABASE_URL)
+"}
+,
+{"path": "infrastructure/db_pool.py", "encoding": "utf-8", "content": "import psycopg2.pool
+from infrastructure.config.settings import settings
+
+class DBConnectionPool:
+    def __init__(self, minconn=1, maxconn=10):
+        self.pool = psycopg2.pool.SimpleConnectionPool(
+            minconn, maxconn, dsn=settings.DATABASE_URL
+        )
+
+    def get_connection(self):
+        return self.pool.getconn()
+
+    def release_connection(self, conn):
+        self.pool.putconn(conn)
+
+    def closeall(self):
+        self.pool.closeall()
+"}
+,
+{"path": "infrastructure/repository_impl/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "infrastructure/repository_impl/pipedrive_repository.py", "encoding": "utf-8", "content": "import csv
+from io import StringIO
+from application.ports.data_repository_port import DataRepositoryPort
+from application.utils.data_transform import sanitize_column_name
+
+# Defini\u00e7\u00e3o dos campos base
+BASE_COLUMNS = [
+    \"id\", \"titulo\", \"creator_user\", \"user_info\", \"person_info\",
+    \"stage_id\", \"stage_name\", \"pipeline_id\", \"pipeline_name\",
+    \"status\", \"value\", \"currency\", \"add_time\", \"update_time\",
+    \"raw_data\"
+]
+
+class PipedriveRepository(DataRepositoryPort):
+    def __init__(self, db_pool, custom_field_mapping: dict):
+        \"\"\"
+        Aqui, db_pool \u00e9 uma inst\u00e2ncia de um pool de conex\u00f5es.
+        \"\"\"
+        self.db_pool = db_pool
+        self.custom_field_mapping = {
+            k: sanitize_column_name(v)
+            for k, v in custom_field_mapping.items()
+            if sanitize_column_name(v) not in set(BASE_COLUMNS)
+        }
+        self.create_table_and_indexes()
+
+    def create_table_and_indexes(self):
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                base_columns_sql = \"\"\"
+                    id TEXT PRIMARY KEY,
+                    titulo TEXT,
+                    creator_user JSONB,
+                    user_info JSONB,
+                    person_info JSONB,
+                    stage_id INTEGER,
+                    stage_name TEXT,
+                    pipeline_id INTEGER,
+                    pipeline_name TEXT,
+                    status TEXT,
+                    value NUMERIC,
+                    currency TEXT,
+                    add_time TIMESTAMP,
+                    update_time TIMESTAMP,
+                    raw_data JSONB
+                \"\"\"
+                custom_columns_sql = \",\n\".join(
+                    [f\"{sanitize_column_name(v)} TEXT\" for v in self.custom_field_mapping.values()]
+                )
+                full_table_sql = f\"\"\"
+                    CREATE TABLE IF NOT EXISTS pipedrive_data (
+                        {base_columns_sql},
+                        {custom_columns_sql}
+                    );
+                \"\"\"
+                cursor.execute(full_table_sql)
+                cursor.execute(\"\"\"
+                    CREATE INDEX IF NOT EXISTS idx_titulo_gin
+                    ON pipedrive_data USING gin (to_tsvector('portuguese', split_part(titulo, ' - ', 1)));
+                \"\"\")
+                cursor.execute(\"\"\"
+                    CREATE INDEX IF NOT EXISTS idx_stage_name
+                    ON pipedrive_data (stage_name);
+                \"\"\")
+                cursor.execute(\"\"\"
+                    CREATE INDEX IF NOT EXISTS idx_pipeline_name
+                    ON pipedrive_data (pipeline_name);
+                \"\"\")
+                conn.commit()
+        finally:
+            self.db_pool.release_connection(conn)
+
+    def save_data_bulk_copy(self, data):
+        \"\"\"
+        Converte os dados em CSV e utiliza o comando COPY do PostgreSQL para carregamento em massa.
+        \"\"\"
+        column_names = BASE_COLUMNS + list(self.custom_field_mapping.values())
+
+        # Preparar os dados em formato CSV usando StringIO
+        csv_buffer = StringIO()
+        writer = csv.writer(csv_buffer, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(column_names)
+
+        for record in data:
+            # Monta os valores dos campos base
+            base_fields = [
+                str(record.get(\"id\")),
+                record.get(\"title\"),
+                record.get(\"creator_user_id\"),
+                record.get(\"user_id\"),
+                record.get(\"person_id\"),
+                record.get(\"stage_id\"),
+                (next(iter(record.get(\"stage\", {}).values())).get(\"name\") if record.get(\"stage\") else None),
+                record.get(\"pipeline_id\"),
+                record.get(\"pipeline_name\"),
+                record.get(\"status\"),
+                record.get(\"value\"),
+                record.get(\"currency\"),
+                record.get(\"add_time\"),
+                record.get(\"update_time\"),
+                record.get(\"raw_data\") 
+            ]
+            # Valores dos campos customizados
+            custom_values = []
+            custom_data = record.get(\"custom_fields\", {})
+            for field_key in self.custom_field_mapping:
+                value = custom_data.get(field_key)
+                if isinstance(value, dict):
+                    value = value.get(\"value\", value)
+                custom_values.append(value)
+            writer.writerow(base_fields + custom_values)
+
+        csv_buffer.seek(0)
+
+        # Obter uma conex\u00e3o do pool e executar a opera\u00e7\u00e3o COPY dentro de uma transa\u00e7\u00e3o
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                copy_sql = f\"\"\"
+                    COPY pipedrive_data({', '.join(column_names)})
+                    FROM STDIN WITH CSV HEADER DELIMITER AS ','
+                \"\"\"
+                cursor.copy_expert(copy_sql, csv_buffer)
+                conn.commit()
+        finally:
+            self.db_pool.release_connection(conn)
+"}
+,
+{"path": "infrastructure/cache.py", "encoding": "utf-8", "content": "import os
+import json
+import redis
+from datetime import timedelta
+
+REDIS_URL = os.getenv(\"REDIS_URL\", \"redis://localhost:6379/0\")
+
+class RedisCache:
+    def __init__(self):
+        self.client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
+    def get(self, key):
+        value = self.client.get(key)
+        if value:
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+        return None
+
+    def set(self, key, value, ex_seconds=3600):
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value)
+        self.client.set(name=key, value=value, ex=timedelta(seconds=ex_seconds))
+
+    def delete(self, key):
+        self.client.delete(key)
+"}
+,
+{"path": "infrastructure/prefect/orion/Dockerfile", "encoding": "utf-8", "content": "FROM prefecthq/prefect:3.2.14-python3.12
+
+CMD [\"prefect\", \"server\", \"start\", \"--host\", \"0.0.0.0\"]
+"}
+,
+{"path": "infrastructure/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "infrastructure/api_clients/pipedrive_api_client.py", "encoding": "utf-8", "content": "import requests
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from infrastructure.config.settings import settings
+from infrastructure.cache import RedisCache
+
+class PipedriveAPIClient:
+    def __init__(self):
+        self.api_key = settings.PIPEDRIVE_API_KEY
+        self.base_url_v2 = \"https://api.pipedrive.com/api/v2\"
+        self.base_url_v1 = \"https://api.pipedrive.com/v1\"
+        self.session = requests.Session()
+        self.cache = RedisCache()  # Inst\u00e2ncia do cache
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(requests.exceptions.RequestException)
+    )
+    def _get(self, url, params=None):
+        response = self.session.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response
+
+    def fetch_deal_fields_mapping(self):
+        cache_key = \"deal_fields_mapping\"
+        cached = self.cache.get(cache_key)
+        if cached:
+            return cached
+
+        url = f\"{self.base_url_v1}/dealFields?api_token={self.api_key}\"
+        response = self._get(url)
+        data = response.json().get(\"data\", [])
+        base_columns = {
+            \"id\", \"title\", \"creator_user_id\", \"user_id\", \"person_id\",
+            \"stage_id\", \"pipeline_id\", \"status\", \"value\", \"currency\",
+            \"add_time\", \"update_time\", \"raw_data\"
+        }
+        mapping = {
+            field[\"key\"]: field[\"name\"].lower().replace(\" \", \"_\")
+            for field in data
+            if field.get(\"key\") and field.get(\"name\") and field[\"key\"] not in base_columns
+        }
+        self.cache.set(cache_key, mapping, ex_seconds=86400)  # Cache por 24h
+        return mapping
+
+    def fetch_all_deals(self, updated_since: str = None):
+        url = f\"{self.base_url_v2}/deals\"
+        params = {
+            \"api_token\": self.api_key,
+            \"limit\": 500
+        }
+        # Se o par\u00e2metro n\u00e3o for informado, tenta buscar o \u00faltimo timestamp armazenado no cache
+        if not updated_since:
+            updated_since = self.cache.get(\"last_update\")
+            if updated_since:
+                params[\"updated_since\"] = updated_since
+
+        all_data = []
+        while True:
+            response = self._get(url, params=params)
+            json_response = response.json()
+            if not json_response.get(\"success\"):
+                break
+
+            data = json_response.get(\"data\", [])
+            if data:
+                all_data.extend(data)
+
+            next_cursor = json_response.get(\"additional_data\", {}).get(\"next_cursor\")
+            if not next_cursor:
+                break
+
+            params = {
+                \"api_token\": self.api_key,
+                \"limit\": 500,
+                \"cursor\": next_cursor
+            }
+        return all_data
+
+    def update_last_timestamp(self, new_timestamp: str):
+        self.cache.set(\"last_update\", new_timestamp, ex_seconds=86400)
+"}
+,
+{"path": "infrastructure/api_clients/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "infrastructure/logging_config.py", "encoding": "utf-8", "content": "import logging
+import sys
+from pythonjsonlogger import jsonlogger
+
+def setup_logging():
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    logHandler = logging.StreamHandler(sys.stdout)
+    formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+    logHandler.setFormatter(formatter)
+    
+    # Limpa handlers antigos, se houver, e adiciona o novo
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(logHandler)
+
+setup_logging()
+"}
+,
+{"path": ".gitignore", "encoding": "utf-8", "content": "# Ignorar todos os diret\u00f3rios __pycache__
+**/__pycache__/
+/__pycache/
+
+# Ignorar arquivos espec\u00edficos
+.qodo
+.env
+"}
+,
+{"path": "flows/pipedrive_metabase_etl.py", "encoding": "utf-8", "content": "from prefect import flow, task
+
+@task(retries=3, retry_delay_seconds=10)
+def run_etl_task():
+    from infrastructure.db_pool import DBConnectionPool
+    from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
+    from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
+    from application.services.etl_service import ETLService
+
+    pool = DBConnectionPool(minconn=1, maxconn=10)
+    client = PipedriveAPIClient()
+    custom_field_mapping = client.fetch_deal_fields_mapping()
+    repository = PipedriveRepository(pool, custom_field_mapping)
+    
+    etl_service = ETLService(client, repository)
+    result = etl_service.run_etl() 
+    return result
+
+@flow(name=\"pipedrive_metabase_etl\")
+def main_flow():
+    result = run_etl_task()
+    print(\"ETL executado com sucesso. Resultado:\", result)
+
+if __name__ == \"__main__\":
+    main_flow()
+"}
+,
+{"path": "flows/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "flows/deploy.py", "encoding": "utf-8", "content": "from flows.pipedrive_metabase_etl import main_flow
+
+if __name__ == \"__main__\":
+    deployment = main_flow.deploy(
+        name=\"pipedrive-metabase-etl-deployment\",
+        work_pool_name=\"docker-custom\",
+        image=\"pipedrive_metabase_integration:latest\",
+        job_variables={\"image_pull_policy\": \"Never\"}
+    )
+    print(\"Deployment aplicado:\", deployment)
+"}
+,
+{"path": "application/services/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "application/services/etl_service.py", "encoding": "utf-8", "content": "import logging
+import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions
+from application.utils.data_transform import normalize_currency, normalize_date
+from datetime import datetime
+from infrastructure.monitoring.metrics import etl_counter, etl_failure_counter, etl_duration
+
+logger = logging.getLogger(__name__)
+
+def transform_record(record):
+    try:
+        if \"value\" in record:
+            record[\"value\"] = normalize_currency(str(record.get(\"value\")))
+        if \"add_time\" in record:
+            record[\"add_time\"] = normalize_date(record.get(\"add_time\"))
+        if \"update_time\" in record:
+            record[\"update_time\"] = normalize_date(record.get(\"update_time\"))
+        return record
+    except Exception as e:
+        logger.error(\"Erro na transforma\u00e7\u00e3o do registro\", exc_info=True)
+        return record
+
+class ETLService:
+    def __init__(self, client, repository):
+        self.client = client
+        self.repository = repository
+
+    def run_etl(self):
+        etl_counter.inc() 
+        start_time = datetime.time.time()
+        try:
+            logger.info(\"Iniciando execu\u00e7\u00e3o do ETL\")
+            updated_since = None
+            deals = self.client.fetch_all_deals(updated_since=updated_since)
+
+            if not deals:
+                logger.info(\"Nenhuma atualiza\u00e7\u00e3o encontrada\")
+                return \"Sem altera\u00e7\u00f5es.\"
+
+            # Define op\u00e7\u00f5es para a pipeline do Beam
+            options = PipelineOptions(
+                runner='DirectRunner',
+                job_name='pipedrive_etl'
+            )
+
+            # Medir lat\u00eancia da transforma\u00e7\u00e3o
+            start_time = datetime.utcnow()
+
+            with beam.Pipeline(options=options) as pipeline:
+                transformed_deals = (
+                    pipeline
+                    | \"Criar Cole\u00e7\u00e3o\" >> beam.Create(deals)
+                    | \"Transformar Registros\" >> beam.Map(transform_record)
+                )
+                result = (
+                    transformed_deals
+                    | \"Agrupar em Lista\" >> beam.combiners.ToList()
+                )
+                pipeline_result = pipeline.run()
+                pipeline_result.wait_until_finish()
+
+            latency = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(\"Transforma\u00e7\u00e3o conclu\u00edda\", extra={\"latency_seconds\": latency, \"records\": len(deals)})
+
+            self.repository.save_data_bulk_copy(result)
+            
+            new_timestamp = datetime.time.time().isoformat() + \"Z\"
+            self.client.update_last_timestamp(new_timestamp)
+            logger.info(\"ETL finalizado com sucesso\", extra={\"records_processados\": len(deals)})
+
+            duration = (datetime.time.time() - start_time).total_seconds()
+            etl_duration.observe(duration)
+            return f\"ETL executado com sucesso com {len(deals)} registros processados.\"
+        except Exception as e:
+            etl_failure_counter.inc()
+            logger.error(\"Falha na execu\u00e7\u00e3o do ETL\", exc_info=True)
+        raise
+"}
+,
+{"path": "application/ports/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "application/ports/data_repository_port.py", "encoding": "utf-8", "content": "from abc import ABC, abstractmethod
+
+class DataRepositoryPort(ABC):
+    @abstractmethod
+    def save_data(self, data):
+        \"\"\"
+        Deve implementar a l\u00f3gica para salvar os dados transformados no reposit\u00f3rio.
+        \"\"\"
+        pass
+"}
+,
+{"path": "application/ports/pipedrive_client_port.py", "encoding": "utf-8", "content": "from abc import ABC, abstractmethod
+
+class PipedriveClientPort(ABC):
+    @abstractmethod
+    def fetch_data(self):
+        \"\"\"
+        Deve implementar a l\u00f3gica para buscar dados da API do Pipedrive.
+        Retorna, por exemplo, uma lista de dicion\u00e1rios com os dados brutos.
+        \"\"\"
+        pass
+"}
+,
+{"path": "application/utils/data_transform.py", "encoding": "utf-8", "content": "import json
+from datetime import datetime
+from decimal import Decimal
+from decimal import Decimal
+import re
+
+def normalize_currency(value_str: str) -> float:
+    if not value_str:
+        return 0.0
+    try:
+        cleaned = value_str.replace(\"R$\", \"\").replace(\",\", \"\").strip()
+        return float(cleaned)
+    except Exception:
+        return 0.0
+
+def normalize_date(date_str: str) -> str:
+    if not date_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(date_str.replace(\" \", \"T\"))
+        return dt.isoformat()
+    except Exception:
+        return date_str
+
+
+def sanitize_column_name(name: str) -> str:
+    return re.sub(r'\W|^(?=\d)', '_', name.lower())
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj) 
+        return super().default(obj)
+"}
+,
+{"path": "application/utils/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "application/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "application/use_cases/process_pipedrive_data.py", "encoding": "utf-8", "content": "def process_pipedrive_data(etl_service):
+    \"\"\"
+    Caso de uso que processa os dados do Pipedrive utilizando o servi\u00e7o ETL.
+    
+    Par\u00e2metros:
+      etl_service (ETLService): inst\u00e2ncia do servi\u00e7o de ETL.
+    
+    Retorna:
+      Dados transformados processados pelo ETL.
+    \"\"\"
+    result = etl_service.run_etl()
+    return result
+"}
+,
+{"path": "application/use_cases/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "README.md", "encoding": "base64", "content": ""}
+,
+{"path": "pyproject.toml", "encoding": "utf-8", "content": "[tool.poetry]
+name = \"pipedrive_metabase_integration\"
+version = \"0.1.0\"
+description = \"Integra\u00e7\u00e3o do Pipedrive com Metabase utilizando Airflow\"
+authors = [\"Pavcob\"]
+readme = [\"README.md\"]
+
+[tool.poetry.dependencies]
+python = \">=3.12, <3.13\"
+prefect = \"^3.2.14\"
+requests = \"2.32.3\"
+python-decouple = \"3.8\"
+python-dotenv = \"1.0.1\"
+pydantic = '2.10.6'
+prometheus-client = \"0.21.1\"
+psycopg2  = '2.9.10'
+httpx='0.28.1'
+tenacity='9.0.0'
+apache_beam='2.63.0'
+python-json-logger='3.3.0'
+
+[tool.poetry.group.dev.dependencies]
+pytest = \"^7.2.0\"
+
+[build-system]
+requires = [\"poetry-core>=1.0.0\"]
+build-backend = \"poetry.core.masonry.api\"
+"}
+,
+{"path": "core_domain/events/data_updated.py", "encoding": "utf-8", "content": "import datetime
+
+class DataUpdated:
+    \"\"\"
+    Evento de dom\u00ednio disparado ap\u00f3s a atualiza\u00e7\u00e3o dos dados.
+    \"\"\"
+    def __init__(self, entity, timestamp=None):
+        self.entity = entity
+        self.timestamp = timestamp or datetime.datetime.utcnow()
+
+    def __repr__(self):
+        return f\"<DataUpdated entity={self.entity} timestamp={self.timestamp}>\"
+"}
+,
+{"path": "core_domain/events/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "core_domain/entities/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "core_domain/entities/pipedrive_entity.py", "encoding": "utf-8", "content": "class PipedriveEntity:
+    \"\"\"
+    Entidade que representa os dados do Pipedrive.
+    \"\"\"
+    def __init__(self, identifier, name, value):
+        self.identifier = identifier  # Deve ser uma inst\u00e2ncia de Identifier (value object)
+        self.name = name
+        self.value = value
+
+    def __repr__(self):
+        return f\"<PipedriveEntity id={self.identifier} name={self.name} value={self.value}>\"
+"}
+,
+{"path": "core_domain/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "core_domain/value_objects/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "core_domain/value_objects/identifier.py", "encoding": "utf-8", "content": "class Identifier:
+    \"\"\"
+    Objeto de valor que encapsula um identificador \u00fanico.
+    \"\"\"
+    def __init__(self, value):
+        if not value:
+            raise ValueError(\"O valor do identificador n\u00e3o pode ser vazio.\")
+        self.value = value
+
+    def __eq__(self, other):
+        if isinstance(other, Identifier):
+            return self.value == other.value
+        return False
+
+    def __str__(self):
+        return str(self.value)
+"}
+,
+{"path": "tests/test_use_cases.py", "encoding": "base64", "content": ""}
+,
+{"path": "tests/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "tests/test_infrastructure.py", "encoding": "base64", "content": ""}
+,
+{"path": "wait-for-it.sh", "encoding": "utf-8", "content": "#!/usr/bin/env bash
+# wait-for-it.sh - Espera que um servi\u00e7o esteja dispon\u00edvel
+host=\"$1\"
+port=\"$2\"
+shift 2
+cmd=\"$@\"
+
+until nc -z \"$host\" \"$port\"; do
+  echo \"Aguardando $host:$port...\"
+  sleep 1
+done
+
+echo \"$host:$port est\u00e1 dispon\u00edvel. Executando comando...\"
+exec $cmd
+"}
+,
+{"path": "reset_prefect.sh", "encoding": "utf-8", "content": "#!/bin/bash
+set -e
+
+echo \"Resetando containers...\"
+sudo docker compose down --volumes --remove-orphans
+sudo docker compose up --build -d
+
+echo \"Aguardando 10 segundos para os servi\u00e7os iniciarem...\"
+sleep 10
+
+echo \"Limpando deployments existentes...\"
+# Lista os deployments e filtra linhas que contenham \"/\" (assumindo que o nome completo possui esse caractere)
+DEPLOYMENT_IDS=$(PREFECT_API_URL=http://localhost:4200/api poetry run prefect deployment ls | grep \"/\" || true)
+if [ -n \"$DEPLOYMENT_IDS\" ]; then
+  for dep_id in $DEPLOYMENT_IDS; do
+    echo \"Deletando deployment: $dep_id\"
+    PREFECT_API_URL=http://localhost:4200/api poetry run prefect deployment delete \"$dep_id\" --yes
+  done
+else
+  echo \"Nenhum deployment encontrado.\"
+fi
+
+echo \"Iniciando o fluxo em modo serve (execu\u00e7\u00e3o local)...\"
+# Executa o fluxo usando o m\u00e9todo serve (definido em flows/pipedrive_metabase_etl.py)
+# Ajuste o caminho do m\u00f3dulo conforme a estrutura do seu projeto, se necess\u00e1rio.
+PREFECT_API_URL=http://localhost:4200/api poetry run python -m flows.pipedrive_metabase_etl
+
+echo \"Reset e deploy conclu\u00eddos.\"
+"}
+,
+{"path": "entrypoint.sh", "encoding": "utf-8", "content": "#!/bin/bash
+set -e
+
+case \"$APP_ROLE\" in
+  etl)
+    echo \"Aguardando Prefect Orion...\"
+    ./wait-for-it.sh prefect-orion:4200 --timeout=60 --strict -- echo \"Prefect Orion est\u00e1 dispon\u00edvel\"
+    echo \"Executando o fluxo ETL...\"
+    poetry run python flows/pipedrive_metabase_etl.py
+    ;;
+  metrics)
+    echo \"Iniciando o servidor de m\u00e9tricas...\"
+    poetry run python infrastructure/monitoring/metrics_server.py
+    ;;
+  *)
+    echo \"Nenhum APP_ROLE definido ou papel desconhecido. Utilize: etl ou metrics.\"
+    ;;
+esac
+"}
+,
+{"path": ".env", "encoding": "utf-8", "content": "##############################################################################
+#                        CONFIGURA\u00c7\u00d5ES DE BANCO DE DADOS                     #
+##############################################################################
+POSTGRES_DB=pipedrive_metabase_integration_db
+POSTGRES_PASSWORD=pipedrive_metabase_integration_db
+POSTGRES_USER=pipedrive_metabase_integration_db
+POSTGRES_PORT=5432
+POSTGRES_HOST=localhost
+DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+
+##############################################################################
+#                        CONFIGURA\u00c7\u00d5ES DE APLICACAO                          #
+##############################################################################
+API_PORT=8080
+METRICS_PORT=8082
+WEB_SERVER_PORT=8081
+FERNET_KEY=\"fH7No6yfy6yhb3fPzgKURIMvA+c5hMnZSD8czvL1S/o=\"
+
+##############################################################################
+#                        CONFIGURA\u00c7\u00d5ES DO PIPEDRIVE                          #
+##############################################################################
+PIPEDRIVE_API_KEY=bb0cf5c38584a41fd54a90503e5767bcd9ed381c
+
+##############################################################################
+#                         CONFIGURA\u00c7\u00d5ES DO PREFECT                           #
+##############################################################################
+PREFECT_PORT=4200
+PREFECT_API_URL=http://prefect-orion:${PREFECT_PORT}/api"}
+]

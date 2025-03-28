@@ -1,0 +1,11 @@
+# Ignorar todos os diretórios __pycache__
+**/__pycache__/
+/__pycache/
+
+# Ignorar arquivos específicos
+.qodo
+.env
+
+db-secrets.yaml
+kubectl*
+
