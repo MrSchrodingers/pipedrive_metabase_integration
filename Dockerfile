@@ -17,7 +17,7 @@
         POETRY_VERSION=2.1.1
     
     RUN apt-get update && \
-        apt-get install -y curl gcc libpq-dev && \
+        apt-get install -y curl gcc libpq-dev netcat-openbsd && \
         rm -rf /var/lib/apt/lists/*
     
     # Instalar o Poetry e configurá-lo para não criar virtualenv
@@ -49,7 +49,7 @@
     POETRY_VIRTUALENVS_CREATE=false
     
     RUN apt-get update && \
-        apt-get install -y libpq-dev curl && \
+        apt-get install -y libpq-dev curl netcat-openbsd && \
         rm -rf /var/lib/apt/lists/*
     
     # Copiar os pacotes instalados e o código da etapa builder

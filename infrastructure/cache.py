@@ -1,12 +1,13 @@
-import os
 import json
 import redis
 from datetime import timedelta
-from infrastructure.config.settings import settings
 
 class RedisCache:
-    def __init__(self):
-        self.client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    def __init__(self, connection_string: str):
+        self.client = redis.Redis.from_url(
+            connection_string,
+            decode_responses=True
+        )
 
     def get(self, key):
         value = self.client.get(key)
@@ -20,7 +21,11 @@ class RedisCache:
     def set(self, key, value, ex_seconds=3600):
         if isinstance(value, (dict, list)):
             value = json.dumps(value)
-        self.client.set(name=key, value=value, ex=timedelta(seconds=ex_seconds))
+        self.client.setex(
+            name=key,
+            time=timedelta(seconds=ex_seconds),
+            value=value
+        )
 
     def delete(self, key):
         self.client.delete(key)
