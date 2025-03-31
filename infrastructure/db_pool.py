@@ -1,10 +1,11 @@
 import psycopg2.pool
-from infrastructure.config.settings import settings
 
 class DBConnectionPool:
-    def __init__(self, minconn=1, maxconn=10):
+    def __init__(self, dsn: str, minconn=1, maxconn=10):
         self.pool = psycopg2.pool.SimpleConnectionPool(
-            minconn, maxconn, dsn=settings.DATABASE_URL
+            minconn=minconn,
+            maxconn=maxconn,
+            dsn=dsn
         )
 
     def get_connection(self):

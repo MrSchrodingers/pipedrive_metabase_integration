@@ -1,4 +1,3 @@
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +16,13 @@ spec:
     spec:
       containers:
       - name: prefect-orion
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 4200
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          failureThreshold: 3
         image: pipedrive_metabase_integration-prefect-orion:latest
         imagePullPolicy: Never
         ports:
@@ -33,6 +39,7 @@ kind: Service
 metadata:
   name: prefect-orion
 spec:
+  type: NodePort
   selector:
     app: prefect-orion
   ports:
@@ -40,22 +47,20 @@ spec:
     port: 4200
     targetPort: 4200
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: Job
 metadata:
   name: etl
   labels:
     app: etl
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: etl
+  backoffLimit: 2
   template:
     metadata:
       labels:
         app: etl
     spec:
+      restartPolicy: Never
       containers:
       - name: etl
         image: pipedrive_metabase_integration-etl:latest
@@ -63,44 +68,19 @@ spec:
         env:
         - name: APP_ROLE
           value: "etl"
-        - name: PREFECT_API_URL
-          value: "http://prefect-orion:4200/api"
         envFrom:
-        - configMapRef:
-            name: observability-config
-        ports:
-        - containerPort: 8080
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: etl
-spec:
-  selector:
-    app: etl
-  ports:
-  - protocol: TCP
-    port: 8080
-    targetPort: 8080
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: etl-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: etl
-  minReplicas: 1
-  maxReplicas: 5
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
+          - secretRef:
+              name: app-secrets
+        command: ["/app/entrypoint.sh"] 
+        resources:
+          limits:
+            memory: "6Gi"
+            cpu: "2"
+            ephemeral-storage: "2Gi"
+          requests:
+            memory: "6Gi"
+            cpu: "2"
+            ephemeral-storage: "2Gi"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -141,11 +121,14 @@ metadata:
 spec:
   selector:
     app: metrics
+  type: ClusterIP
   ports:
   - protocol: TCP
     port: 8082
     targetPort: 8082
 ---
+# Se não quiser HPA, remova este bloco.
+# Vou manter "metrics-hpa" apenas se você precisar.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -194,6 +177,7 @@ metadata:
 spec:
   selector:
     app: redis
+  type: ClusterIP
   ports:
   - protocol: TCP
     port: 6379
@@ -219,7 +203,7 @@ spec:
       - name: db
         image: postgres:14
         ports:
-        - containerPort: 5432  
+        - containerPort: 5432
         env:
         - name: POSTGRES_USER
           valueFrom:
@@ -244,7 +228,6 @@ spec:
             port: 5432
           initialDelaySeconds: 5
           periodSeconds: 10
-
         livenessProbe:
           tcpSocket:
             port: 5432
@@ -260,9 +243,10 @@ kind: Service
 metadata:
   name: db
 spec:
+  type: ClusterIP
   selector:
     app: db
   ports:
-    - protocol: TCP
-      port: 5432
-      targetPort: 5432
+  - protocol: TCP
+    port: 5432
+    targetPort: 5432

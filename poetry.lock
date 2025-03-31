@@ -1534,7 +1534,7 @@ files = [
     {file = "numpy-2.2.4-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:1cf4e5c6a278d620dee9ddeb487dc6a860f9b199eadeecc567f777daace1e9e7"},
     {file = "numpy-2.2.4-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:1974afec0b479e50438fc3648974268f972e2d908ddb6d7fb634598cdb8260a0"},
     {file = "numpy-2.2.4-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:79bd5f0a02aa16808fcbc79a9a376a147cc1045f7dfe44c6e7d53fa8b8a79392"},
-    {file = "numpy-2.2.4-cp313-cp313-macosx_14_0_x86_64.whl", hash = "sha256:3387dd7232804b341165cedcb90694565a6015432ee076c6754775e85d86f1fc"},
+    {file = "numpy-2.2.4-cp313-cp313-macosx_14_0_x86_64.whl", hash = "sha256:3387dd7232804b341165cedcb90694565a6015433ee076c6754775e85d86f1fc"},
     {file = "numpy-2.2.4-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6f527d8fdb0286fd2fd97a2a96c6be17ba4232da346931d967a0630050dfd298"},
     {file = "numpy-2.2.4-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bce43e386c16898b91e162e5baaad90c4b06f9dcbe36282490032cec98dc8ae7"},
     {file = "numpy-2.2.4-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:31504f970f563d99f71a3512d0c01a645b692b12a63630d6aafa0939e52361e6"},
@@ -1912,6 +1912,25 @@ shell = ["prefect-shell (>=0.3.0)"]
 slack = ["prefect-slack (>=0.3.0)"]
 snowflake = ["prefect-snowflake (>=0.28.0)"]
 sqlalchemy = ["prefect-sqlalchemy (>=0.5.0)"]
+
+[[package]]
+name = "prefect-sqlalchemy"
+version = "0.5.2"
+description = "Prefect integrations for working with databases"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "prefect_sqlalchemy-0.5.2-py3-none-any.whl", hash = "sha256:96c32a9adc40d7ff6d0924d1852354fda096e81dd1088c0d6eaeb1420f3ffd48"},
+    {file = "prefect_sqlalchemy-0.5.2.tar.gz", hash = "sha256:0197260b62db328d4de86d25ef3110f19d2174831dfd45a175678babb229e564"},
+]
+
+[package.dependencies]
+prefect = ">=3.0.0"
+sqlalchemy = ">=1.4.31,<3"
+
+[package.extras]
+dev = ["aiosqlite", "asyncpg", "coverage", "interrogate", "mkdocs", "mkdocs-gen-files", "mkdocs-material", "mkdocstrings[python]", "mypy", "pillow", "pre-commit", "psycopg2", "pytest (>=8.3)", "pytest-asyncio", "pytest-env", "pytest-xdist"]
 
 [[package]]
 name = "prometheus-client"
@@ -3723,4 +3742,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12, <3.13"
-content-hash = "33c87a8630b3575137922363e0c1aaaaa3075ab99bcc9d77d2827573e633dfcd"
+content-hash = "0751cd3d4689062f44a0f66fbbffdf5c75c5b1a2576e83130a15cdf035972edf"
