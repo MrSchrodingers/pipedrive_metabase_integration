@@ -121,7 +121,7 @@ metadata:
 spec:
   selector:
     app: metrics
-  type: ClusterIP
+  type: NodePort   
   ports:
   - protocol: TCP
     port: 8082
@@ -250,3 +250,39 @@ spec:
   - protocol: TCP
     port: 5432
     targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metabase
+  labels:
+    app: metabase
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metabase
+  template:
+    metadata:
+      labels:
+        app: metabase
+    spec:
+      containers:
+      - name: metabase
+        image: metabase/metabase:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metabase
+spec:
+  type: NodePort
+  selector:
+    app: metabase
+  ports:
+  - protocol: TCP
+    port: 3000
+    targetPort: 3000

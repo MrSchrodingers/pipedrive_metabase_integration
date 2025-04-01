@@ -1,4 +1,3 @@
-import logging
 import tracemalloc
 from datetime import datetime, timezone
 from typing import Dict, List, Generator
@@ -24,7 +23,7 @@ class ETLService:
         self.batch_size = batch_size
         self.logger = get_run_logger()
         tracemalloc.start()
-
+        
     def _transform_record(self, record: Dict) -> Dict:
         """Transformação segura com validação e tratamento de erros"""
         try:
@@ -69,21 +68,55 @@ class ETLService:
         """Geração eficiente de lotes com controle de memória"""
         for i in range(0, len(data), self.batch_size):
             yield data[i:i + self.batch_size]
+            
+    def _transform_batch(self, batch: List[Dict]) -> List[Dict]:
+        """
+        Transforma um lote de registros aplicando a transformação em cada registro.
+        
+        - Registros que falharem na transformação (ou seja, quando _transform_record retornar None)
+        serão ignorados.
+        - Logs detalhados informam quantos registros foram transformados com sucesso e quantos falharam.
+        
+        Parâmetros:
+        batch (List[Dict]): Lista de registros brutos a serem transformados.
+        
+        Retorna:
+        List[Dict]: Lista dos registros transformados com sucesso.
+        """
+        transformed_records = []
+        success_count = 0
+        fail_count = 0
+        
+        for record in batch:
+            try:
+                transformed = self._transform_record(record)
+                if transformed is not None:
+                    transformed_records.append(transformed)
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    self.logger.warning(f"Registro com id {record.get('id')} não foi transformado e será ignorado.")
+            except Exception as e:
+                fail_count += 1
+                self.logger.error(f"Erro inesperado ao transformar o registro {record.get('id')}: {str(e)}", exc_info=True)
+        
+        self.logger.debug(f"Transformação do lote concluída: {success_count} registros transformados com sucesso, {fail_count} falharam.")
+        return transformed_records
 
     def _track_resources(self):
         """Monitoramento detalhado de recursos"""
-        current, peak = tracemalloc.get_traces_memory()
+        current, peak = tracemalloc.get_traced_memory()
         memory_usage.set(peak)
         self.logger.debug(f"Uso de memória: Current={current/1e6:.2f}MB, Peak={peak/1e6:.2f}MB")
 
     def run_etl(self) -> Dict[str, object]:
-        """Execução principal do ETL com gerenciamento completo de recursos"""
         etl_counter.inc()
         start_time = datetime.now(timezone.utc)
         result = {"status": "error", "processed": 0}
+        latest_update = None
 
         try:
-            # Fase de Extração
+            # Extração
             self.logger.info("Iniciando extração de dados do Pipedrive")
             deals = self.client.fetch_all_deals()
             self.logger.info(f"Dados extraídos: {len(deals)} registros")
@@ -95,32 +128,38 @@ class ETLService:
                 batch_size.set(len(batch))
 
                 # Transformação
-                processed_batch = [rec for rec in (self._transform_record(r) for r in batch) if rec]
-                
-                # Carga
-                if processed_batch:
+                processed_batch = self._transform_batch(batch)
+                filtered_batch = self.repository.filter_existing_records(processed_batch)
+
+                # Atualiza o último timestamp encontrado
+                for rec in filtered_batch:
+                    update_time = rec.get("update_time")
+                    if update_time and (latest_update is None or update_time > latest_update):
+                        latest_update = update_time
+
+                # Carga usando a estratégia de staging e upsert
+                if filtered_batch:
                     with insert_duration.time():
-                        self.repository.save_data_incremental(processed_batch)
-                    
-                    total_processed += len(processed_batch)
-                    records_processed.inc(len(processed_batch))
+                        self.repository.save_data_upsert(filtered_batch)
+                    total_processed += len(filtered_batch)
+                    records_processed.inc(len(filtered_batch))
 
                 # Monitoramento
                 self._track_resources()
                 batch_duration = (datetime.now(timezone.utc) - batch_start).total_seconds()
-                
                 self.logger.info(
-                    f"Lote {batch_num} processado | "
-                    f"Sucesso: {len(processed_batch)}/{len(batch)} | "
+                    f"Lote {batch_num} processado | Sucesso: {len(filtered_batch)}/{len(batch)} | "
                     f"Duração: {batch_duration:.2f}s | "
                     f"Memória: {tracemalloc.get_traced_memory()[1]/1e6:.2f}MB"
                 )
 
-            # Resultado final
+            # Atualiza o last_update se um novo timestamp for encontrado
+            if latest_update:
+                self.client.update_last_timestamp(latest_update.isoformat())
+
             result.update({
                 "status": "success",
                 "processed": total_processed,
-                "duration": (datetime.now(timezone.utc) - start_time).total_seconds(),
                 "peak_memory": tracemalloc.get_traced_memory()[1]
             })
 
@@ -129,6 +168,8 @@ class ETLService:
             self.logger.error(f"Falha crítica no ETL: {str(e)}", exc_info=True)
             result["message"] = str(e)
         finally:
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+            result["duration"] = duration
+            etl_duration.observe(duration)
             tracemalloc.stop()
-            etl_duration.observe(result["duration"])
             return result

@@ -99,3 +99,4 @@ class PipedriveAPIClient:
         logger = get_run_logger()
         self.cache.set("last_update", new_timestamp, ex_seconds=86400)
         logger.info("[Pipedrive] 'last_update' atualizado para %s", new_timestamp)
+
