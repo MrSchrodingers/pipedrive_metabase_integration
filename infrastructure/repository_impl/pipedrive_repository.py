@@ -1,9 +1,12 @@
+import json
+import csv
 from typing import List, Dict
 from io import StringIO
 from psycopg2 import sql
 from psycopg2.extensions import cursor
 from prefect import get_run_logger
 from application.ports.data_repository_port import DataRepositoryPort
+from application.utils.column_utils import normalize_column_name
 from infrastructure.monitoring.metrics import insert_duration
 
 logger = get_run_logger()
@@ -25,8 +28,7 @@ class PipedriveRepository(DataRepositoryPort):
         self._ensure_table_exists()
 
     def _sanitize_column_name(self, name: str) -> str:
-        """Sanitização segura de nomes de colunas"""
-        return name.lower().replace(" ", "_").replace("-", "_").strip("_")
+        return normalize_column_name(name)
 
     def _ensure_table_exists(self):
         """Criação de tabela com lock advisory para concorrência"""
@@ -122,13 +124,131 @@ class PipedriveRepository(DataRepositoryPort):
             raise
         finally:
             self.db_pool.release_connection(conn)
+            
+    def filter_existing_records(self, data: List[Dict]) -> List[Dict]:
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM pipedrive_data WHERE id = ANY(%s)", ([rec["id"] for rec in data],))
+                existing = {row[0] for row in cur.fetchall()}
+            return [rec for rec in data if rec["id"] not in existing]
+        finally:
+            self.db_pool.release_connection(conn)
+            
+    def save_data_upsert(self, data: List[Dict]):
+        """Insere dados usando um staging table e depois faz upsert na tabela principal."""
+        if not data:
+            return
+
+        conn = self.db_pool.get_connection()
+        staging_table = "staging_pipedrive_data"
+        try:
+            with conn.cursor() as cur:
+                # Cria uma tabela temporária para staging
+                cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                columns = BASE_COLUMNS + list(self.custom_field_mapping.values())
+                create_staging = sql.SQL("""
+                    CREATE TEMPORARY TABLE {staging} (
+                        {columns}
+                    ) ON COMMIT DROP
+                """).format(
+                    staging=sql.Identifier(staging_table),
+                    columns=sql.SQL(",\n").join(
+                        [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
+                    )
+                )
+                cur.execute(create_staging)
+                logger.info("Tabela de staging %s criada.", staging_table)
+
+                # Prepara os dados usando a mesma CSV writer
+                buffer = StringIO()
+                for record in data:
+                    buffer.write(self._record_to_line(record) + '\n')
+                buffer.seek(0)
+
+                # Copia os dados para a tabela de staging
+                copy_sql = sql.SQL("""
+                    COPY {staging} ({fields})
+                    FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '')
+                """).format(
+                    staging=sql.Identifier(staging_table),
+                    fields=sql.SQL(', ').join(map(sql.Identifier, columns))
+                )
+                cur.copy_expert(copy_sql, buffer)
+                logger.info("Dados copiados para a tabela de staging.")
+
+                target_column_types = {
+                    "creator_user": "JSONB",
+                    "user_info": "JSONB",
+                    "person_info": "JSONB",
+                    "stage_id": "INTEGER",
+                    "pipeline_id": "INTEGER",
+                    "value": "NUMERIC",
+                    "add_time": "TIMESTAMP",
+                    "update_time": "TIMESTAMP",
+                    "raw_data": "JSONB"
+                }
+                select_fields = []
+                for col in columns:
+                    if col in target_column_types:
+                        # Aplica o cast para o tipo correto
+                        select_fields.append(
+                            sql.SQL("CAST({col} AS {typ})").format(
+                                col=sql.Identifier(col),
+                                typ=sql.SQL(target_column_types[col])
+                            )
+                        )
+                    else:
+                        select_fields.append(sql.Identifier(col))
+                select_fields_sql = sql.SQL(', ').join(select_fields)
+
+                # Monta a lista de campos para INSERT e UPDATE
+                insert_fields = sql.SQL(', ').join(map(sql.Identifier, columns))
+                update_clause = sql.SQL(', ').join([
+                    sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col))
+                    for col in columns if col != "id"
+                ])
+                upsert_sql = sql.SQL("""
+                    INSERT INTO pipedrive_data ({fields})
+                    SELECT {select_fields} FROM {staging}
+                    ON CONFLICT (id) DO UPDATE SET
+                    {update_clause}
+                """).format(
+                    fields=insert_fields,
+                    select_fields=select_fields_sql,
+                    staging=sql.Identifier(staging_table),
+                    update_clause=update_clause
+                )
+                with insert_duration.time():
+                    cur.execute(upsert_sql)
+                    conn.commit()
+                logger.info("Upsert realizado com sucesso para %d registros.", len(data))
+        except Exception as e:
+            logger.error(f"Falha na inserção via upsert: {str(e)}")
+            conn.rollback()
+            raise
+        finally:
+            self.db_pool.release_connection(conn)
 
     def _record_to_line(self, record: Dict) -> str:
-        """Serialização otimizada sem usar módulo CSV"""
-        return '|'.join(
-            str(record.get(field, '')).replace('\\', '\\\\').replace('|', '\\|')
-            for field in BASE_COLUMNS + list(self.custom_field_mapping.values())
-        )
+        output = StringIO()
+        writer = csv.writer(output, delimiter='|', quoting=csv.QUOTE_MINIMAL)
+        row = []
+        jsonb_fields = {'user_info', 'person_info', 'raw_data'}
+        for field in BASE_COLUMNS + list(self.custom_field_mapping.values()):
+            value = record.get(field)
+            if value is None:
+                row.append('')
+            elif field in jsonb_fields:
+                try:
+                    json_str = json.dumps(value, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    json_str = 'null'
+                row.append(json_str)
+            else:
+                row.append(str(value))
+        writer.writerow(row)
+        return output.getvalue().strip("\r\n")
 
     def save_data(self, data):
         self.save_data_incremental(data)
