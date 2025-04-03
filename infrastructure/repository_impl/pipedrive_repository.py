@@ -33,7 +33,6 @@ BASE_COLUMNS = [
     "currency",
     "add_time",
     "update_time",
-    "raw_data"
 ]
 
 COLUMN_TYPES = {
@@ -55,10 +54,9 @@ COLUMN_TYPES = {
     "currency": "VARCHAR(10)",
     "add_time": "TIMESTAMPTZ",
     "update_time": "TIMESTAMPTZ",
-    "raw_data": "JSONB"
 }
 
-JSONB_FIELDS = {'creator_user', 'user_info', 'person_info', 'raw_data'}
+JSONB_FIELDS = {'creator_user', 'user_info', 'person_info'}
 
 class PipedriveRepository(DataRepositoryPort):
     TABLE_NAME = "pipedrive_data"
@@ -209,7 +207,6 @@ class PipedriveRepository(DataRepositoryPort):
             "idx_pipedrive_pipeline_id": sql.SQL("(pipeline_id)"),
             "idx_pipedrive_status": sql.SQL("(status)"),
 
-            "idx_gin_pipedrive_raw_data": sql.SQL("USING GIN (raw_data jsonb_path_ops)"),
             "idx_pipedrive_active_deals": sql.SQL("(update_time DESC) WHERE status NOT IN ('won', 'lost')")
         }
 
