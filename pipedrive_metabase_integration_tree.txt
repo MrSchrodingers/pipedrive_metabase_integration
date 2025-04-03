@@ -4,6 +4,7 @@ pipedrive_metabase_integration.yaml
 Dockerfile
 docker-compose.yml
 observability-config.yaml
+prometheus.yml
 infrastructure
 ├── monitoring
 ├── ├── metrics_server.py
@@ -33,6 +34,8 @@ flows
 ├── __init__.py
 ├── deploy.py
 application
+├── schemas
+├── ├── deal_schema.py
 ├── services
 ├── ├── __init__.py
 ├── ├── etl_service.py
@@ -42,6 +45,9 @@ application
 ├── ├── pipedrive_client_port.py
 ├── utils
 ├── ├── data_transform.py
+├── ├── data_processing_utils.py
+├── ├── replace_nan_with_none_recursive.py
+├── ├── column_utils.py
 ├── ├── __init__.py
 ├── __init__.py
 ├── use_cases
@@ -49,6 +55,7 @@ application
 ├── ├── __init__.py
 README.md
 pyproject.toml
+update.sh
 core_domain
 ├── events
 ├── ├── data_updated.py

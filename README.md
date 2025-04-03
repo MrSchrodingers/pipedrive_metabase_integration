@@ -1,342 +1,253 @@
-# Pipedrive Metabase Integration
+## Pipedrive Metabase Integration
 
-Uma solução completa para integrar os dados do Pipedrive com o Metabase através de um pipeline ETL orquestrado pelo Prefect. Este projeto extrai dados de deals do Pipedrive, realiza transformações e validações, carrega os dados em um banco PostgreSQL e oferece monitoramento, logging estruturado e cache com Redis para garantir desempenho e resiliência.
-
----
-
-## Visão Geral
-
-- **Extração de Dados:**  
-  Conecta à API do Pipedrive para buscar dados de deals utilizando técnicas de retentativas (com Tenacity) e cache (Redis) para atualizar incrementalmente somente os registros modificados desde a última execução.
-
-- **Transformação e Carga (ETL):**  
-  O pipeline ETL é orquestrado com Prefect e utiliza Apache Beam para transformar os dados de forma paralela. Os dados são validados, normalizados e carregados no PostgreSQL utilizando inserções em massa via comando COPY.
-
-- **Observabilidade e Monitoramento:**  
-  Implementa logging estruturado (em formato JSON) com a biblioteca `python-json-logger`, facilitando a centralização dos logs via ELK ou Loki. Além disso, o sistema coleta métricas de execução do ETL, latência e utilização de recursos com Prometheus.
-
-- **Infraestrutura e Orquestração:**  
-  A aplicação é empacotada em containers Docker utilizando multi-stage build para otimização. O ambiente pode ser executado localmente com Docker Compose e, em produção, os manifests Kubernetes (incluindo ConfigMaps, Deployments, Services e HPAs) gerenciam o ambiente escalável.
+Uma solução **completa** para integrar dados do **Pipedrive** com o **Metabase** por meio de um pipeline **ETL** orquestrado pelo **Prefect** e implantado em **Kubernetes**.  
+Este projeto extrai dados de **deals** do Pipedrive, realiza **transformações** e **validações**, carrega as informações em um banco **PostgreSQL** e oferece **monitoramento**, **logging** estruturado, além de utilizar **cache com Redis** para garantir desempenho e resiliência.
 
 ---
 
-## Arquitetura do Projeto
+## Sumário
 
-A estrutura do projeto está organizada em camadas para garantir a separação de responsabilidades:
-
-- **infrastructure:**  
-  Contém as configurações e implementações para acesso a bancos de dados, cache (Redis), logging, monitoramento e clientes de API externos (Pipedrive).
-
-- **application:**  
-  Inclui casos de uso, serviços (como o ETLService), utilitários de transformação de dados e interfaces para integração com repositórios e APIs.
-
-- **core_domain:**  
-  Define os conceitos de domínio, entidades, eventos e objetos de valor, isolando a lógica de negócio principal.
-
-- **flows:**  
-  Contém os fluxos de orquestração (Prefect) para a execução do pipeline ETL, bem como scripts de deploy.
-
-- **tests:**  
-  Possui os testes unitários e de integração para garantir a qualidade e confiabilidade do sistema.
-
-- **Outros Arquivos:**  
-  Arquivos de configuração como `pyproject.toml`, `Dockerfile`, `docker-compose.yml` e os manifests do Kubernetes (`pipedrive_metabase_integration.yaml`, `observability-config.yaml`).
+1. [Objetivo do Projeto](#objetivo-do-projeto)  
+2. [Visão Geral do Fluxo e Arquitetura](#visão-geral-do-fluxo-e-arquitetura)  
+3. [Requisitos Mínimos](#requisitos-mínimos)  
+4. [Como Executar no Kubernetes](#como-executar-no-kubernetes)  
+5. [Variáveis de Ambiente e Configuração](#variáveis-de-ambiente-e-configuração)  
+6. [Observabilidade e Monitoramento](#observabilidade-e-monitoramento)  
+7. [Seção Técnica: Pontos Fortes e Otimizações](#seção-técnica-pontos-fortes-e-otimizações)  
+8. [Estrutura do Projeto](#estrutura-do-projeto)  
+9. [Considerações sobre Alteração de Portas no PostgreSQL](#considerações-sobre-alteração-de-portas-no-postgresql)  
+10. [Contato](#contato)
 
 ---
 
-## Pré-requisitos
+## Objetivo do Projeto
 
-- **Docker & Docker Compose:**  
-  Para build e execução local dos containers.
-
-- **Kubernetes:**  
-  Um cluster Kubernetes (por exemplo, Minikube, Kind ou ambiente de produção) para deploy escalável.
-
-- **Redis:**  
-  Serviço de cache (já incluído no `docker-compose.yml`).
-
-- **PostgreSQL:**  
-  Banco de dados para armazenamento dos dados.  
-  **Observação:**  
-  Por padrão, a imagem oficial do PostgreSQL escuta na porta 5432. Se for necessário rodar dois bancos simultaneamente (por exemplo, um na porta 5432 e outro na 5433), é preciso **alterar a configuração do container**. Basta definir a porta desejada (por exemplo, com a variável de ambiente `PGPORT` ou alterando o comando de inicialização para `postgres -p 5433`) e atualizar as referências nos manifests (readiness probes, service, etc.). Apenas mudar o `containerPort` e a porta do service não altera a porta interna em que o PostgreSQL está escutando, o que pode impedir o rollout do deployment.
-
-- **Prefect:**  
-  Para orquestração dos fluxos ETL.
-
-- **Variáveis de Ambiente:**  
-  Configure as variáveis de ambiente necessárias em um arquivo `.env` na raiz do projeto.
+- **Centralizar dados** do Pipedrive em um banco PostgreSQL para análises, dashboards e relatórios no Metabase.  
+- **Automatizar** a extração, transformação e carga (ETL) dos dados em **pipeline** único, escalável em Kubernetes.  
+- **Viabilizar** um fluxo incremental de atualização, carregando apenas dados novos ou modificados.  
+- **Prover** **observabilidade** (logs e métricas) para fácil **monitoramento** e **debug** do pipeline.  
+- **Orquestrar** as execuções com Prefect, facilitando o agendamento, rastreabilidade e escalabilidade dentro do cluster.
 
 ---
 
-## Instalação
+## Visão Geral do Fluxo e Arquitetura
 
-1. **Clone o repositório:**
+1. **Extração de Dados (Extract):**  
+   - Conecta-se à **API do Pipedrive** para buscar deals de maneira incremental (com `updated_since`).  
+   - Utiliza **retentativas automáticas** (Tenacity) e **circuit breaker** para robustez.  
+   - Armazena o último timestamp no **Redis** para evitar leituras redundantes e otimizar chamadas à API.
 
+2. **Transformação (Transform):**  
+   - Dados validados com **Pydantic** (`DealSchema`).  
+   - Normalizações de datas, valores monetários, nomes de usuários, pipelines e campos customizados.  
+   - Utiliza **Pandas** para manipulação em lote, aproveitando vetorização e alto desempenho.
+
+3. **Carga (Load):**  
+   - Realiza **upsert** em lote (bulk) no PostgreSQL usando uma tabela de _staging_ temporária (COPY), reduzindo tempo de escrita.  
+   - Ao final, atualiza o “último timestamp processado” no Redis, para a próxima execução pegar apenas o que mudou.
+
+4. **Observabilidade:**  
+   - **Logs estruturados** (JSON) integráveis a ELK/Loki.  
+   - **Métricas Prometheus** para acompanhar tempo de execução, uso de memória, tamanho de lote, etc.  
+   - **Grafana** e **Metabase** para dashboards e visualizações.
+
+---
+
+## Requisitos Mínimos
+
+Para utilizar e implantar o projeto em Kubernetes, é necessário ter instalados localmente (ou em seu ambiente de CI/CD):
+
+1. **Docker** – Necessário para build das imagens.  
+2. **kubectl** – Ferramenta de linha de comando para interação com o cluster Kubernetes.  
+3. **minikube** (ou outro cluster Kubernetes) – Para executar o ambiente local de desenvolvimento/testes.  
+4. **curl** / **bash** – O script de implantação (`run_project.sh`) utiliza `curl` e funcionalidades de shell (bash).  
+5. **Recursos de Hardware** – Recomenda-se:  
+   - **2 CPUs** e **8GB de RAM** para rodar localmente via Minikube sem problemas de desempenho.  
+   - Espaço em disco suficiente para persistir dados em volumes (PostgreSQL, Redis, etc.).
+
+> Observação: Você também pode usar **Kind**, **k3s** ou outro cluster Kubernetes semelhante. Basta ajustar as configurações de rede e storage de acordo.
+
+---
+
+## Como Executar no Kubernetes
+
+### Passo a Passo
+
+1. **Clonar o repositório e entrar na pasta:**
    ```bash
    git clone https://github.com/seu_usuario/pipedrive_metabase_integration.git
    cd pipedrive_metabase_integration
    ```
 
-2. **Configure o arquivo .env:**  
-   Edite o arquivo `.env` com suas configurações de banco de dados, chave do Pipedrive, Prefect, etc.
+2. **Configurar as variáveis de ambiente (.env):**  
+   Crie ou edite o arquivo `.env` com suas credenciais do PostgreSQL, Redis e `PIPEDRIVE_API_KEY`.  
+   - Você também pode criar secrets no Kubernetes via `kubectl create secret ...`, conforme os exemplos do manifesto (`db-secrets.yaml`, `app-secrets`, etc.).
 
-3. **Instale as dependências (opcional, para execução local via Poetry):**
-
-   ```bash
-   poetry install
-   ```
-
----
-
-## Execução Local
-
-### Usando Docker Compose
-
-1. **Suba os containers:**
-
-   ```bash
-   docker compose up --build -d
-   ```
-
-2. **Verifique os logs e o status dos containers:**
-
-   ```bash
-   docker compose logs -f
-   docker compose ps
-   ```
-
-### Usando o Script de Deploy
-
-O script **run_project.sh** orquestra o ambiente completo, incluindo o reset de recursos no Kubernetes e o build dos containers sem usar cache.
-
-#### Para forçar a reconstrução sem cache, o script utiliza:
-
-```bash
-docker build --no-cache -t pipedrive_metabase_integration-etl:latest .
-docker build --no-cache -t pipedrive_metabase_integration-prefect-orion:latest ./infrastructure/prefect/orion
-docker build --no-cache -t pipedrive_metabase_integration-metrics:latest .
-```
-
-Além disso, para limpar imagens e caches não utilizados, você pode executar:
-
-```bash
-docker system prune -a --volumes
-```
-
-#### Como usar o script:
-
-1. Dê permissão de execução:
-
+3. **Executar o script de deploy (`run_project.sh`):**  
    ```bash
    chmod +x run_project.sh
-   ```
+   ./run_project.sh
+   ```  
+   Este script fará:
+   - **start** do Minikube (se não estiver rodando)  
+   - build das imagens Docker  
+   - aplicação dos manifests Kubernetes (Services, Deployments, Jobs, etc.)  
+   - configuração de *port-forwards* para você acessar localmente o **Prefect Orion**, **PostgreSQL**, **Metabase**, **Grafana**, etc.
 
-2. Para reiniciar o ambiente (parar tudo e depois iniciar):
-
+4. **Verificar o rollout de todos os deployments:**  
+   O script já aguarda o rollout. Caso queira checar manualmente:  
    ```bash
-   ./run_project.sh stop && ./run_project.sh start
+   kubectl get pods
+   kubectl get deployments
    ```
 
-   *Observação:* Se você não quiser que o script utilize um _trap_ para encerrar os port-forwards (o que pode impedir o acesso contínuo ao Orion ou ao banco), remova ou comente a linha com o `trap`.
+5. **Executar o Job ETL:**  
+   O manifesto `pipedrive_metabase_integration.yaml` já inclui um Job `etl`. Ele pode rodar automaticamente ou você pode acionar manualmente:  
+   ```bash
+   kubectl create job --from=cronjob/etl ...
+   ```  
+   (ou conforme suas necessidades; o script costuma rodar o job e aguardar a finalização).
+
+> Para **parar** tudo e remover os recursos, execute:  
+> ```bash
+> ./run_project.sh stop
+> ```  
+> Isso tentará deletar todos os deployments, services, jobs e secrets. Também encerrará o Minikube se estiver rodando localmente.
 
 ---
 
-## Deploy no Kubernetes
+## Variáveis de Ambiente e Configuração
 
-Os manifests Kubernetes para deploy, serviço e Horizontal Pod Autoscaler (HPA) estão definidos no arquivo `pipedrive_metabase_integration.yaml`.
+No arquivo `.env`, você pode definir:
 
-Para aplicá-los:
+- **PIPEDRIVE_API_KEY**: chave da API do Pipedrive.  
+- **POSTGRES_USER**, **POSTGRES_PASSWORD**, **POSTGRES_HOST**, **POSTGRES_DB**: credenciais e host do PostgreSQL.  
+- **REDIS_CONNECTION_STRING**: string de conexão do Redis (ex. `redis://redis:6379/0`).  
+- **APP_METRICS_PORT**: porta em que o servidor de métricas expõe `/metrics`.  
+- **OUTRAS VARIÁVEIS** relevantes ao seu ambiente, vistas em `settings.py` ou nos manifests de Kubernetes (`.yaml`).
 
-```bash
-kubectl apply -f pipedrive_metabase_integration.yaml
-```
-
-Também aplique o ConfigMap para observabilidade:
-
-```bash
-kubectl apply -f observability-config.yaml
-```
-
-### Exemplo de configuração do Deployment do PostgreSQL
-
-Se desejar rodar o PostgreSQL em uma porta diferente (por exemplo, 5433), **lembre-se de atualizar também o comando de inicialização do container**. Por exemplo, você pode alterar o manifest para:
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: db
-  labels:
-    app: db
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: db
-  template:
-    metadata:
-      labels:
-        app: db
-    spec:
-      containers:
-      - name: db
-        image: postgres:14
-        ports:
-        - containerPort: XXXX
-        env:
-        - name: POSTGRES_USER
-          valueFrom:
-            secretKeyRef:
-              name: db-secrets
-              key: POSTGRES_USER
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: db-secrets
-              key: POSTGRES_PASSWORD
-        - name: POSTGRES_DB
-          valueFrom:
-            secretKeyRef:
-              name: db-secrets
-              key: POSTGRES_DB
-        command: ["postgres", "-p", "XXXX"]
-        volumeMounts:
-        - name: pgdata
-          mountPath: /var/lib/postgresql/data
-        readinessProbe:
-          tcpSocket:
-            port: XXXX
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          tcpSocket:
-            port: XXXX
-          initialDelaySeconds: 10
-          periodSeconds: 20
-      volumes:
-      - name: pgdata
-        persistentVolumeClaim:
-          claimName: pgdata-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: db
-spec:
-  selector:
-    app: db
-  ports:
-    - protocol: TCP
-      port: XXXX
-      targetPort: XXXX
-```
-
-> **Importante:** Alterar somente o `containerPort` ou o `service` sem atualizar o comando de inicialização **não fará o PostgreSQL escutar na nova porta**, o que fará com que o rollout nunca seja concluído, pois as sondas (readiness/liveness) não conseguirão se conectar.
+> Os secrets relacionados ao DB podem ser armazenados em `db-secrets.yaml`; basta atualizar as chaves. O script `run_project.sh` também cria secrets a partir de `.env` quando executado.
 
 ---
 
 ## Observabilidade e Monitoramento
 
-- **Logging Estruturado:**  
-  O módulo `infrastructure/logging_config.py` configura logs em formato JSON, permitindo a integração com ferramentas como ELK ou Loki.
+1. **Logging Estruturado (JSON):**  
+   - Converte logs para JSON (via [python-json-logger](https://github.com/madzak/python-json-logger)).  
+   - Fácil integração com ELK/Loki para centralizar logs.
 
-- **Métricas:**  
-  As métricas do ETL, como contadores de execuções, falhas e latência, estão definidas em `infrastructure/monitoring/metrics.py`. O servidor de métricas é iniciado via `infrastructure/monitoring/metrics_server.py`.
+2. **Métricas Prometheus:**  
+   - Coleta métricas de latência, contagem de falhas e tamanho de lote do ETL, entre outras.  
+   - Expostas por padrão na porta `8082` (endpoint `/metrics`).  
+   - O `metrics_server.py` gerencia a publicação dessas métricas.
 
-- **Monitoramento via Prometheus:**  
-  As métricas são expostas em `/metrics` e podem ser coletadas pelo Prometheus.
+3. **Grafana e Metabase:**  
+   - **Grafana** conecta-se ao Prometheus para dashboards de monitoramento.  
+   - **Metabase** conecta-se ao PostgreSQL para dashboards de dados de vendas, funil, previsões etc.
+
+4. **Prefect Orion:**  
+   - Interface de orquestração para o ETL.  
+   - Geralmente acessível em `http://localhost:4200` quando rodando via port-forward.
+
+---
+
+## Seção Técnica: Pontos Fortes e Otimizações
+
+1. **Upsert Otimizado (PostgreSQL) com COPY + Tabela de Staging:**  
+   - Os dados são copiados para uma **tabela temporária** via `COPY FROM STDIN`, muito mais rápido do que inserts individuais.  
+   - Ao final, usa `ON CONFLICT (id) DO UPDATE` para conciliar as atualizações.
+
+2. **Uso de Pandas para Batches de Transformação:**  
+   - O `ETLService` transforma dados em lote (batch) com Pandas, reduzindo overhead de loops.  
+   - Validações e conversões (datas, floats, etc.) são feitas de forma vetorizada.
+
+3. **Incrementalidade e Cache (Redis):**  
+   - Busca somente dados novos/alterados (`updated_since`).  
+   - Armazena o timestamp incremental no Redis, economizando chamadas na API do Pipedrive.
+
+4. **Campos Customizados Dinâmicos:**  
+   - O pipeline descobre campos customizados (`dealFields`) e os converte em colunas normalizadas no PostgreSQL.  
+   - Permite adaptação a variações de cada instância do Pipedrive.
+
+5. **Retentativas (Tenacity) e Circuit Breaker:**  
+   - Lida com oscilações na rede e na API.  
+   - Evita repetir falhas continuamente graças ao **Circuit Breaker** (pybreaker).
+
+6. **Métricas Granulares e Logging Estruturado:**  
+   - Facilita a **observabilidade** e **depuração** de problemas.  
+   - Integra-se rapidamente a painéis de análise e alerta.
 
 ---
 
 ## Estrutura do Projeto
 
-```plaintext
+```
 pipedrive_metabase_integration/
 ├── Dockerfile
-├── docker-compose.yml
-├── observability-config.yaml
-├── pipedrive_metabase_integration.yaml      # Manifests Kubernetes
-├── run_project.sh                           # Script de deploy completo
+├── pipedrive_metabase_integration.yaml    # Manifests principais do K8s
+├── run_project.sh                         # Script de deploy e controle
 ├── .env
-├── README.md
-├── pyproject.toml
 ├── infrastructure/
-│   ├── api_clients/
-│   │   ├── pipedrive_api_client.py
-│   │   └── __init__.py
-│   ├── cache.py
-│   ├── config/
-│   │   ├── settings.py
-│   │   └── __init__.py
-│   ├── db.py
-│   ├── db_pool.py
-│   ├── logging_config.py
 │   ├── monitoring/
 │   │   ├── metrics.py
-│   │   ├── metrics_server.py
-│   │   └── __init__.py
-│   ├── prefect/
-│   │   └── orion/
-│   │       └── Dockerfile
+│   │   └── metrics_server.py
+│   ├── api_clients/
+│   │   └── pipedrive_api_client.py
 │   ├── repository_impl/
-│   │   ├── pipedrive_repository.py
-│   │   └── __init__.py
-│   └── __init__.py
+│   │   └── pipedrive_repository.py
+│   ├── db_pool.py
+│   ├── cache.py
+│   └── ...
 ├── application/
+│   ├── services/
+│   │   └── etl_service.py
+│   ├── schemas/
+│   │   └── deal_schema.py
 │   ├── ports/
 │   │   ├── data_repository_port.py
-│   │   ├── pipedrive_client_port.py
-│   │   └── __init__.py
-│   ├── services/
-│   │   ├── etl_service.py
-│   │   └── __init__.py
-│   ├── use_cases/
-│   │   ├── process_pipedrive_data.py
-│   │   └── __init__.py
-│   ├── utils/
-│   │   ├── data_transform.py
-│   │   └── __init__.py
-│   └── __init__.py
+│   │   └── pipedrive_client_port.py
+│   └── utils/
+│       ├── replace_nan_with_none_recursive.py
+│       └── column_utils.py
 ├── flows/
-│   ├── deploy.py
-│   ├── pipedrive_metabase_etl.py
-│   └── __init__.py
+│   └── pipedrive_metabase_etl.py
 ├── core_domain/
-│   ├── entities/
-│   │   ├── pipedrive_entity.py
-│   │   └── __init__.py
-│   ├── events/
-│   │   ├── data_updated.py
-│   │   └── __init__.py
-│   ├── value_objects/
-│   │   ├── identifier.py
-│   │   └── __init__.py
-│   └── __init__.py
+│   └── ...
 └── tests/
-    ├── test_infrastructure.py
-    ├── test_use_cases.py
-    └── __init__.py
+    └── ...
 ```
 
 ---
 
-## Considerações Finais
+## Considerações sobre Alteração de Portas no PostgreSQL
 
-- **Cache no Build:**  
-  Para evitar o uso de camadas em cache durante a construção da imagem, o script utiliza o parâmetro `--no-cache` no comando `docker build`. Você também pode executar:
-  ```bash
-  docker system prune -a --volumes
-  ```
-  para remover imagens e caches não utilizados.
+Se você precisar rodar **dois** bancos PostgreSQL no mesmo cluster (por exemplo, um usando a porta **5432** e outro **5433**), deve-se:
 
-- **Port-Forward para Acesso Local:**  
-  O script de deploy inicia port-forwards para o Prefect Orion (na porta XXXX) e para o PostgreSQL (na porta definida – XXXX ou a nova porta que você configurar). Se desejar encerrar os port-forwards automaticamente ao sair, configure o _trap_ conforme necessário; caso contrário, remova-o para manter o acesso contínuo.
+1. Alterar o comando de inicialização do container para a nova porta:  
+   ```yaml
+   command: ["postgres", "-p", "5433"]
+   ```
+2. Ajustar as sondas (`readinessProbe`, `livenessProbe`) para a mesma porta:  
+   ```yaml
+   readinessProbe:
+     tcpSocket:
+       port: 5433
+   livenessProbe:
+     tcpSocket:
+       port: 5433
+   ```
+3. Atualizar o `Service` para expor corretamente a nova porta:  
+   ```yaml
+   ports:
+     - port: 5433
+       targetPort: 5433
+   ```
 
-- **Banco de Dados:**  
-  Se precisar rodar dois bancos (por exemplo, um em XXXX e outro em XXXX), certifique-se de que cada Deployment está configurado para forçar o PostgreSQL a escutar na porta desejada (utilizando variáveis de ambiente como `PGPORT` ou alterando o comando de inicialização) e que os serviços e sondas (readiness/liveness) são atualizados de acordo.
+Apenas mudar `containerPort` ou `service.port` **não** faz o PostgreSQL escutar internamente em outra porta. É preciso atualizar o binário para escutar na nova porta também.
 
 ---
 
 ## Contato
 
-Para dúvidas, sugestões ou problemas, abra uma issue ou entre em contato através do mrschrodingers@gmail.com ou o suprte da DEBT - Matheus Munhoz.
+- Para dúvidas, sugestões ou problemas, abra uma **issue** neste repositório.  
+- E-mail de suporte e feedback: **mrschrodingers@gmail.com** ou **suprte da DEBT - Matheus Munhoz**.
