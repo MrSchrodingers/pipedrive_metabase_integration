@@ -166,17 +166,6 @@ class ETLService:
                 custom_df = df.loc[df['custom_fields'].notna(), 'custom_fields'].apply(extract_custom)
                 transformed_df = pd.concat([transformed_df, custom_df], axis=1)
 
-
-            # --- Raw Data --- 
-            original_record_map = {rec['id']: rec for rec in valid_input_for_df if 'id' in rec}
-            try:
-                map_ids = transformed_df['id'].astype(int)
-            except ValueError:
-                map_ids = pd.to_numeric(transformed_df['id'], errors='coerce')
-                transform_log.warning("Non-numeric IDs found when mapping raw_data", invalid_ids=transformed_df.loc[map_ids.isna(), 'id'].tolist())
-                map_ids = map_ids.astype('Int64')
-            transformed_df['raw_data'] = map_ids.map(original_record_map)
-
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
             existing_cols_in_df = list(transformed_df.columns)
