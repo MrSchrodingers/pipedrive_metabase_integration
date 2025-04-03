@@ -11,9 +11,9 @@ declare -A IMAGES=(
     ["metrics"]="pipedrive_metabase_integration-metrics:latest"
 )
 
-RESOURCE_TIMEOUT=300
+RESOURCE_TIMEOUT=900 # 15 min
 MINIKUBE_CPUS=2
-MINIKUBE_MEMORY=8192
+MINIKUBE_MEMORY=8192 # 8GB
 MINIKUBE_DRIVER=docker
 CLEANUP_NAMESPACES="default,kube-system"
 
@@ -86,8 +86,7 @@ start_minikube() {
             --addons=metrics-server \
             --embed-certs=true \
             --extra-config=apiserver.service-account-signing-key-file=/var/lib/minikube/certs/sa.key \
-            --extra-config=apiserver.service-account-issuer=kubernetes/serviceaccount \
-            --extra-config=apiserver.service-account-api-audiences=api
+            --extra-config=apiserver.service-account-issuer=kubernetes/serviceaccount
     else
         log "info" "Minikube já está rodando. Reutilizando instância existente."
     fi
@@ -123,6 +122,7 @@ deploy_infra() {
     kubectl apply -f observability-config.yaml --server-side=true
     kubectl apply -f db-secrets.yaml
     kubectl apply -f persistent-volume-claim.yaml
+    kubectl apply -f prometheus.yml
     
     log "info" "Criando secret a partir do .env"
     kubectl create secret generic app-secrets \
@@ -135,28 +135,37 @@ deploy_infra() {
 }
 
 wait_for_rollout() {
-    local DEPLOYMENTS=("prefect-orion" "metrics" "redis" "db")
+    local DEPLOYMENTS=("prefect-orion" "metrics" "redis" "db" "grafana" "metabase")
     
     for dep in "${DEPLOYMENTS[@]}"; do
         log "info" "Aguardando rollout do deployment/${dep}..."
         kubectl rollout status "deployment/${dep}" \
             --timeout="${RESOURCE_TIMEOUT}s" \
-            --watch=true
+            --watch=true || fail "Timeout ou erro aguardando rollout do deployment/${dep}" 
     done
+    log "info" "Rollout de todos os deployments principais concluído."
 }
 
 setup_port_forwarding() {
     declare -A PORTS=(
         ["prefect-orion"]="4200"
         ["db"]="5432"
+        ["metabase"]="3000"
+        ["grafana"]="3015"
     )
-    
+
+    log "info" "Iniciando port-forward para os services..."
+
     for svc in "${!PORTS[@]}"; do
         local PORT="${PORTS[$svc]}"
+        log "warn" "Removendo port-fowards existentes para ${svc}..."
+        pkill -f "kubectl port-forward svc/${svc}" || true
         log "info" "Iniciando port-forward para ${svc} na porta ${PORT}"
         kubectl port-forward "svc/${svc}" "${PORT}:${PORT}" &
-        sleep 5
+        sleep 2
     done
+    log "info" "Aguardando alguns segundos para estabilizar os port-forwards..."
+    sleep 10
 }
 
 run_etl_job() {

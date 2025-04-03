@@ -1,0 +1,174 @@
+---
+# ======================================================================
+# Configuração do Prometheus
+# ======================================================================
+
+# --- 1. ConfigMap com prometheus.yml ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  labels:
+    app: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s # Intervalo padrão de coleta
+      evaluation_interval: 15s
+
+    scrape_configs:
+      # Coleta métricas do próprio Prometheus
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # Coleta métricas de serviços Kubernetes que possuem anotações específicas
+      - job_name: 'kubernetes-services'
+        kubernetes_sd_configs:
+          - role: service # Descobre serviços
+        relabel_configs:
+          # Seleciona apenas serviços com a anotação prometheus.io/scrape=true
+          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          # (Opcional) Usa a anotação prometheus.io/path se definida, senão usa /metrics
+          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Usa a anotação prometheus.io/port se definida, senão usa a porta do serviço
+          - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+          # Define o label 'job' como o nome do serviço
+          - source_labels: [__meta_kubernetes_service_name]
+            action: replace
+            target_label: job
+          # Define o label 'instance' como o IP:Porta do pod/endpoint
+          # (Pode ser mais útil mudar role para 'pod' ou 'endpoints' para ter labels de pod)
+          # Para simplificar, vamos manter o serviço por enquanto.
+          # - source_labels: [__address__]
+          #   action: replace
+          #   target_label: instance
+
+---
+# --- 2. RBAC: Service Account, ClusterRole, ClusterRoleBinding ---
+# (Necessário para o Prometheus descobrir serviços via API do Kubernetes)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-sa
+  labels:
+    app: prometheus
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-cr
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/metrics
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-cr
+subjects:
+- kind: ServiceAccount
+  name: prometheus-sa
+  namespace: default # Certifique-se que este é o namespace correto
+
+---
+# --- 3. PersistentVolumeClaim (Opcional, mas recomendado para dados) ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+  labels:
+    app: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce # Padrão para Minikube
+  resources:
+    requests:
+      storage: 8Gi # Ajuste o tamanho conforme necessário
+
+---
+# --- 4. Deployment do Prometheus Server ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-deployment
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus-sa
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest # Ou use uma versão específica
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus/"
+            - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+            - "--web.console.templates=/usr/share/prometheus/consoles"
+            - "--web.enable-lifecycle" # Permite recarregar config via API
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/prometheus/
+            - name: storage-volume
+              mountPath: /prometheus/
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-config
+        - name: storage-volume
+          persistentVolumeClaim:
+            claimName: prometheus-pvc # Vincula ao PVC criado
+
+---
+# --- 5. Service para expor o Prometheus internamente ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service # Nome usado para conectar o Grafana
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus # Seleciona os pods do Deployment 'prometheus-deployment'
+  ports:
+    - protocol: TCP
+      port: 9090        # Porta que o serviço expõe
+      targetPort: 9090  # Porta no container do Prometheus
+  type: ClusterIP # Apenas acesso interno ao cluster (suficiente para o Grafana)

@@ -22,10 +22,6 @@ def normalize_date(date_str: str) -> str:
     except Exception:
         return date_str
 
-
-def sanitize_column_name(name: str) -> str:
-    return re.sub(r'\W|^(?=\d)', '_', name.lower())
-
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, datetime):

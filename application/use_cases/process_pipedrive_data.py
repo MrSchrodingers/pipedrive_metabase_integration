@@ -1,12 +1,15 @@
-def process_pipedrive_data(etl_service):
+from application.services.etl_service import ETLService
+from typing import Dict
+
+def run_pipedrive_etl_use_case(etl_service: ETLService) -> Dict[str, object]:
     """
-    Caso de uso que processa os dados do Pipedrive utilizando o serviço ETL.
-    
-    Parâmetros:
-      etl_service (ETLService): instância do serviço de ETL.
-    
-    Retorna:
-      Dados transformados processados pelo ETL.
+    Use case that processes Pipedrive data using the ETL service.
+
+    Parameters:
+        etl_service (ETLService): instance of the ETL service.
+
+    Returns:
+        Dict: A dictionary containing the results of the ETL run.
     """
     result = etl_service.run_etl()
     return result
