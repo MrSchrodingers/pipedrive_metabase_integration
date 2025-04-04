@@ -22,6 +22,11 @@ data:
         static_configs:
           - targets: ['localhost:9090']
 
+      - job_name: 'pushgateway'
+        honor_labels: true # Importante para manter labels do job que fez o push
+        static_configs:
+          - targets: ['pushgateway:9091']
+
       # Coleta métricas de serviços Kubernetes que possuem anotações específicas
       - job_name: 'kubernetes-services'
         kubernetes_sd_configs:

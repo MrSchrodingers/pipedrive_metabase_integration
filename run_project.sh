@@ -11,7 +11,8 @@ declare -A IMAGES=(
     ["metrics"]="pipedrive_metabase_integration-metrics:latest"
 )
 
-RESOURCE_TIMEOUT=900 # 15 min
+RESOURCE_TIMEOUT=1800 # 30min
+MINUTES=$((RESOURCE_TIMEOUT / 60))
 MINIKUBE_CPUS=2
 MINIKUBE_MEMORY=8192 # 8GB
 MINIKUBE_DRIVER=docker
@@ -123,6 +124,7 @@ deploy_infra() {
     kubectl apply -f db-secrets.yaml
     kubectl apply -f persistent-volume-claim.yaml
     kubectl apply -f prometheus.yml
+    kubectl apply -f pushgateway.yaml
     
     log "info" "Criando secret a partir do .env"
     kubectl create secret generic app-secrets \
@@ -135,7 +137,7 @@ deploy_infra() {
 }
 
 wait_for_rollout() {
-    local DEPLOYMENTS=("prefect-orion" "metrics" "redis" "db" "grafana" "metabase")
+    local DEPLOYMENTS=("prefect-orion" "pushgateway" "prometheus-deployment" "metrics" "redis" "db" "grafana" "metabase")
     
     for dep in "${DEPLOYMENTS[@]}"; do
         log "info" "Aguardando rollout do deployment/${dep}..."
@@ -166,10 +168,16 @@ setup_port_forwarding() {
     done
     log "info" "Aguardando alguns segundos para estabilizar os port-forwards..."
     sleep 10
+    
+    log "info" "Port-forwards iniciados com sucesso."
+    for svc in "${!PORTS[@]}"; do
+        local PORT="${PORTS[$svc]}"
+        log "info" "[${svc}] Iniciado na porta ${PORT}, acesse: http://localhost:${PORT}"
+    done
 }
 
 run_etl_job() {
-    log "info" "Executando Job ETL com timeout de ${RESOURCE_TIMEOUT}s..."
+    log "info" "Executando Job ETL com timeout de ${RESOURCE_TIMEOUT}s (~${MINUTES} min)......"
     kubectl wait --for=condition=complete \
         --timeout="${RESOURCE_TIMEOUT}s" \
         job/etl

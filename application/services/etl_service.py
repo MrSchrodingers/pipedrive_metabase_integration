@@ -80,7 +80,7 @@ class ETLService:
             df = pd.DataFrame(valid_input_for_df)
             required_cols = [
                 col for col in REPO_BASE_COLUMNS
-                if col not in ['creator_user_name', 'owner_user_name', 'person_name', 'stage_name', 'pipeline_name', 'raw_data']
+                if col not in ['creator_user_name', 'person_name', 'stage_name', 'pipeline_name', 'raw_data']
             ]
             for col in required_cols:
                 if col not in df.columns:
@@ -92,6 +92,13 @@ class ETLService:
             transformed_df["id"] = df["id"].astype(str)
             transformed_df["titulo"] = df["title"].fillna("").astype(str)
             transformed_df["status"] = df["status"].fillna("").astype(str)
+            status_map = {
+                "won": "Ganho",
+                "lost": "Perdido",
+                "open": "Em aberto",
+                "deleted": "Deletado"
+            }
+            transformed_df["status"] = transformed_df["status"].map(status_map).fillna(transformed_df["status"])
             transformed_df["currency"] = df["currency"].fillna("USD").astype(str)
             transformed_df["value"] = pd.to_numeric(df["value"], errors='coerce').fillna(0.0)
             transformed_df["add_time"] = pd.to_datetime(df["add_time"], errors='coerce', utc=True)
@@ -100,9 +107,6 @@ class ETLService:
             # --- Mapeamento de Nomes (Users, Stages, Pipelines) ---
             transformed_df["creator_user_id"] = pd.to_numeric(df["creator_user_id"], errors='coerce').astype('Int64')
             transformed_df['creator_user_name'] = transformed_df['creator_user_id'].map(user_map).fillna(UNKNOWN_NAME)
-
-            transformed_df["user_id"] = pd.to_numeric(df["user_id"], errors='coerce').astype('Int64') # Owner ID
-            transformed_df['owner_user_name'] = transformed_df['user_id'].map(user_map).fillna(UNKNOWN_NAME)
 
             transformed_df["stage_id"] = pd.to_numeric(df["stage_id"], errors='coerce').astype('Int64')
             transformed_df['stage_name'] = transformed_df['stage_id'].map(stage_map).fillna(UNKNOWN_NAME)

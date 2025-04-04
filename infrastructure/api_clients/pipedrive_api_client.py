@@ -2,9 +2,10 @@ import time
 import requests
 import structlog
 import re
+import math
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from pybreaker import CircuitBreaker
-from typing import Dict, List, Optional, Generator, Any, Set
+from typing import Dict, List, Optional, Generator, Any, Set, Tuple
 
 from infrastructure.config.settings import settings
 from infrastructure.cache import RedisCache
@@ -29,6 +30,8 @@ class PipedriveAPIClient(PipedriveClientPort):
     DEFAULT_TIMEOUT = 30
     DEFAULT_V2_LIMIT = 500
     MAX_V1_PAGINATION_LIMIT = 500
+    PERSON_BATCH_SIZE = 100
+    
     # TTL para mapas e lookups individuais
     DEFAULT_MAP_CACHE_TTL_SECONDS = 3600 * 12
     # TTL menor para lookups individuais de person
@@ -37,13 +40,11 @@ class PipedriveAPIClient(PipedriveClientPort):
     ENDPOINT_COSTS = {
         '/deals': 10,              # GET /api/v2/deals
         '/dealFields': 20,         # GET /v1/dealFields
-        '/persons': 10,            # GET /api/v2/persons
-        '/persons/detail': 1,      # GET /api/v2/persons/{id}
+        '/persons/detail': 1,     # Custo para GET /v1|v2/persons/{id} (detalhe)
+        '/persons': 10,           # Custo para GET /api/v2/persons (lista/lote por IDs)
         '/stages': 5,              # GET /api/v2/stages
-        '/stages/detail': 1,       # GET /api/v2/stages/{id}
         '/pipelines': 5,           # GET /api/v2/pipelines
         '/users': 20,              # GET /v1/users
-        '/users/detail': 2,        # GET /v1/users/{id}
     }
     DEFAULT_ENDPOINT_COST = 1 
 
@@ -60,15 +61,30 @@ class PipedriveAPIClient(PipedriveClientPort):
         
     def _normalize_endpoint_for_metrics(self, url_path: str) -> str:
         """Normaliza o path da URL para usar como label na métrica, tratando IDs."""
-        path = url_path.replace(self.BASE_URL_V1, '').replace(self.BASE_URL_V2, '')
-        path = path.split('?')[0].strip('/')
+        base_url_v1_len = len(self.BASE_URL_V1)
+        base_url_v2_len = len(self.BASE_URL_V2)
 
-        normalized_path = re.sub(r'/(\d+)$', '/detail', path)
+        if url_path.startswith(self.BASE_URL_V1):
+            path = url_path[base_url_v1_len:]
+        elif url_path.startswith(self.BASE_URL_V2):
+            path = url_path[base_url_v2_len:]
+        else:
+            path = url_path
 
-        if not normalized_path.startswith('/'):
-            normalized_path = '/' + normalized_path
+        path = path.split('?')[0].strip('/') 
+
+        parts = path.split('/')
+        if not parts or not parts[0]:
+             return "/"
+
+        resource = parts[0]
+        normalized_path = f"/{resource}"
+
+        if len(parts) > 1 and parts[1].isdigit():
+            normalized_path += "/detail"
 
         return normalized_path
+
 
     @api_breaker
     @retry(
@@ -78,55 +94,57 @@ class PipedriveAPIClient(PipedriveClientPort):
             retry_if_exception_type(requests.exceptions.Timeout) |
             retry_if_exception_type(requests.exceptions.ConnectionError) |
             retry_if_exception_type(requests.exceptions.ChunkedEncodingError) |
-            retry_if_exception_type(requests.exceptions.HTTPError)
+            retry_if_exception_type(lambda e: isinstance(e, requests.exceptions.HTTPError) and e.response.status_code >= 500) |
+            retry_if_exception_type(lambda e: isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 429) 
         ),
         reraise=True
     )
     def _get(self, url: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
         """Faz uma requisição GET com retry, timeout, circuit breaker e métricas."""
-        effective_params = params or {}
+        effective_params = params.copy() if params else {} 
         if "api_token" not in effective_params:
-             effective_params["api_token"] = self.api_key
+              effective_params["api_token"] = self.api_key
 
         start_time = time.monotonic()
-        error_type = "unknown"; status_code = None; response = None
+        error_type = "success"; status_code = None; response = None
         log_params = {k:v for k,v in effective_params.items() if k != 'api_token'}
-        
-        raw_endpoint_path = url.split('?')[0]
+
+        raw_endpoint_path = url
         normalized_endpoint_label = self._normalize_endpoint_for_metrics(raw_endpoint_path)
-        
-        endpoint_name = url.split('?')[0]
-        if self.BASE_URL_V1 in endpoint_name:
-             endpoint_name = endpoint_name.split(self.BASE_URL_V1)[-1]
-        elif self.BASE_URL_V2 in endpoint_name:
-            endpoint_name = endpoint_name.split(self.BASE_URL_V2)[-1]
-        endpoint_name = endpoint_name.strip('/')
 
         request_log = self.log.bind(endpoint=normalized_endpoint_label, method='GET', params=log_params)
 
         try:
-            request_log.debug("Making API GET request") 
+            request_log.debug("Making API GET request", url=url) 
 
             response = self.session.get(url, params=effective_params, timeout=self.DEFAULT_TIMEOUT)
             status_code = response.status_code
 
-            if 400 <= status_code < 500 and status_code != 429:
-                # Não tentar novamente erros 4xx (exceto 429)
-                response.raise_for_status() 
-            elif status_code >= 500 or status_code == 429:
-                # Tentar novamente erros 5xx ou 429
-                 response.raise_for_status()
+            if not response.ok:
+                error_type = f"http_{status_code}"
+                try:
+                     response.raise_for_status()
+                except requests.exceptions.HTTPError as e:
+                     response_text_snippet = e.response.text[:200] if e.response else "N/A"
+                     log_method = request_log.error if status_code >= 500 else request_log.warning
+                     log_method("API request failed with HTTP error", status_code=status_code, response_text=response_text_snippet, error=str(e))
+                     raise e 
 
-            if 200 <= status_code < 300:
-                cost = self.ENDPOINT_COSTS.get(normalized_endpoint_label, self.DEFAULT_ENDPOINT_COST)
-                if cost > 0:
-                    pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(cost)
-                    request_log.debug("API Token cost incremented", cost=cost)
-                elif normalized_endpoint_label not in self.ENDPOINT_COSTS:
-                     request_log.warning("API endpoint cost not defined, using default.", endpoint_called=raw_endpoint_path, normalized_endpoint=normalized_endpoint_label, default_cost=self.DEFAULT_ENDPOINT_COST)
-                     if self.DEFAULT_ENDPOINT_COST > 0:
-                           pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(self.DEFAULT_ENDPOINT_COST)
-    
+            # --- Processamento de sucesso (2xx) ---
+            cost = self.ENDPOINT_COSTS.get(normalized_endpoint_label, self.DEFAULT_ENDPOINT_COST)
+            request_log.debug(
+                 "Attempting to increment API token cost for successful request",
+                 cost=cost,
+                 raw_endpoint=raw_endpoint_path
+            )
+            if cost > 0:
+                pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(cost)
+                request_log.debug("API Token cost incremented", cost=cost)
+            elif normalized_endpoint_label not in self.ENDPOINT_COSTS:
+                 request_log.warning("API endpoint cost not defined, using default.", endpoint_called=raw_endpoint_path, default_cost=self.DEFAULT_ENDPOINT_COST)
+                 if self.DEFAULT_ENDPOINT_COST > 0:
+                       pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(self.DEFAULT_ENDPOINT_COST)
+
             duration = time.monotonic() - start_time
             api_request_duration_hist.labels(endpoint=normalized_endpoint_label, method='GET', status_code=status_code).observe(duration)
             request_log.debug("API GET request successful", status_code=status_code, duration_sec=f"{duration:.3f}s")
@@ -136,18 +154,17 @@ class PipedriveAPIClient(PipedriveClientPort):
              error_type = "timeout"; request_log.warning("API request timed out", error=str(e)); raise
         except requests.exceptions.ConnectionError as e:
              error_type = "connection_error"; request_log.warning("API connection error", error=str(e)); raise
-        except requests.exceptions.HTTPError as e:
-             error_type = "http_error"
-             response_text_snippet = e.response.text[:200] if e.response else "N/A"
-             log_method = request_log.error if status_code and status_code >= 500 else request_log.warning
-             log_method("API request failed with HTTP error", status_code=status_code, response_text=response_text_snippet, error=str(e))
-             raise
         except requests.exceptions.RequestException as e:
-             error_type = "request_exception"; request_log.error("API request failed (RequestException)", error=str(e), exc_info=True); raise
+             error_type = "request_exception"
+             request_log.error("API request failed (RequestException)", error=str(e), exc_info=True)
+             if hasattr(e, 'response') and e.response is not None:
+                 status_code = e.response.status_code
+             raise
         finally:
-             if error_type != "unknown" or (status_code and not 200 <= status_code < 300):
+             if error_type != "success":
                  final_status_code = status_code if status_code else 'N/A'
                  api_errors_counter.labels(endpoint=normalized_endpoint_label, error_type=error_type, status_code=final_status_code).inc()
+                 request_log.debug("API Error counter incremented", error_type=error_type, status_code=final_status_code)
 
 
     def _fetch_paginated_v1(self, url: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
@@ -182,7 +199,7 @@ class PipedriveAPIClient(PipedriveClientPort):
         """Helper para buscar todos os itens de um endpoint V2 paginado (cursor)."""
         all_data = []; next_cursor: Optional[str] = None
         base_params = params or {}; base_params["limit"] = self.DEFAULT_V2_LIMIT
-        endpoint_name = url.split(self.BASE_URL_V2)[-1] if self.BASE_URL_V2 in url else url
+        normalized_endpoint_label = self._normalize_endpoint_for_metrics(url)
         page_num = 0
 
         while True:
@@ -190,7 +207,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             current_params = base_params.copy()
             if next_cursor: current_params["cursor"] = next_cursor
             elif "cursor" in current_params: del current_params["cursor"]
-            page_log = self.log.bind(endpoint=endpoint_name, page=page_num, limit=current_params["limit"], cursor=next_cursor)
+            page_log = self.log.bind(endpoint=normalized_endpoint_label, page=page_num, limit=current_params["limit"], cursor=next_cursor)
             page_log.debug("Fetching V2 page")
             try:
                 response = self._get(url, params=current_params); json_response = response.json()
@@ -201,7 +218,7 @@ class PipedriveAPIClient(PipedriveClientPort):
                 additional_data = json_response.get("additional_data", {}); next_cursor = additional_data.get("next_cursor") 
                 if not next_cursor: page_log.debug("No 'next_cursor' found. Ending pagination."); break
             except Exception as e: page_log.error("Error during V2 fetching page", error=str(e), exc_info=True); break 
-        self.log.info(f"V2 Paginated fetch complete.", endpoint=endpoint_name, total_items=len(all_data), total_pages=page_num)
+        self.log.info(f"V2 Paginated fetch complete.", endpoint=normalized_endpoint_label, total_items=len(all_data), total_pages=page_num)
         return all_data
 
     # --- Métodos de busca de mapas ---
@@ -265,7 +282,7 @@ class PipedriveAPIClient(PipedriveClientPort):
              person_log.error("Failed to get person name from cache", error=str(cache_get_err))
 
         person_log.info("Person name cache miss, fetching from API.", cache_hit=False)
-        url = f"{self.BASE_URL_V1}/persons/{person_id}"
+        url = f"{self.BASE_URL_V2}/persons/{person_id}"
         try:
             response = self._get(url)
             if response.status_code == 200:
@@ -302,68 +319,136 @@ class PipedriveAPIClient(PipedriveClientPort):
 
     def fetch_person_names_for_ids(self, person_ids: Set[int]) -> Dict[int, str]:
         """
-        Busca nomes para um conjunto de IDs de persons, priorizando cache.
-        NOTA: Atualmente faz chamadas individuais à API para cache misses.
-              O ideal seria usar um endpoint de busca em lote da API se disponível.
+        Busca nomes para um conjunto de IDs de persons, usando cache e API em lote V2.
+        Retorna um dicionário apenas com os IDs encontrados (no cache ou API).
+        IDs não encontrados (seja por cache miss seguido de 404 ou falha na API)
+        serão cacheados como '' mas não incluídos no dict retornado.
         """
         if not person_ids:
             return {}
 
+        # Filtrar IDs inválidos
+        valid_person_ids = {p_id for p_id in person_ids if p_id > 0}
+        if not valid_person_ids:
+            self.log.warning("No valid person IDs provided after filtering.", original_count=len(person_ids))
+            return {}
+
         names_map: Dict[int, str] = {}
         ids_to_fetch_from_api: Set[int] = set()
-        fetch_log = self.log.bind(total_ids_requested=len(person_ids))
-        fetch_log.debug("Starting fetch for multiple person names.")
+        fetch_log = self.log.bind(total_ids_requested=len(valid_person_ids))
+        fetch_log.debug("Starting fetch for multiple person names (batch V2 strategy).")
 
         # 1. Tentar buscar do cache
-        cache_check_start = time.monotonic()
+        cache_check_start_time = time.monotonic()
         cached_count = 0
-        cache_fail_count = 0
-        for p_id in person_ids:
-             if not isinstance(p_id, int) or p_id <= 0: continue 
-             cache_key = f"pipedrive:person_name:{p_id}"
-             try:
-                 cached_name = self.cache.get(cache_key)
-                 if cached_name is not None:
-                     names_map[p_id] = str(cached_name) 
-                     cached_count += 1
-                 else:
-                     ids_to_fetch_from_api.add(p_id)
-             except Exception as cache_err:
-                 self.log.error("Cache GET error during batch person lookup", person_id=p_id, error=str(cache_err))
-                 ids_to_fetch_from_api.add(p_id) 
-                 cache_fail_count += 1
+        cache_error_count = 0
+        for p_id in valid_person_ids:
+            cache_key = f"pipedrive:person_name:{p_id}"
+            try:
+                cached_value = self.cache.get(cache_key)
+                if cached_value is not None:
+                    if cached_value: 
+                        names_map[p_id] = str(cached_value)
+                    cached_count += 1
+                    self.log.debug("Person name cache hit.", person_id=p_id, cached_value=cached_value)
+                else:
+                    ids_to_fetch_from_api.add(p_id)
+            except Exception as cache_err:
+                self.log.error("Cache GET error during batch person lookup", person_id=p_id, error=str(cache_err))
+                ids_to_fetch_from_api.add(p_id)
+                cache_error_count += 1
 
-        cache_check_duration = time.monotonic() - cache_check_start
+        cache_check_duration = time.monotonic() - cache_check_start_time
         fetch_log.info(
             "Person names cache check completed.",
             cache_hits=cached_count,
             cache_misses=len(ids_to_fetch_from_api),
-            cache_errors=cache_fail_count,
+            cache_errors=cache_error_count,
             duration_sec=f"{cache_check_duration:.3f}s"
         )
 
-        # 2. Buscar IDs restantes da API
+        # 2. Buscar IDs restantes da API em lotes
         if ids_to_fetch_from_api:
-            api_fetch_start = time.monotonic()
-            api_fetched_count = 0
-            api_fail_count = 0
-            fetch_log.info(f"Fetching {len(ids_to_fetch_from_api)} person names from API.")
-            for p_id in ids_to_fetch_from_api:
-                # Reutiliza a lógica de fetch_person_name que já inclui retry e cache set
-                name = self.fetch_person_name(p_id)
-                if name is not None: # Mesmo se for '', considera sucesso
-                     names_map[p_id] = name
-                     api_fetched_count += 1
-                else:
-                     api_fail_count += 1
+            api_fetch_start_time = time.monotonic()
+            api_found_count = 0
+            api_not_found_count = 0
+            api_batch_error_count = 0
+            processed_in_api_count = 0
 
-            api_fetch_duration = time.monotonic() - api_fetch_start
+            list_ids_to_fetch = sorted(list(ids_to_fetch_from_api)) 
+            total_batches = math.ceil(len(list_ids_to_fetch) / self.PERSON_BATCH_SIZE)
+            fetch_log.info(f"Fetching {len(list_ids_to_fetch)} person names from API in {total_batches} batches.")
+
+            for i in range(0, len(list_ids_to_fetch), self.PERSON_BATCH_SIZE):
+                current_batch_ids_list = list_ids_to_fetch[i:i + self.PERSON_BATCH_SIZE]
+                current_batch_ids_set = set(current_batch_ids_list)
+                processed_in_api_count += len(current_batch_ids_list)
+                batch_num = (i // self.PERSON_BATCH_SIZE) + 1
+                batch_log = fetch_log.bind(batch_num=batch_num, batch_size=len(current_batch_ids_list), total_batches=total_batches)
+
+                id_string = ",".join(map(str, current_batch_ids_list))
+                url = f"{self.BASE_URL_V2}/persons"
+                params = {"ids": id_string, "limit": len(current_batch_ids_list)}
+
+                batch_log.debug("Making batch API call for person names.")
+                try:
+                    response = self._get(url, params=params)
+                    json_response = response.json() 
+
+                    if not json_response or not json_response.get("success"):
+                        batch_log.warning("Batch person fetch API response indicates failure or empty data.", response_preview=str(json_response)[:200])
+                        api_batch_error_count += len(current_batch_ids_list)
+                        for failed_id in current_batch_ids_list:
+                             self.cache.set(f"pipedrive:person_name:{failed_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                        continue
+
+                    fetched_persons_data = json_response.get("data", [])
+                    returned_ids_set = set()
+
+                    if fetched_persons_data:
+                         for person_data in fetched_persons_data:
+                              p_id = person_data.get("id")
+                              name = person_data.get("name")
+                              if isinstance(p_id, int):
+                                   returned_ids_set.add(p_id)
+                                   person_name_str = str(name) if name else ''
+                                   if person_name_str:
+                                        names_map[p_id] = person_name_str
+                                        self.cache.set(f"pipedrive:person_name:{p_id}", person_name_str, ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                                        api_found_count += 1
+                                   else:
+                                        self.cache.set(f"pipedrive:person_name:{p_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                                        batch_log.debug("Person ID returned in batch but name is missing or empty.", person_id=p_id)
+
+                    # Identificar IDs que foram pedidos mas não retornados (não existem ou não visíveis)
+                    missing_in_response_ids = current_batch_ids_set - returned_ids_set
+                    if missing_in_response_ids:
+                        batch_log.warning("Some person IDs requested in batch were not returned by API.",
+                                          missing_ids=list(missing_in_response_ids),
+                                          returned_count=len(returned_ids_set),
+                                          requested_count=len(current_batch_ids_set))
+                        for missing_id in missing_in_response_ids:
+                            self.cache.set(f"pipedrive:person_name:{missing_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                            api_not_found_count += 1
+
+                except Exception as api_err:
+                    batch_log.error("Failed to execute or process batch API call for person names.", error=str(api_err), exc_info=True)
+                    api_batch_error_count += len(current_batch_ids_list)
+                    for failed_id in current_batch_ids_list:
+                             try:
+                                  self.cache.set(f"pipedrive:person_name:{failed_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                             except Exception as cache_set_err:
+                                  self.log.error("Failed to set empty cache value after API batch error", person_id=failed_id, error=str(cache_set_err))
+
+            api_fetch_duration = time.monotonic() - api_fetch_start_time
             fetch_log.info(
-                "Person names API fetch completed.",
-                api_fetched_ok=api_fetched_count,
-                api_fetch_failed=api_fail_count, 
+                "Person names API batch fetch completed.",
+                api_ids_processed=processed_in_api_count,
+                api_found_successfully=api_found_count,
+                api_not_found_or_empty=api_not_found_count,
+                api_batch_errors=api_batch_error_count,
                 duration_sec=f"{api_fetch_duration:.3f}s"
-             )
+            )
 
         fetch_log.debug("Finished fetching multiple person names.", final_map_size=len(names_map))
         return names_map
@@ -378,7 +463,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             all_fields_data = self._fetch_paginated_v1(url)
             if not all_fields_data: self.log.warning("Received no data for deal fields from API."); return {}
             non_custom_keys = {
-                "id", "creator_user_id", "user_id", "person_id", "org_id",
+                "id", "creator_user_id", "person_id", "org_id",
                 "stage_id", "pipeline_id", "title", "value", "currency", "add_time",
                 "update_time", "status", "lost_reason", "visible_to", "close_time",
                 "won_time", "lost_time", "first_won_time", "products_count",
