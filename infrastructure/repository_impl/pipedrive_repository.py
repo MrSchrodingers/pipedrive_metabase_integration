@@ -20,8 +20,6 @@ BASE_COLUMNS = [
     "titulo",
     "creator_user_id",
     "creator_user_name",
-    "user_id",
-    "owner_user_name",  
     "person_id",
     "person_name",  
     "stage_id",
@@ -40,8 +38,6 @@ COLUMN_TYPES = {
     "titulo": "TEXT",
     "creator_user_id": "INTEGER",
     "creator_user_name": "TEXT",
-    "user_id": "INTEGER",
-    "owner_user_name": "TEXT",  
     "person_id": "INTEGER",
     "person_name": "TEXT", 
     "person_info": "JSONB",
@@ -207,7 +203,7 @@ class PipedriveRepository(DataRepositoryPort):
             "idx_pipedrive_pipeline_id": sql.SQL("(pipeline_id)"),
             "idx_pipedrive_status": sql.SQL("(status)"),
 
-            "idx_pipedrive_active_deals": sql.SQL("(update_time DESC) WHERE status NOT IN ('won', 'lost')")
+            "idx_pipedrive_active_deals": sql.SQL("(update_time DESC) WHERE status NOT IN ('Ganho', 'Perdido', 'Em aberto', 'Deletado')")
         }
 
         for idx_name, idx_definition in indexes.items():

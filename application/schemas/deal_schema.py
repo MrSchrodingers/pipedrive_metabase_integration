@@ -6,7 +6,6 @@ class DealSchema(BaseModel, extra='allow'):
     id: int
     title: Optional[str] = None
     creator_user_id: Optional[int] = None 
-    user_id: Optional[int] = None
     person_id: Optional[int] = None
     stage_id: Optional[int] = None
     stage_name: Optional[str] = None
@@ -23,7 +22,7 @@ class DealSchema(BaseModel, extra='allow'):
         populate_by_name  = True
         alias_generator = lambda x: x 
 
-    @field_validator('creator_user_id', 'user_id', 'person_id', mode='before')
+    @field_validator('creator_user_id', 'person_id', mode='before')
     def extract_id_from_dict(cls, value):
         if isinstance(value, dict):
             return value.get("id")

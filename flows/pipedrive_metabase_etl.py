@@ -1,27 +1,17 @@
 import structlog
 from prefect import flow, task
 from prefect.blocks.system import JSON
+import os
+import logging
 
-# Configure structlog 
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.JSONRenderer() 
-    ],
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
-)
+from infrastructure.logging_config import setup_logging
 
+log = structlog.get_logger(__name__)
 log = structlog.get_logger() 
 
 DEFAULT_BATCH_SIZE = 1000
-DEFAULT_RETRIES = 2
-DEFAULT_RETRY_DELAY = 60
+DEFAULT_RETRIES = 10
+DEFAULT_RETRY_DELAY = 90
 DEFAULT_TIMEOUT = 7200 
 
 @task(
@@ -89,6 +79,18 @@ def execute_etl_task(batch_size: int = DEFAULT_BATCH_SIZE) -> dict:
         task_log.info("Running the ETL service.")
         result = etl_service.run_etl()
         task_log.info("ETL service run completed.")
+        
+        # --- Push Metrics to Pushgateway ---
+        try:
+            pushgateway_address = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
+            job_name = "pipedrive_etl_job"
+            
+            from prometheus_client import REGISTRY, push_to_gateway
+            
+            push_to_gateway(pushgateway_address, job=job_name, registry=REGISTRY)
+            task_log.info("Successfully pushed metrics to Pushgateway", address=pushgateway_address, job=job_name)
+        except Exception as push_err:
+            task_log.error("Failed to push metrics to Pushgateway", error=str(push_err), exc_info=True)
 
         return result
 
@@ -107,6 +109,7 @@ DEFAULT_FLOW_TIMEOUT = 9000
 )
 def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
     """Main ETL orchestration flow."""
+    setup_logging(level=logging.DEBUG)  
     flow_log = log.bind(flow_name="main_etl_flow", run_batch_size=run_batch_size)
     flow_log.info("Starting main ETL flow.")
 
