@@ -80,7 +80,7 @@ class ETLService:
             df = pd.DataFrame(valid_input_for_df)
             required_cols = [
                 col for col in REPO_BASE_COLUMNS
-                if col not in ['creator_user_name', 'person_name', 'stage_name', 'pipeline_name', 'raw_data']
+                if col not in ['creator_user_name', 'person_name', 'stage_name', 'pipeline_name', 'owner_name']
             ]
             for col in required_cols:
                 if col not in df.columns:
@@ -113,6 +113,9 @@ class ETLService:
 
             transformed_df["pipeline_id"] = pd.to_numeric(df["pipeline_id"], errors='coerce').astype('Int64')
             transformed_df['pipeline_name'] = transformed_df['pipeline_id'].map(pipeline_map).fillna(UNKNOWN_NAME)
+            
+            transformed_df["owner_id"] = pd.to_numeric(df["owner_id"], errors='coerce').astype('Int64')
+            transformed_df['owner_name'] = transformed_df['owner_id'].map(user_map).fillna(UNKNOWN_NAME)
 
             # --- Mapeamento de Persons (Sob Demanda) ---
             transformed_df["person_id"] = pd.to_numeric(df["person_id"], errors='coerce').astype('Int64')
