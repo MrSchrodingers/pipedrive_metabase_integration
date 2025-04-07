@@ -1,8 +1,8 @@
 pipedrive_metabase_integration/
 .
 pipedrive_metabase_integration.yaml
+create_secret_block.py
 Dockerfile
-docker-compose.yml
 observability-config.yaml
 prometheus.yml
 infrastructure
@@ -22,6 +22,9 @@ infrastructure
 ├── prefect
 ├── ├── orion
 ├── ├── ├── Dockerfile
+├── k8s
+├── ├── wait-for-it.sh
+├── ├── entrypoint.sh
 ├── __init__.py
 ├── api_clients
 ├── ├── pipedrive_api_client.py
@@ -30,9 +33,12 @@ infrastructure
 .gitignore
 kubectl.sha256
 flows
+├── pipedrive_deployments.py
 ├── pipedrive_metabase_etl.py
 ├── __init__.py
-├── deploy.py
+scripts
+├── register_k8s_block.py
+pushgateway.yaml
 application
 ├── schemas
 ├── ├── deal_schema.py
@@ -70,13 +76,11 @@ core_domain
 run_project.sh
 persistent-volume-claim.yaml
 kubectl
+prefect.yaml
 tests
 ├── test_use_cases.py
 ├── __init__.py
 ├── test_infrastructure.py
 pipedrive_metabase_integration_tree.txt
-wait-for-it.sh
-pipedrive_metabase_integration_content.json
 db-secrets.yaml
-entrypoint.sh
 poetry.lock

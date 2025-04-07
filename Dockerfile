@@ -27,8 +27,9 @@
     
     # Copiar os arquivos de dependências e instalar os pacotes
     COPY pyproject.toml poetry.lock* ./
-    RUN poetry install --no-interaction --no-ansi --no-root
-    
+    RUN poetry install --no-root --no-interaction --no-ansi && \
+    poetry run pip install prefect-sqlalchemy --no-cache-dir
+
     # Copiar o código-fonte completo
     COPY . .
     
@@ -57,13 +58,10 @@
     COPY --from=builder /app /app
     
     # Garantir que os scripts tenham permissão de execução
-    COPY wait-for-it.sh /app/wait-for-it.sh
-    COPY entrypoint.sh /app/entrypoint.sh
+    COPY infrastructure/k8s/wait-for-it.sh /app/wait-for-it.sh
+    COPY infrastructure/k8s/entrypoint.sh /app/entrypoint.sh
     RUN chmod +x /app/wait-for-it.sh
     RUN chmod +x /app/entrypoint.sh
-    
-    # Expor a porta padrão
-    EXPOSE 8080
     
     # Comando de entrada
     CMD ["/app/entrypoint.sh"]

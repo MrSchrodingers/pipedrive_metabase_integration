@@ -3,7 +3,7 @@ import requests
 import structlog
 import re
 import math
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from pybreaker import CircuitBreaker
 from typing import Dict, List, Optional, Generator, Any, Set, Tuple
 
@@ -27,27 +27,33 @@ class PipedriveAPIClient(PipedriveClientPort):
     BASE_URL_V1 = "https://api.pipedrive.com/v1"
     BASE_URL_V2 = "https://api.pipedrive.com/api/v2"
 
-    DEFAULT_TIMEOUT = 30
+    DEFAULT_TIMEOUT = 45 
     DEFAULT_V2_LIMIT = 500
     MAX_V1_PAGINATION_LIMIT = 500
     PERSON_BATCH_SIZE = 100
+    CHANGELOG_PAGE_LIMIT = 500
     
     # TTL para mapas e lookups individuais
-    DEFAULT_MAP_CACHE_TTL_SECONDS = 3600 * 12
-    # TTL menor para lookups individuais de person
-    PERSON_LOOKUP_CACHE_TTL_SECONDS = 3600 * 1
+    DEFAULT_MAP_CACHE_TTL_SECONDS = 3600 * 12 # 12 hours
+    PERSON_LOOKUP_CACHE_TTL_SECONDS = 3600 * 1 # 1 hour
+    STAGE_DETAILS_CACHE_TTL_SECONDS = 3600 * 6 # 6 hours
     
     ENDPOINT_COSTS = {
-        '/deals': 10,              # GET /api/v2/deals
-        '/dealFields': 20,         # GET /v1/dealFields
-        '/persons/detail': 1,     # Custo para GET /v1|v2/persons/{id} (detalhe)
-        '/persons': 10,           # Custo para GET /api/v2/persons (lista/lote por IDs)
-        '/stages': 5,              # GET /api/v2/stages
-        '/pipelines': 5,           # GET /api/v2/pipelines
-        '/users': 20,              # GET /v1/users
+        # V1 endpoints
+        '/deals/detail/changelog': 20,  # Custo para GET /v1/deals/{id}/changelog
+        '/dealFields': 20,              # Custo para GET /v1/dealFields
+        '/users': 20,                   # Custo para GET /v1/users
+        
+        # V2 endpoints
+        '/deals': 10,                   # Custo para GET /api/v2/deals
+        '/stages': 5,                   # Custo para GET /api/v2/stages
+        '/pipelines': 5,                # Custo para GET /api/v2/pipelines
+        '/persons/detail': 1,           # Custo para GET /api/v2/persons/{id}
+        '/persons': 10,                 # Custo para GET /api/v2/persons
     }
-    DEFAULT_ENDPOINT_COST = 1 
-
+    
+    DEFAULT_ENDPOINT_COST = 10          # Custo padrão para outras requisições (estimado)
+    
     def __init__(self, cache: RedisCache):
         self.api_key = settings.PIPEDRIVE_API_KEY
         if not self.api_key:
@@ -63,28 +69,129 @@ class PipedriveAPIClient(PipedriveClientPort):
         """Normaliza o path da URL para usar como label na métrica, tratando IDs."""
         base_url_v1_len = len(self.BASE_URL_V1)
         base_url_v2_len = len(self.BASE_URL_V2)
+        path = url_path # Default
 
         if url_path.startswith(self.BASE_URL_V1):
             path = url_path[base_url_v1_len:]
         elif url_path.startswith(self.BASE_URL_V2):
             path = url_path[base_url_v2_len:]
-        else:
-            path = url_path
 
-        path = path.split('?')[0].strip('/') 
-
+        path = path.split('?')[0].strip('/')
         parts = path.split('/')
+
         if not parts or not parts[0]:
-             return "/"
+            return "/"
 
         resource = parts[0]
         normalized_path = f"/{resource}"
 
+        # Handle /resource/{id} -> /resource/detail
         if len(parts) > 1 and parts[1].isdigit():
             normalized_path += "/detail"
+            # Handle /resource/{id}/subresource -> /resource/detail/subresource
+            if len(parts) > 2:
+                 known_subresources = [
+                     'changelog', 'participantsChangelog', 'followers', 'activities',
+                     'files', 'flow', 'mailMessages', 'participants', 'permittedUsers',
+                     'persons', 'products', 'discounts', 'installments', 'duplicate'
+                 ]
+                 if parts[2] in known_subresources:
+                     normalized_path += f"/{parts[2]}"
+                 # Handle potential subresource IDs like /deals/{id}/products/{product_id} -> /deals/detail/products/detail
+                 elif len(parts) > 3 and parts[3].isdigit():
+                      normalized_path += f"/{parts[2]}/detail"
 
+        # Handle /resource/subresource (without ID)
+        elif len(parts) > 1:
+            known_actions = ['search', 'summary', 'timeline', 'collection', 'products', 'installments']
+            if parts[1] in known_actions:
+                normalized_path += f"/{parts[1]}"
+
+        self.log.debug("Normalized endpoint", original=url_path, normalized=normalized_path) 
         return normalized_path
+    
+    def fetch_all_stages_details(self) -> List[Dict]:
+        """Busca detalhes de todos os stages (necessário para nomes normalizados)."""
+        cache_key = "pipedrive:all_stages_details"
+        cached = self.cache.get(cache_key)
+        if cached and isinstance(cached, list):
+            self.log.info("Stage details retrieved from cache.", cache_hit=True, count=len(cached))
+            return cached
 
+        self.log.info("Fetching stage details from API (V2).", cache_hit=False)
+        url = f"{self.BASE_URL_V2}/stages"
+        try:
+            all_stages = self._fetch_paginated_v2(url)
+            if all_stages:
+                self.cache.set(cache_key, all_stages, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS)
+                self.log.info("Stage details fetched and cached.", count=len(all_stages))
+            else:
+                self.log.warning("Fetched stage list was empty.")
+            return all_stages
+        except Exception as e:
+            self.log.error("Failed to fetch/process stage details", error=str(e), exc_info=True)
+            return []
+
+    def fetch_deal_changelog(self, deal_id: int) -> List[Dict]:
+        """Busca o changelog de um deal específico usando paginação por cursor."""
+        if not deal_id or deal_id <= 0:
+            self.log.warning("Invalid deal_id for changelog lookup", deal_id=deal_id)
+            return []
+
+        url = f"{self.BASE_URL_V1}/deals/{deal_id}/changelog" 
+        all_changes = []
+        next_cursor: Optional[str] = None
+        params = {"limit": 500}
+        page_num = 0
+        changelog_log = self.log.bind(deal_id=deal_id, endpoint='/deals/detail/changelog')
+
+        while True:
+            page_num += 1
+            current_params = params.copy()
+            if next_cursor:
+                current_params["cursor"] = next_cursor
+            page_log = changelog_log.bind(page=page_num, cursor=next_cursor)
+            page_log.debug("Fetching deal changelog page")
+            try:
+                response = self._get(url, params=current_params) 
+                json_response = response.json()
+
+                if not json_response or not json_response.get("success"):
+                    page_log.warning("Changelog API response indicates failure or empty data", response_preview=str(json_response)[:200])
+                    break
+
+                current_data = json_response.get("data", [])
+                if not current_data:
+                    page_log.debug("No more changelog data found.")
+                    break
+
+                all_changes.extend(current_data)
+                page_log.debug(f"Fetched {len(current_data)} changelog items.")
+
+                additional_data = json_response.get("additional_data", {})
+                pagination_info = additional_data.get("pagination", {})
+                next_cursor = pagination_info.get("next_cursor") 
+
+                if not next_cursor:
+                     more_items = pagination_info.get("more_items_in_collection", False)
+                     if more_items:
+                         next_start = pagination_info.get("next_start")
+                         if next_start is not None:
+                             page_log.warning("Changelog API uses next_start, pagination logic needs adjustment here.", pagination=pagination_info)
+                             break 
+                         else:
+                              page_log.warning("API indicates more items but no cursor/next_start. Stopping.", pagination=pagination_info)
+                              break
+                     else:
+                         page_log.debug("API indicates no more items (no cursor/more_items flag false).")
+                         break
+
+            except Exception as e:
+                page_log.error("Error fetching deal changelog page", error=str(e), exc_info=True)
+                break
+
+        changelog_log.info("Deal changelog fetch complete.", total_items=len(all_changes), total_pages=page_num)
+        return all_changes
 
     @api_breaker
     @retry(
@@ -119,7 +226,12 @@ class PipedriveAPIClient(PipedriveClientPort):
 
             response = self.session.get(url, params=effective_params, timeout=self.DEFAULT_TIMEOUT)
             status_code = response.status_code
-
+            
+            # Rate limit handling
+            if status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                request_log.warning("Rate limit hit (429)", retry_after=retry_after)
+                
             if not response.ok:
                 error_type = f"http_{status_code}"
                 try:
@@ -157,15 +269,19 @@ class PipedriveAPIClient(PipedriveClientPort):
         except requests.exceptions.RequestException as e:
              error_type = "request_exception"
              request_log.error("API request failed (RequestException)", error=str(e), exc_info=True)
-             if hasattr(e, 'response') and e.response is not None:
-                 status_code = e.response.status_code
-             raise
-        finally:
-             if error_type != "success":
-                 final_status_code = status_code if status_code else 'N/A'
-                 api_errors_counter.labels(endpoint=normalized_endpoint_label, error_type=error_type, status_code=final_status_code).inc()
-                 request_log.debug("API Error counter incremented", error_type=error_type, status_code=final_status_code)
 
+        current_status_code = status_code
+        if hasattr(e, 'response') and e.response is not None:
+                current_status_code = e.response.status_code
+        elif isinstance(e, RetryError) and hasattr(e.cause, 'response') and e.cause.response is not None:
+                current_status_code = e.cause.response.status_code
+
+        # Record error metric
+        final_status_code_label = str(current_status_code) if current_status_code else 'N/A'
+        api_errors_counter.labels(endpoint=normalized_endpoint_label, error_type=error_type, status_code=final_status_code_label).inc()
+        request_log.debug("API Error counter incremented", error_type=error_type, status_code=final_status_code_label)
+
+        raise
 
     def _fetch_paginated_v1(self, url: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
         """Helper para buscar todos os itens de um endpoint V1 paginado (start/limit)."""
@@ -263,6 +379,28 @@ class PipedriveAPIClient(PipedriveClientPort):
             else: self.log.warning("Fetched pipeline list was empty or malformed.")
             return pipeline_map
         except Exception as e: self.log.error("Failed to fetch/process pipelines map", error=str(e), exc_info=True); return {}
+        
+    def fetch_all_stages_details(self) -> List[Dict]:
+        """Busca detalhes de todos os stages (necessário para nomes normalizados)."""
+        cache_key = "pipedrive:all_stages_details"
+        cached = self.cache.get(cache_key)
+        if cached and isinstance(cached, list):
+            self.log.info("Stage details retrieved from cache.", cache_hit=True, count=len(cached))
+            return cached
+
+        self.log.info("Fetching stage details from API (V2).", cache_hit=False)
+        url = f"{self.BASE_URL_V2}/stages"
+        try:
+            all_stages = self._fetch_paginated_v2(url)
+            if all_stages:
+                self.cache.set(cache_key, all_stages, ex_seconds=self.STAGE_DETAILS_CACHE_TTL_SECONDS)
+                self.log.info("Stage details fetched and cached.", count=len(all_stages))
+            else:
+                self.log.warning("Fetched stage list was empty.")
+            return all_stages
+        except Exception as e:
+            self.log.error("Failed to fetch/process stage details", error=str(e), exc_info=True)
+            return []
         
     def fetch_person_name(self, person_id: int) -> Optional[str]:
         """Busca o nome de uma person específica por ID, usando cache."""
