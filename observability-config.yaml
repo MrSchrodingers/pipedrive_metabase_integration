@@ -4,4 +4,4 @@ metadata:
   name: observability-config
 data:
   LOG_LEVEL: "INFO"
-  METRICS_ENDPOINT: "/metrics"
+  METRICS_ENDPOINT: "/metrics" 

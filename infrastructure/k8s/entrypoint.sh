@@ -38,42 +38,6 @@ start_server() {
     exec "$@"
 }
 
-wait_for_service() {
-    local HOST=$1
-    local PORT=$2
-    local TIMEOUT=30
-    local COUNT=0
-    
-    log "info" "Aguardando $HOST:$PORT..."
-    until nc -z $HOST $PORT; do
-        sleep 5
-        COUNT=$((COUNT + 5))
-        if [ $COUNT -ge $TIMEOUT ]; then
-            log "error" "Timeout ao aguardar $HOST:$PORT"
-            exit 1
-        fi
-    done
-}
-
-register_blocks() {
-    log "info" "Registrando blocos necessários..."
-    poetry run python <<EOF
-import os
-from prefect.blocks.system import JSON
-
-# Corrigir formato da DSN para psycopg2
-JSON(value={
-    "dsn": f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@db:5432/{os.getenv('POSTGRES_DB')}"
-}).save("postgres-pool", overwrite=True)
-
-JSON(value={
-    "connection_string": "redis://redis:6379/0"
-}).save("redis-cache", overwrite=True)
-
-print("Blocos registrados com sucesso!")
-EOF
-}
-
 ##############################
 # Fluxo Principal
 ##############################
@@ -82,21 +46,9 @@ cd /app
 case "${APP_ROLE:-}" in
     etl)
         validate_env
-        
-        # Aguardar serviços essenciais
-        wait_for_service prefect-orion 4200
-        wait_for_service db 5432
-        wait_for_service redis 6379
-
-        # Instalar dependências adicionais
-        poetry run pip install prefect-sqlalchemy
-        prefect block register -m prefect_sqlalchemy
-
-        # Registrar blocos
-        register_blocks
 
         # Executar fluxo ETL
-        log "info" "Iniciando fluxo ETL..."
+        log "info" "Iniciando fluxo ETL (dependências esperadas via Init Containers)..."
         poetry run python -u flows/pipedrive_metabase_etl.py
         ;;
     metrics)

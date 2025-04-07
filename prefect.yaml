@@ -1,0 +1,58 @@
+prefect-version: 3.3.2
+
+name: pipedrive-etl
+
+deployments:
+- name: Pipedrive Sync
+  version: '1.2'
+  tags:
+  - pipedrive
+  - sync
+  - etl
+  description: Sincroniza dados recentes do Pipedrive com o banco de dados.
+  entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
+  parameters:
+    run_batch_size: 1500
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/k8s-job-infra-block
+  concurrency_limit: 1
+  schedules:
+  - interval: 1800.0
+    anchor_date: '2025-04-07T18:00:00+00:00'
+    timezone: America/Sao_Paulo
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: main
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+- name: Pipedrive Backfill Stage History
+  version: '1.0'
+  tags:
+  - pipedrive
+  - backfill
+  - history
+  description: Preenche o histórico de stages para deals antigos.
+  entrypoint: flows/pipedrive_metabase_etl.py:backfill_stage_history_flow
+  parameters:
+    daily_deal_limit: 10000
+    db_batch_size: 1000
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/k8s-job-infra-block
+  schedules: []
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: main
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit:

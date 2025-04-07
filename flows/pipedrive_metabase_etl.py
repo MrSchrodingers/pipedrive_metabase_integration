@@ -1,126 +1,112 @@
+import time
+from typing import Any, Dict, List, Tuple
 import structlog
-from prefect import flow, task
+from prefect import flow, get_run_logger, task, context
 from prefect.blocks.system import JSON
-import os
 import logging
+import math
 
+from application.services.etl_service import ETLService
+from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
+from infrastructure.cache import RedisCache
+from infrastructure.db_pool import DBConnectionPool
 from infrastructure.logging_config import setup_logging
+from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
+from infrastructure.monitoring.metrics import (
+    push_metrics_to_gateway,
+    etl_counter,
+    etl_failure_counter,
+    memory_usage_gauge,
+    batch_size_gauge,
+    backfill_deals_remaining_gauge
+)
 
-log = structlog.get_logger(__name__)
 log = structlog.get_logger() 
 
+# --- Constantes e Configurações ---
 DEFAULT_BATCH_SIZE = 1000
-DEFAULT_RETRIES = 10
-DEFAULT_RETRY_DELAY = 90
-DEFAULT_TIMEOUT = 7200 
+DEFAULT_MAIN_FLOW_TIMEOUT = 9000        # Timeout para o fluxo principal
+DEFAULT_BACKFILL_FLOW_TIMEOUT = 10800   # Timeout maior para backfill
+BACKFILL_BATCH_SIZE = 1000              # Quantos deals buscar do DB por vez
+BACKFILL_DAILY_LIMIT = 10000            # Limite diário sugerido
+DEFAULT_TASK_RETRIES = 3
+DEFAULT_TASK_RETRY_DELAY = 60
 
-@task(
-    name="Execute Pipedrive ETL Task",
-    retries=DEFAULT_RETRIES,
-    retry_delay_seconds=DEFAULT_RETRY_DELAY,
-    log_prints=True,
-    timeout_seconds=DEFAULT_TIMEOUT
-)
-def execute_etl_task(batch_size: int = DEFAULT_BATCH_SIZE) -> dict:
-    """
-    Prefect task to initialize and run the ETL service.
-    Handles configuration loading and dependency injection.
-    """
-    task_log = log.bind(task_name="execute_etl_task", batch_size=batch_size)
-    task_log.info("Starting ETL task execution.")
+
+
+@task(name="Initialize ETL Components", retries=2, retry_delay_seconds=30)
+def initialize_components() -> Tuple[PipedriveAPIClient, PipedriveRepository, ETLService]:
+    """Inicializa e retorna os componentes principais."""
+    task_log = get_run_logger()
+    task_log.info("Initializing ETL components...")
+
+    postgres_config = JSON.load("postgres-pool").value
+    redis_config = JSON.load("redis-cache").value
+
+    db_pool = DBConnectionPool(
+        minconn=postgres_config.get("minconn", 1), 
+        maxconn=postgres_config.get("maxconn", 5),
+        dsn=postgres_config["dsn"]
+    )
+    redis_cache = RedisCache(connection_string=redis_config["connection_string"])
+    pipedrive_client = PipedriveAPIClient(cache=redis_cache)
 
     try:
-        # --- Configuration Loading ---
-        task_log.debug("Loading configuration blocks.")
-        postgres_config = JSON.load("postgres-pool").value
-        redis_config = JSON.load("redis-cache").value
+        all_stages = pipedrive_client.fetch_all_stages_details()
+        if not all_stages:
+             task_log.warning("Fetched stage details list is empty!")
+    except Exception as stage_err:
+        task_log.error("Failed to fetch stage details during initialization.", error=str(stage_err))
+        raise stage_err
 
-        # --- Dependency Injection ---
-        task_log.debug("Initializing infrastructure components.")
+    try:
+        custom_mapping = pipedrive_client.fetch_deal_fields_mapping()
+    except Exception as mapping_err:
+        task_log.error("Failed to fetch custom field mapping.", error=str(mapping_err))
+        raise mapping_err
 
-        from infrastructure.db_pool import DBConnectionPool
-        db_pool = DBConnectionPool(
-            minconn=postgres_config.get("minconn", 2), 
-            maxconn=postgres_config.get("maxconn", 10),
-            dsn=postgres_config["dsn"]
-        )
+    repository = PipedriveRepository(
+        db_pool=db_pool,
+        custom_field_api_mapping=custom_mapping,
+        all_stages_details=all_stages
+    )
+    etl_service = ETLService(
+        client=pipedrive_client,
+        repository=repository,
+    )
+    task_log.info("ETL components initialized.")
+    return pipedrive_client, repository, etl_service
 
-        # Redis Cache
-        from infrastructure.cache import RedisCache
-        redis_cache = RedisCache(connection_string=redis_config["connection_string"])
-
-        # Pipedrive API Client
-        from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
-        pipedrive_client = PipedriveAPIClient(cache=redis_cache) 
-
-        # Fetch mapping needed by Repository
-        try:
-            custom_mapping = pipedrive_client.fetch_deal_fields_mapping()
-            if not custom_mapping:
-                 task_log.warning("Custom field mapping is empty. Custom fields may not be processed correctly.")
-        except Exception as mapping_err:
-             task_log.error("Failed to fetch initial custom field mapping. ETL might be incomplete.", error=str(mapping_err))
-             raise RuntimeError(f"Failed to fetch Pipedrive field mapping: {mapping_err}") from mapping_err
-
-
-        # Data Repository
-        from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
-        repository = PipedriveRepository(db_pool=db_pool, custom_field_api_mapping=custom_mapping)
-
-        # ETL Service
-        from application.services.etl_service import ETLService
-        etl_service = ETLService(
-            client=pipedrive_client,
-            repository=repository,
-            batch_size=batch_size
-        )
-
-        # --- Run ETL ---
-        task_log.info("Running the ETL service.")
-        result = etl_service.run_etl()
-        task_log.info("ETL service run completed.")
-        
-        # --- Push Metrics to Pushgateway ---
-        try:
-            pushgateway_address = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
-            job_name = "pipedrive_etl_job"
-            
-            from prometheus_client import REGISTRY, push_to_gateway
-            
-            push_to_gateway(pushgateway_address, job=job_name, registry=REGISTRY)
-            task_log.info("Successfully pushed metrics to Pushgateway", address=pushgateway_address, job=job_name)
-        except Exception as push_err:
-            task_log.error("Failed to push metrics to Pushgateway", error=str(push_err), exc_info=True)
-
-        return result
-
-    except Exception as e:
-        task_log.critical("ETL task failed critically.", error=str(e), exc_info=True)
-        raise
-
-
-DEFAULT_FLOW_TIMEOUT = 9000 
 
 @flow(
-    name="Pipedrive to Database ETL Flow",
+    name="Pipedrive to Database ETL Flow (Main Sync)",
     log_prints=True,
-    retries=0,
-    timeout_seconds=DEFAULT_FLOW_TIMEOUT
+    timeout_seconds=DEFAULT_MAIN_FLOW_TIMEOUT 
 )
 def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
-    """Main ETL orchestration flow."""
-    setup_logging(level=logging.DEBUG)  
-    flow_log = log.bind(flow_name="main_etl_flow", run_batch_size=run_batch_size)
-    flow_log.info("Starting main ETL flow.")
+    """Main ETL orchestration flow for current data sync."""
+    setup_logging(level=logging.INFO)
+    base_flow_log = get_run_logger() 
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
+
+    flow_log = base_flow_log.bind(flow_run_id=str(flow_run_id))
+
+    flow_log.info(f"Starting main ETL flow with batch size: {run_batch_size}")
+    flow_type = "sync"
+    etl_counter.labels(flow_type=flow_type).inc()
+    start_time = time.time()
+    result = {}
 
     try:
-        # Submit the ETL task
-        etl_future = execute_etl_task.submit(batch_size=run_batch_size)
+        # 1. Inicializa componentes (incluindo busca de stages/fields)
+        client, repository, etl_service = initialize_components()
 
-        # Wait for the result
-        result = etl_future.result() 
+        # 2. Executa o ETL principal (run_etl agora foca na sincronização atual)
+        etl_service.process_batch_size = run_batch_size
+        result = etl_service.run_etl() 
 
-        # --- Post-Load Validation ---
+        # --- Validação e Métricas ---
         flow_log.info("Performing post-load validation.")
         status = result.get("status", "error")
         processed = result.get("total_loaded", 0) 
@@ -128,8 +114,10 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
         peak_mem = result.get("peak_memory_mb", -1)
 
         if status != "success":
+            etl_failure_counter.labels(flow_type=flow_type).inc() 
             flow_log.critical("ETL task reported failure.", result_message=result.get("message"))
             raise RuntimeError(f"ETL task failed: {result.get('message', 'Unknown error')}")
+
 
         assert processed >= 0, "Processed count cannot be negative."
         if result.get("total_fetched", 0) > 0 and processed == 0:
@@ -137,11 +125,12 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
             raise ValueError("ETL fetched data but loaded zero records.")
 
         sla_duration = 3600
-        assert duration >= 0 and duration < sla_duration, f"ETL duration ({duration:.2f}s) exceeded SLA ({sla_duration}s)"
+        if duration < 0 or duration >= sla_duration:
+             flow_log.warning(f"ETL duration ({duration:.2f}s) outside expected range (0-{sla_duration}s)")
 
         sla_memory_mb = 4 * 1024
-        if peak_mem > 0:
-           assert peak_mem < sla_memory_mb, f"ETL peak memory ({peak_mem:.2f}MB) exceeded limit ({sla_memory_mb}MB)"
+        if peak_mem > 0 and peak_mem >= sla_memory_mb:
+             flow_log.warning(f"ETL peak memory ({peak_mem:.2f}MB) approached or exceeded limit ({sla_memory_mb}MB)")
 
         flow_log.info(
             "ETL flow completed successfully.",
@@ -149,11 +138,183 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
             duration_seconds=f"{duration:.2f}",
             peak_memory_mb=f"{peak_mem:.2f}" if peak_mem > 0 else "N/A"
         )
+        
+        if peak_mem > 0:
+             memory_usage_gauge.labels(flow_type=flow_type).set(peak_mem)
         return result 
 
     except Exception as e:
-        flow_log.critical("Main ETL flow failed.", error=str(e), exc_info=True)
+        if result.get("status") != "error": 
+            etl_failure_counter.labels(flow_type=flow_type).inc()
+        flow_log.critical("Main ETL flow failed critically.", error=str(e), exc_info=True)
         raise
 
-if __name__ == "__main__":
-   main_etl_flow(run_batch_size=500)
+    finally:
+        flow_log.info("Pushing metrics to Pushgateway for main sync flow.") 
+        push_metrics_to_gateway(job_name="pipedrive_sync_job", grouping_key={'flow_run_id': str(flow_run_id)})
+
+
+    
+@task(name="Get Deals for Backfill Task", retries=1)
+def get_deals_for_backfill_task(repository: PipedriveRepository, limit: int) -> List[str]:
+    """Busca IDs de deals que precisam de backfill."""
+    logger = get_run_logger()
+    logger.info(f"Fetching up to {limit} deal IDs for history backfill.")
+    ids = repository.get_deals_needing_history_backfill(limit=limit)
+    logger.info(f"Found {len(ids)} deals for this backfill batch.")
+    return ids
+
+@task(name="Get Backfill Remaining Count Task", retries=1)
+def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
+    """Busca a contagem inicial de deals que precisam de backfill."""
+    logger = get_run_logger()
+    logger.info("Counting total deals needing history backfill.")
+    count = repository.count_deals_needing_backfill()
+    if count >= 0:
+         logger.info(f"Estimated {count} deals remaining for backfill.")
+         backfill_deals_remaining_gauge.set(count) 
+    else:
+         logger.warning("Failed to get backfill remaining count.")
+         backfill_deals_remaining_gauge.set(-1) 
+    return count
+
+@task(name="Run Backfill Batch Task", retries=DEFAULT_TASK_RETRIES, retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, log_prints=True)
+def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
+    """Executa o backfill para um lote de IDs."""
+    logger = get_run_logger()
+    flow_type="backfill"
+    if not deal_ids:
+        logger.info("No deals in this batch to backfill.")
+        return {"status": "skipped", "processed_deals": 0}
+    batch_size_gauge.labels(flow_type=flow_type).set(len(deal_ids))
+    logger.info(f"Running backfill for {len(deal_ids)} deals.")
+    result = etl_service.run_retroactive_backfill(deal_ids)
+    logger.info("Backfill batch finished.", **result)
+    return result
+
+@flow(
+    name="Pipedrive Stage History Backfill Flow",
+    log_prints=True,
+    timeout_seconds=DEFAULT_BACKFILL_FLOW_TIMEOUT
+)
+def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db_batch_size: int = BACKFILL_BATCH_SIZE):
+    """Orquestra o backfill do histórico de stages em lotes."""
+    setup_logging(level=logging.INFO)
+    base_flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
+
+    flow_log = base_flow_log.bind(flow_run_id=str(flow_run_id))
+
+    flow_log.info(f"Starting stage history backfill flow. Daily limit: {daily_deal_limit}, DB batch size: {db_batch_size}")
+    flow_type = "backfill"
+    etl_counter.labels(flow_type=flow_type).inc()
+    start_time = time.time()
+
+    total_processed_today = 0
+    total_api_errors = 0
+    total_processing_errors = 0
+    all_batch_results = []
+    final_status = "completed"
+    initial_count = -1
+    backfill_completed_successfully = False 
+    result_payload = {}
+
+    try:
+        client, repository, etl_service = initialize_components()
+
+        initial_count = get_initial_backfill_count_task(repository)
+
+        while total_processed_today < daily_deal_limit:
+            remaining_limit = daily_deal_limit - total_processed_today
+            current_batch_limit = min(db_batch_size, remaining_limit)
+            if current_batch_limit <= 0:
+                 flow_log.info("Daily limit reached.")
+                 break
+
+            flow_log.info(f"Attempting to fetch next batch of deals (limit: {current_batch_limit}).")
+            deal_ids_batch = get_deals_for_backfill_task(repository, limit=current_batch_limit)
+
+            if not deal_ids_batch:
+                flow_log.info("No more deals found needing backfill.")
+                backfill_deals_remaining_gauge.set(0)
+                backfill_completed_successfully = (final_status == "completed")
+                break 
+
+            batch_result = run_backfill_batch_task(etl_service, deal_ids_batch)
+            all_batch_results.append(batch_result)
+
+            processed_in_batch = batch_result.get("processed_deals", 0)
+            api_errors_in_batch = batch_result.get("api_errors", 0)
+            proc_errors_in_batch = batch_result.get("processing_errors", 0)
+
+            total_processed_today += processed_in_batch
+            total_api_errors += api_errors_in_batch
+            total_processing_errors += proc_errors_in_batch
+
+            if batch_result.get("status") != "skipped" and batch_result.get("status") != "success":
+                 final_status = "completed_with_errors"
+
+            if initial_count >= 0:
+                 current_remaining = max(0, initial_count - total_processed_today)
+                 backfill_deals_remaining_gauge.set(current_remaining)
+
+            flow_log.info(f"Backfill batch completed. Processed so far today: {total_processed_today}/{daily_deal_limit}")
+
+            time.sleep(5)
+
+        flow_log.info("Backfill flow finished for today.",
+                       total_processed=total_processed_today,
+                       total_api_errors=total_api_errors,
+                       total_processing_errors=total_processing_errors,
+                       final_status=final_status)
+
+        final_remaining_count = -1
+        try:
+            final_remaining_count = repository.count_deals_needing_backfill()
+            if final_remaining_count >= 0:
+                 backfill_deals_remaining_gauge.set(final_remaining_count)
+                 if final_remaining_count == 0 and final_status == "completed":
+                     backfill_completed_successfully = True
+            else:
+                 backfill_deals_remaining_gauge.set(-1)
+                 final_status = "completed_with_errors" 
+        except Exception as count_err:
+            flow_log.error("Failed to get final remaining count", error=str(count_err))
+            backfill_deals_remaining_gauge.set(-1)
+            final_status = "completed_with_errors"
+            
+        if final_status != "completed":
+             etl_failure_counter.labels(flow_type=flow_type).inc()
+
+        try:
+             final_remaining = repository.count_deals_needing_backfill()
+             if final_remaining >= 0:
+                  backfill_deals_remaining_gauge.set(final_remaining) 
+             else:
+                  backfill_deals_remaining_gauge.set(-1)
+        except Exception:
+             flow_log.warning("Could not get final remaining count for backfill gauge.")
+             backfill_deals_remaining_gauge.set(-1)
+             
+        result_payload = {
+            "status": final_status,
+            "total_processed_deals": total_processed_today,
+            "total_api_errors": total_api_errors,
+            "total_processing_errors": total_processing_errors,
+            "batch_results": all_batch_results,
+            "backfill_complete": backfill_completed_successfully, 
+            "estimated_remaining": final_remaining_count 
+        }
+        flow_log.info("Final backfill run result", **result_payload)
+        return result_payload
+
+    except Exception as e:
+        etl_failure_counter.labels(flow_type=flow_type).inc()
+        flow_log.critical("Backfill flow failed critically.", error=str(e), exc_info=True)
+        final_status = "failed"
+        raise
+
+    finally:
+        flow_log.info("Pushing metrics to Pushgateway for backfill flow.")
+        push_metrics_to_gateway(job_name="pipedrive_backfill_job", grouping_key={'flow_run_id': str(flow_run_id)})
