@@ -106,7 +106,7 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
 
         # 2. Executa o ETL principal (run_etl agora foca na sincronização atual)
         etl_service.process_batch_size = run_batch_size
-        result = etl_service.run_etl() 
+        result = etl_service.run_etl(flow_type="sync") 
 
         # --- Validação e Métricas ---
         flow_log.info("Performing post-load validation.")
@@ -235,7 +235,7 @@ def batch_size_experiment_flow(
                 start_time = time.monotonic()
                 
                 # Processar dados de teste
-                result = etl_service.run_etl_with_data(test_data, batch_size=size)
+                result = etl_service.run_etl_with_data(test_data, batch_size=size, flow_type="experiment")
                 
                 duration = time.monotonic() - start_time
                 records_processed = result.get("total_loaded", 0)
