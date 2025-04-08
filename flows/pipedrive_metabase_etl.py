@@ -283,8 +283,10 @@ def batch_size_experiment_flow(
         optimal_size = calculate_optimal_batch_size(results)
         flow_log.info(
             "Optimal batch size determined",
-            optimal_batch_size=optimal_size,
-            analysis_metrics=results
+            extra={
+                "optimal_batch_size": optimal_size,
+                "analysis_metrics": results
+            }
         )
 
         # 4. Persistir resultados
