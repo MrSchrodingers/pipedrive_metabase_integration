@@ -19,7 +19,8 @@ from infrastructure.monitoring.metrics import (
     etl_failure_counter,
     memory_usage_gauge,
     batch_size_gauge,
-    backfill_deals_remaining_gauge
+    backfill_deals_remaining_gauge,
+    batch_experiment_counter
 )
 
 log = structlog.get_logger() 
@@ -224,15 +225,13 @@ def batch_size_experiment_flow(
             
             # Configurar métricas
             metrics_labels = {
-                "experiment": "batch_size",
+                "experiment": "batch_size", 
                 "batch_size": str(size),
-                "flow_run_id": str(flow_run_id),
-                "flow_type": "experiment" 
+                "flow_run_id": str(flow_run_id)
             }
-
             
             # Executar ETL e coletar métricas
-            with etl_counter.labels(**metrics_labels).count_exceptions():
+            with batch_experiment_counter.labels(**metrics_labels).count_exceptions():
                 start_time = time.monotonic()
                 
                 # Processar dados de teste

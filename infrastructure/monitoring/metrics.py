@@ -15,7 +15,12 @@ log = structlog.get_logger(__name__)
 etl_counter = Counter(
     'pipedrive_etl_runs_total',
     'Total ETL executions initiated',
-    ['flow_type', 'experiment', 'batch_size', 'flow_run_id'] 
+    ['flow_type'] 
+)
+batch_experiment_counter = Counter(
+    'pipedrive_batch_experiment_runs_total',
+    'Total batch size experiment executions',
+    ['experiment', 'batch_size', 'flow_run_id']
 )
 etl_failure_counter = Counter(
     'pipedrive_etl_failures_total',
