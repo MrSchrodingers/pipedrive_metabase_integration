@@ -12,8 +12,8 @@ declare -A IMAGES=(
 
 RESOURCE_TIMEOUT=1800 # 30min
 MINUTES=$((RESOURCE_TIMEOUT / 60))
-MINIKUBE_CPUS=2
-MINIKUBE_MEMORY=8192 # 8GB
+MINIKUBE_CPUS=4
+MINIKUBE_MEMORY=10240 # 10GB
 MINIKUBE_DRIVER=docker
 CLEANUP_NAMESPACES="default,kube-system"
 PREFECT_YAML_FILE="prefect.yaml"
@@ -129,49 +129,55 @@ build_images() {
 # --- Função para aplicar Deployments Prefect ---
 deploy_prefect_flows() {
     local work_pool_name="kubernetes-pool"
-    local block_name="github-access-token" # Use o nome do bloco que seu prefect.yaml referencia
-    # <<< DEFINIR URL COM IP EXPLÍCITO >>>
-    local prefect_api_url_ip="http://127.0.0.1:4200/api" # Usa 127.0.0.1
+    local secret_block_name="github-access-token"
+    local db_block_name="postgres-pool"
+    local redis_block_name="redis-cache"
 
-    # --- Verificação Prévia da Conexão ---
-    log "debug" "Verificando acesso à API Prefect via IP (${prefect_api_url_ip}) antes de criar o bloco..."
-    sleep 5 # Manter a pequena espera
-    # <<< TESTAR COM IP EXPLÍCITO >>>
-    # Extrai a base da URL (sem /api) para o health check
+    local prefect_api_url_ip="http://127.0.0.1:4200/api"
+
+    # --- Verificação Prévia da Conexão com Orion ---
+    log "debug" "Verificando acesso à API Prefect via IP (${prefect_api_url_ip}) antes de criar blocos..."
+    sleep 5
     local health_check_url="${prefect_api_url_ip%/api}/health"
     if curl --fail -s "${health_check_url}" > /dev/null; then
          log "debug" "Teste de conexão com ${health_check_url} bem-sucedido."
     else
          log "error" "Falha no teste de conexão com ${health_check_url}."
-         log "error" "Verifique se o port-forwarding para 127.0.0.1:4200 está ativo e se o Prefect Orion está rodando."
          fail "Não foi possível conectar ao Prefect API via ${prefect_api_url_ip}. Impossível continuar."
     fi
-    # --- Fim da Verificação ---
 
-    log "info" "Verificando/Criando Bloco de Segredo Prefect '${block_name}'..."
-
-    if [[ -z "${GITHUB_PAT:-}" ]]; then
-        fail "Variável de ambiente GITHUB_PAT não definida. Exporte o token antes de rodar o script."
+    # --- Verificação das Variáveis de Ambiente para Blocos ---
+    log "info" "Verificando variáveis de ambiente para criação dos blocos..."
+    local required_block_vars=("GITHUB_PAT" "POSTGRES_USER" "POSTGRES_PASSWORD" "POSTGRES_DB")
+    local missing_vars_msg=""
+    for var in "${required_block_vars[@]}"; do
+         if [[ -z "${!var:-}" ]]; then
+              missing_vars_msg+="- ${var}\n"
+         fi
+    done
+    if [[ -n "$missing_vars_msg" ]]; then
+        log "error" "Variáveis de ambiente obrigatórias para criar blocos não definidas:\n${missing_vars_msg}"
+        fail "Exporte as variáveis necessárias antes de rodar o script."
+    else
+        log "info" "Variáveis de ambiente para blocos parecem estar definidas."
     fi
 
-    # <<< EXPORTAR URL COM IP PARA O SCRIPT PYTHON E COMANDOS CLI >>>
+    # --- Criação/Atualização dos Blocos Core via Script Python ---
+    log "info" "Executando script para criar/atualizar Blocos Prefect (${secret_block_name}, ${db_block_name}, ${redis_block_name})..."
     export PREFECT_API_URL="${prefect_api_url_ip}"
     log "debug" "PREFECT_API_URL configurada como ${PREFECT_API_URL} para script Python e CLI."
 
-    # Executa o script Python E VERIFICA O CÓDIGO DE SAÍDA
-    if ! python create_secret_block.py -n "${block_name}" "${GITHUB_PAT}"; then
-         fail "Falha ao executar create_secret_block.py. Verifique os logs do script Python acima."
+    if ! python create_or_update_core_blocks.py; then
+         fail "Falha ao executar create_or_update_core_blocks.py. Verifique os logs do script Python acima."
     fi
-    log "info" "Bloco de Segredo '${block_name}' parece ter sido criado/atualizado com sucesso."
+    log "info" "Blocos Prefect principais criados/atualizados com sucesso."
 
-    # --- Continua com a lógica original ---
-    # O CLI do prefect usará a variável PREFECT_API_URL exportada
+    # --- Criação do Work Pool ---
     log "info" "Verificando/Criando Work Pool Prefect: ${work_pool_name}..."
-    log "info" "Prefect CLI usará PREFECT_API_URL=${PREFECT_API_URL}"
 
     if ! prefect work-pool inspect "${work_pool_name}" > /dev/null 2>&1; then
          log "info" "Criando work pool '${work_pool_name}'..."
-         if prefect work-pool create --type kubernetes "${work_pool_name}"; then
+         if prefect work-pool create --type kubernetes "${work_pool_name}" --overwrite; then
              log "info" "Work Pool '${work_pool_name}' criado com sucesso."
          else
              fail "Falha ao criar work pool '${work_pool_name}'."
@@ -180,6 +186,7 @@ deploy_prefect_flows() {
          log "info" "Work Pool '${work_pool_name}' já existe."
     fi
 
+    # --- Aplicação dos Deployments ---
     log "info" "Aplicando/Atualizando Deployments Prefect a partir do ${PREFECT_YAML_FILE}..."
     if prefect deploy --all; then
         log "success" "Deployments Prefect aplicados com sucesso via CLI."

@@ -56,3 +56,37 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit:
+- name: Batch Size Experiment
+  version: '1.0'
+  tags:
+  - experiment
+  - batch-size
+  entrypoint: flows/pipedrive_metabase_etl.py:batch_size_experiment_flow
+  parameters:
+    batch_sizes:
+    - 300
+    - 500
+    - 750
+    - 1000
+    - 1500
+    test_data_size: 10000
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables:
+      resources:
+        limits:
+          memory: 8Gi
+          cpu: '2'
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/k8s-job-infra-block
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: main
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+  description: Fluxo aprimorado para experimentos de tamanho de batch com análise
+    automática e validação.
+  schedules: []

@@ -25,7 +25,7 @@ DEFAULT_INIT_CONTAINERS = [
      {
         "name": "wait-for-orion",
         "image": "curlimages/curl:latest",
-        "command": ['sh', '-c', 'echo Waiting for orion...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n "."; sleep 3; done; echo Orion ready.'],
+        "command": ['sh', '-c', 'echo Waiting for orion...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n "."; sleep 10; done; echo Orion ready.'],
     }
 ]
 DEFAULT_ENV_FROM = [

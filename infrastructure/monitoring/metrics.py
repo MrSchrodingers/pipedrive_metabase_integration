@@ -39,11 +39,7 @@ memory_usage_gauge = Gauge(
     'Peak memory usage of the ETL process run in Megabytes',
      ['flow_type']
 )
-batch_size_gauge = Gauge(
-    'pipedrive_etl_batch_size',
-    'Number of records in the current processing batch',
-    ['flow_type']
-)
+
 # Gauge para backfill
 backfill_deals_remaining_gauge = Gauge(
     'pipedrive_backfill_deals_remaining_estimated',
@@ -82,6 +78,42 @@ pipedrive_api_token_cost_total = Counter(
     'pipedrive_api_token_cost_total',
     'Estimated total token cost consumed for Pipedrive API calls',
     ['endpoint']
+)
+
+transform_memory_usage = Gauge(
+    'etl_transform_memory_bytes',
+    'Memory usage during transformation',
+    ['batch_size']
+)
+
+api_batch_size = Gauge(
+    'pipedrive_api_batch_size',
+    'Batch sizes used in API calls',
+    ['endpoint']
+)
+
+db_batch_latency = Histogram(
+    'db_batch_operation_latency_seconds',
+    'Latency of database batch operations',
+    ['operation', 'batch_size']
+)
+
+batch_size_gauge = Gauge(
+    'pipedrive_etl_batch_size',
+    'Number of records in the current processing batch',
+    ['flow_type']
+)
+
+etl_data_quality_issues = Counter(
+    'etl_data_quality_issues_total',
+    'Problemas de qualidade de dados detectados',
+    ['flow_type', 'issue_type']
+)
+
+batch_experiment_metrics = Gauge(
+    'batch_experiment_current_metrics',
+    'Métricas em tempo real do experimento de batch',
+    ['batch_size', 'metric']
 )
 
 # --- Função para enviar métricas ao Pushgateway ---

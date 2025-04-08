@@ -17,5 +17,13 @@ class Settings:
     DATABASE_URL = os.getenv("DATABASE_URL")
 
     REDIS_URL = os.getenv("REDIS_URL")
+    
+    BATCH_OPTIMIZER_CONFIG = {
+        'memory_threshold': 0.8,
+        'reduce_factor': 0.7,
+        'duration_threshold': 30,
+        'increase_factor': 1.2,
+        'history_window': 5
+    }
 
 settings = Settings()
