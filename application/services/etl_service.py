@@ -404,9 +404,9 @@ class ETLService:
 
                     except Exception as batch_proc_err:
                         batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
-                        failed_in_batch = len(batch_to_process) - failed_count_in_batch 
-                        etl_failure_counter.inc(failed_in_batch)
-                        total_failed += failed_in_batch
+                        failed_in_this_batch = len(batch_to_process)
+                        etl_failure_counter.inc(failed_in_this_batch)
+                        total_failed += failed_in_this_batch
                         
                     batch_duration = time.monotonic() - batch_start_time
                     current_mem_usage = self._track_resources(flow_type="main_sync") 
@@ -454,11 +454,13 @@ class ETLService:
                             batch_log.error("Failed to load final batch to repository", error=str(load_error), records_count=len(validated_batch), exc_info=True)
                     else:
                         batch_log.warning("Final ETL Batch resulted in no validated records to load", failed_in_batch=failed_count_in_batch)
+                    
                 except Exception as batch_proc_err:
-                    batch_log.error("Critical error processing final ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
-                    failed_in_batch = len(batch_to_process) - failed_count_in_batch
-                    etl_failure_counter.inc(failed_in_batch)
-                    total_failed += failed_in_batch
+                    batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
+                    failed_in_this_batch = len(batch_to_process)
+                    etl_failure_counter.inc(failed_in_this_batch)
+                    total_failed += failed_in_this_batch
+                        
                 self._track_resources( flow_type="main_sync" )
                 batch_duration = time.monotonic() - batch_start_time
                 batch_log.debug("Final ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
