@@ -92,7 +92,8 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
     flow_run_ctx = context.get_run_context().flow_run
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
 
-    flow_log = base_flow_log.bind(flow_run_id=str(flow_run_id))
+    flow_log = base_flow_log # Use o logger diretamente
+    flow_log.info(f"Starting {flow_run_ctx.flow.name} flow...")
 
     flow_log.info(f"Starting main ETL flow with batch size: {run_batch_size}")
     flow_type = "sync"
@@ -319,7 +320,8 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     flow_run_ctx = context.get_run_context().flow_run
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
 
-    flow_log = base_flow_log.bind(flow_run_id=str(flow_run_id))
+    flow_log = base_flow_log
+    flow_log.info(f"Starting {flow_run_ctx.flow.name} flow...")
 
     flow_log.info(f"Starting stage history backfill flow. Daily limit: {daily_deal_limit}, DB batch size: {db_batch_size}")
     flow_type = "backfill"

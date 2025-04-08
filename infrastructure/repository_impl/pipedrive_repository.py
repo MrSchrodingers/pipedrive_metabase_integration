@@ -1,11 +1,12 @@
-from datetime import datetime, time
-import time as py_time 
+from datetime import datetime, time, timezone # Adicionado timezone
+import random
+import time as py_time
 import json
 import csv
 from typing import Any, List, Dict, Optional, Set, Tuple
 from io import StringIO
 from psycopg2 import sql, extras
-from psycopg2.extensions import cursor as DbCursor 
+from psycopg2.extensions import cursor as DbCursor
 import structlog
 
 from application.ports.data_repository_port import DataRepositoryPort
@@ -19,6 +20,9 @@ BASE_COLUMNS = [
     "person_name", "stage_id", "stage_name", "pipeline_id", "pipeline_name",
     "owner_id", "owner_name", "status", "value", "currency",
     "add_time", "update_time",
+    "org_id", "org_name", "lost_reason", "visible_to", "close_time", "won_time", "lost_time",
+    "first_won_time", "expected_close_date", "probability", "label",
+    "owner_id", "owner_name"
 ]
 
 COLUMN_TYPES = {
@@ -28,27 +32,37 @@ COLUMN_TYPES = {
     "pipeline_name": "TEXT", "owner_id": "INTEGER", "owner_name": "TEXT",
     "status": "TEXT", "value": "NUMERIC(18, 2)", "currency": "VARCHAR(10)",
     "add_time": "TIMESTAMPTZ", "update_time": "TIMESTAMPTZ",
+    "org_id": "INTEGER", "org_name": "TEXT", "lost_reason": "TEXT", "visible_to": "TEXT", 
+    "close_time": "TIMESTAMPTZ", "won_time": "TIMESTAMPTZ", "lost_time": "TIMESTAMPTZ",
+    "first_won_time": "TIMESTAMPTZ", "expected_close_date": "DATE", "probability": "NUMERIC(5,2)",
+    "label": "TEXT",
 }
+
 
 class PipedriveRepository(DataRepositoryPort):
     TABLE_NAME = "pipedrive_data"
+    CONFIG_TABLE_NAME = "config" 
     STAGING_TABLE_PREFIX = "staging_pipedrive_"
     STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_"
     SCHEMA_LOCK_ID = 47835
 
     def __init__(
         self,
-        db_pool: DBConnectionPool, 
+        db_pool: DBConnectionPool,
         custom_field_api_mapping: dict,
         all_stages_details: List[Dict]
         ):
         self.db_pool = db_pool
         self.log = log.bind(repository="PipedriveRepository")
         self._raw_custom_field_mapping = custom_field_api_mapping
-        self._all_stages_details = all_stages_details 
+        self._all_stages_details = all_stages_details
 
         self._custom_columns_dict = self._prepare_custom_columns(custom_field_api_mapping)
-        self._stage_history_columns_dict = self._prepare_stage_history_columns(all_stages_details)
+
+        self._stage_history_columns_dict = self._prepare_stage_history_columns(
+            all_stages_details,
+            existing_custom_cols=set(self._custom_columns_dict.keys()) 
+        )
 
         self.ensure_schema_exists()
 
@@ -58,12 +72,17 @@ class PipedriveRepository(DataRepositoryPort):
         return self._raw_custom_field_mapping
 
     def _prepare_custom_columns(self, api_mapping: Dict[str, str]) -> Dict[str, str]:
-        """Prepares custom column names and types, ensuring no clashes with base columns."""
+        """Prepares custom column names and types, ensuring no clashes with base columns or prefixes."""
         custom_cols = {}
         base_col_set = set(BASE_COLUMNS)
         reserved_prefixes = (self.STAGE_HISTORY_COLUMN_PREFIX,)
-        
+
         for api_key, normalized_name in api_mapping.items():
+            if not normalized_name or normalized_name == "_invalid_normalized_name":
+                self.log.warning("Invalid or empty normalized name for custom field, skipping.",
+                                 api_key=api_key, normalized_name=normalized_name)
+                continue
+
             if normalized_name in base_col_set:
                 self.log.warning(
                     "Custom field normalized name clashes with base column, skipping.",
@@ -72,24 +91,29 @@ class PipedriveRepository(DataRepositoryPort):
                 continue
             if any(normalized_name.startswith(prefix) for prefix in reserved_prefixes):
                  self.log.warning(
-                    "Custom field normalized name clashes with reserved prefix, skipping.",
-                    api_key=api_key, normalized_name=normalized_name
-                )
+                     "Custom field normalized name uses a reserved prefix, skipping.",
+                     api_key=api_key, normalized_name=normalized_name
+                 )
                  continue
 
             custom_cols[normalized_name] = "TEXT"
+        self.log.info("Prepared custom columns", count=len(custom_cols))
         return custom_cols
-    
-    def _prepare_stage_history_columns(self, all_stages: List[Dict]) -> Dict[str, str]:
-        """Prepares stage history column names (moved_to_stage_...) and types."""
+
+    def _prepare_stage_history_columns(self, all_stages: List[Dict], existing_custom_cols: Set[str]) -> Dict[str, str]:
+        """
+        Prepares stage history column names (moved_to_stage_...) and types,
+        handling duplicate normalized names by adding suffixes (_2, _3...).
+        """
         stage_history_cols = {}
         if not all_stages:
             self.log.warning("No stage details provided, cannot create stage history columns.")
             return {}
 
         base_col_set = set(BASE_COLUMNS)
-        existing_custom_cols = set(self._custom_columns_dict.keys())
-        processed_normalized_names = set()
+        forbidden_column_names = base_col_set.union(existing_custom_cols)
+
+        normalized_name_counts: Dict[str, int] = {}
 
         for stage in all_stages:
             stage_id = stage.get('id')
@@ -100,27 +124,38 @@ class PipedriveRepository(DataRepositoryPort):
 
             try:
                 normalized_stage_name = normalize_column_name(stage_name)
-                if not normalized_stage_name:
+                if not normalized_stage_name or normalized_stage_name == "_invalid_normalized_name":
                     self.log.warning("Failed to normalize stage name", stage_id=stage_id, stage_name=stage_name)
                     continue
 
-                column_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized_stage_name}"
+                base_column_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized_stage_name}"
+                final_column_name = base_column_name
 
-                if column_name in base_col_set or column_name in existing_custom_cols:
-                    self.log.error(
-                        "CRITICAL: Normalized stage history column name clashes with base/custom column!",
-                        stage_id=stage_id, stage_name=stage_name, column_name=column_name
+                count = normalized_name_counts.get(normalized_stage_name, 0)
+                if count > 0:
+                    suffix = count + 1
+                    final_column_name = f"{base_column_name}_{suffix}"
+                    self.log.warning(
+                        "Duplicate normalized stage name detected. Using suffixed column name.",
+                        stage_id=stage_id, stage_name=stage_name,
+                        normalized_name=normalized_stage_name,
+                        original_column=base_column_name,
+                        final_column=final_column_name
                     )
+
+                normalized_name_counts[normalized_stage_name] = count + 1
+
+                if final_column_name in forbidden_column_names:
+                    self.log.error(
+                        "CRITICAL: Final stage history column name clashes with base/custom column! Skipping.",
+                        stage_id=stage_id, stage_name=stage_name,
+                        normalized_name=normalized_stage_name,
+                        final_column=final_column_name
+                    )
+                    normalized_name_counts[normalized_stage_name] -= 1
                     continue
 
-                if normalized_stage_name in processed_normalized_names:
-                     self.log.warning(
-                        "Duplicate normalized stage name detected. History column might overwrite.",
-                        stage_id=stage_id, stage_name=stage_name, normalized_name=normalized_stage_name
-                    )
-                else:
-                    stage_history_cols[column_name] = "TIMESTAMPTZ"
-                    processed_normalized_names.add(normalized_stage_name)
+                stage_history_cols[final_column_name] = "TIMESTAMPTZ"
 
             except Exception as e:
                 self.log.error("Error processing stage for history column", stage_data=stage, error=str(e))
@@ -128,9 +163,10 @@ class PipedriveRepository(DataRepositoryPort):
         self.log.info("Prepared stage history columns", count=len(stage_history_cols))
         return stage_history_cols
 
+
     def _get_all_columns(self) -> List[str]:
-        """Returns a list of all base and active custom column names."""
-        return BASE_COLUMNS + list(self._custom_columns_dict.keys()) + list(self._stage_history_columns_dict.keys())
+        """Returns a list of all base, custom, and stage history column names."""
+        return BASE_COLUMNS + sorted(list(self._custom_columns_dict.keys())) + sorted(list(self._stage_history_columns_dict.keys()))
 
     def _get_column_definitions(self) -> List[sql.SQL]:
         """Generates SQL column definitions for CREATE TABLE."""
@@ -141,17 +177,14 @@ class PipedriveRepository(DataRepositoryPort):
         for col in ordered_cols:
             col_type = all_column_types.get(col)
             if col_type:
-                 defs.append(sql.SQL("{} {}").format(sql.Identifier(col), sql.SQL(col_type)))
+                defs.append(sql.SQL("{} {}").format(sql.Identifier(col), sql.SQL(col_type)))
             else:
-                 self.log.error("Column definition missing type unexpectedly!", column_name=col)
-                 defs.append(sql.SQL("{} TEXT").format(sql.Identifier(col)))
+                self.log.error("Column definition missing type unexpectedly!", column_name=col)
+                defs.append(sql.SQL("{} TEXT").format(sql.Identifier(col)))
         return defs
-                
+
     def ensure_schema_exists(self):
-        """
-        Ensures the target table and necessary indexes exist using an advisory lock
-        to prevent race conditions during concurrent runs.
-        """
+        """Ensures the target tables (data and config) and necessary indexes exist."""
         conn = None
         locked = False
         try:
@@ -161,129 +194,151 @@ class PipedriveRepository(DataRepositoryPort):
                 locked = True
                 self.log.info("Acquired schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
 
-                self._create_or_alter_table(cur)
+                self._create_or_alter_table(cur, self.TABLE_NAME, self._get_column_definitions)
+                self._create_or_alter_table(cur, self.CONFIG_TABLE_NAME, self._get_config_column_definitions)
+
                 self._create_indexes(cur)
-                conn.commit() 
+
+                conn.commit()
                 self.log.info("Schema check/modification committed.")
-                
+
         except Exception as e:
             if conn: conn.rollback()
             self.log.error("Failed to ensure database schema", error=str(e), exc_info=True)
             raise
         finally:
-            if conn and locked:
-                try:
-                    with conn.cursor() as unlock_cur:
-                        unlock_cur.execute("SELECT pg_advisory_unlock(%s)", (self.SCHEMA_LOCK_ID,))
-                    self.log.info("Released schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
-                except Exception as unlock_err:
-                    self.log.error("Failed to release schema lock", error=str(unlock_err))
             if conn:
+                if locked:
+                    try:
+                        with conn.cursor() as unlock_cur:
+                             unlock_cur.execute("SELECT pg_advisory_unlock(%s)", (self.SCHEMA_LOCK_ID,))
+                        self.log.info("Released schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
+                    except Exception as unlock_err:
+                        self.log.error("Failed to release schema lock", error=str(unlock_err))
                 self.db_pool.release_connection(conn)
 
-    def _create_or_alter_table(self, cur: DbCursor):
-            """Creates the table or adds missing columns."""
-            table_id = sql.Identifier(self.TABLE_NAME)
-            cur.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name = %s
-                );
-            """, (self.TABLE_NAME,))
-            table_exists = cur.fetchone()[0]
-            
-            all_target_columns_with_types = {
-                **COLUMN_TYPES,
-                **self._custom_columns_dict,
-                **self._stage_history_columns_dict
-            }
-            all_target_column_names = self._get_all_columns() 
+    def _get_config_column_definitions(self) -> List[sql.SQL]:
+        """Returns column definitions specifically for the config table."""
+        return [
+            sql.SQL("key TEXT PRIMARY KEY"),
+            sql.SQL("value JSONB"),
+            sql.SQL("updated_at TIMESTAMPTZ")
+        ]
 
-            if not table_exists:
-                self.log.info("Table does not exist, creating.", table_name=self.TABLE_NAME)
-                column_defs = self._get_column_definitions()
-                if not column_defs:
-                    raise RuntimeError("Cannot create table with no column definitions.")
+    def _create_or_alter_table(self, cur: DbCursor, table_name: str, get_col_defs_func: callable):
+        """Generic function to create a table or add missing columns."""
+        table_id = sql.Identifier(table_name)
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = %s
+            );
+        """, (table_name,))
+        table_exists = cur.fetchone()[0]
 
-                create_sql = sql.SQL("CREATE TABLE {table} ({columns})").format(
-                    table=table_id,
-                    columns=sql.SQL(',\n    ').join(column_defs)
-                )
-                self.log.debug("Executing CREATE TABLE SQL", sql_query=create_sql.as_string(cur))
-                cur.execute(create_sql)
-                self.log.info("Table created successfully.", table_name=self.TABLE_NAME)
+        column_defs_sql = get_col_defs_func()
+        expected_columns_with_types = {}
+        for col_def in column_defs_sql:
+            parts = col_def.strings
+            if len(parts) >= 2:
+                 col_name = parts[0]
+                 col_type = parts[1].strip() 
+                 expected_columns_with_types[col_name] = col_type
             else:
-                self.log.debug("Table exists, checking for missing columns.", table_name=self.TABLE_NAME)
-                cur.execute("""
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_schema = 'public' AND table_name = %s;
-                """, (self.TABLE_NAME,))
-                existing_columns = {row[0] for row in cur.fetchall()}
+                 self.log.error("Could not parse column definition", definition=col_def.as_string(cur))
 
-                missing_columns = set(all_target_column_names) - existing_columns
+        expected_column_names = list(expected_columns_with_types.keys())
 
-                if missing_columns:
-                    self.log.info("Adding missing columns to table.", missing=sorted(list(missing_columns)))
-                    alter_statements = []
-                    for col_name in sorted(list(missing_columns)):
-                        col_type = all_target_columns_with_types.get(col_name)
-                        if col_type:
-                            alter_statements.append(sql.SQL("ADD COLUMN IF NOT EXISTS {} {}").format(
-                                sql.Identifier(col_name),
-                                sql.SQL(col_type)
-                            ))
-                        else:
-                            self.log.error("Cannot add missing column, type definition not found.", column_name=col_name)
+        if not table_exists:
+            self.log.info("Table does not exist, creating.", table_name=table_name)
+            if not column_defs_sql:
+                raise RuntimeError(f"Cannot create table '{table_name}' with no column definitions.")
 
-                    if alter_statements:
-                        for stmt in alter_statements:
-                            alter_sql = sql.SQL("ALTER TABLE {table} {add}").format(table=table_id, add=stmt)
-                            try:
-                                self.log.debug("Executing ALTER TABLE ADD COLUMN", sql_query=alter_sql.as_string(cur))
-                                cur.execute(alter_sql)
-                            except Exception as alter_err:
-                                self.log.error("Failed to add column", column_name=stmt.strings[0], error=str(alter_err))
-                                # Considerar se deve fazer rollback e parar
-                                # conn.rollback() # Se uma coluna falhar, as outras podem depender dela?
-                                # raise alter_err
+            create_sql = sql.SQL("CREATE TABLE IF NOT EXISTS {table} ({columns})").format( 
+                table=table_id,
+                columns=sql.SQL(',\n    ').join(column_defs_sql)
+            )
+            self.log.debug(f"Executing CREATE TABLE for {table_name}", sql_query=create_sql.as_string(cur))
+            cur.execute(create_sql)
+            self.log.info("Table created successfully.", table_name=table_name)
+        else:
+            self.log.debug("Table exists, checking for missing columns.", table_name=table_name)
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = %s;
+            """, (table_name,))
+            existing_columns = {row[0] for row in cur.fetchall()}
 
-                        self.log.info("Missing columns check/addition attempted.", count=len(missing_columns))
-                else:
-                    self.log.debug("No missing columns found.")
+            missing_columns = set(expected_column_names) - existing_columns
+
+            if missing_columns:
+                self.log.info(f"Adding missing columns to table '{table_name}'.", missing=sorted(list(missing_columns)))
+                alter_statements = []
+                for col_name in sorted(list(missing_columns)):
+                    col_type = expected_columns_with_types.get(col_name)
+                    if col_type:
+                        alter_statements.append(sql.SQL("ADD COLUMN IF NOT EXISTS {} {}").format(
+                            sql.Identifier(col_name),
+                            sql.SQL(col_type)
+                        ))
+                    else:
+                        self.log.error(f"Cannot add missing column to '{table_name}', type definition not found.", column_name=col_name)
+
+                if alter_statements:
+                    for stmt in alter_statements:
+                        alter_sql = sql.SQL("ALTER TABLE {table} {add}").format(table=table_id, add=stmt)
+                        try:
+                            col_name_being_added = stmt.strings[0]
+                            self.log.debug(f"Executing ALTER TABLE ADD COLUMN on {table_name}", column_name=col_name_being_added)
+                            cur.execute(alter_sql)
+                        except Exception as alter_err:
+                            self.log.error(f"Failed to add column to {table_name}", column_name=col_name_being_added, error=str(alter_err))
+                self.log.info(f"Missing columns check/addition attempted for {table_name}.", count=len(missing_columns))
+            else:
+                self.log.debug(f"No missing columns found for {table_name}.")
+
 
     def _create_indexes(self, cur: DbCursor):
-        """Creates standard indexes if they don't exist."""
+        """Creates standard indexes if they don't exist on the main data table."""
         table_id = sql.Identifier(self.TABLE_NAME)
-        indexes = {
-            "idx_pipedrive_update_time": sql.SQL("(update_time DESC)"),
-            "idx_pipedrive_stage_id": sql.SQL("(stage_id)"), 
-            "idx_pipedrive_pipeline_id": sql.SQL("(pipeline_id)"),
-            "idx_pipedrive_status": sql.SQL("(status)"),
-            "idx_pipedrive_add_time": sql.SQL("(add_time DESC)"),
-            "idx_pipedrive_active_deals": sql.SQL("(update_time DESC) WHERE status NOT IN ('Ganho', 'Perdido', 'Deletado')")
+        indexes_to_create = {
+            f"idx_{self.TABLE_NAME}_update_time": sql.SQL("(update_time DESC)"),
+            f"idx_{self.TABLE_NAME}_stage_id": sql.SQL("(stage_id)"),
+            f"idx_{self.TABLE_NAME}_pipeline_id": sql.SQL("(pipeline_id)"),
+            f"idx_{self.TABLE_NAME}_status": sql.SQL("(status)"),
+            f"idx_{self.TABLE_NAME}_add_time": sql.SQL("(add_time DESC)"),
+            f"idx_{self.TABLE_NAME}_active_deals_update": sql.SQL("(update_time DESC) WHERE status NOT IN ('Ganho', 'Perdido', 'Deletado')")
         }
-        
-        important_normalized_stages = ['prospect', 'contact_made', 'proposal_sent']
-        for norm_stage in important_normalized_stages:
-           col_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{norm_stage}"
-           idx_name = f"idx_pipedrive_{norm_stage}_entry_time"
-           cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name=%s AND column_name=%s", (self.TABLE_NAME, col_name))
-           if cur.fetchone():
-              indexes[idx_name] = sql.SQL("({})").format(sql.Identifier(col_name))
-           else:
-              self.log.warning("Skipping index creation for non-existent stage history column", column_name=col_name)
 
-        for idx_name, idx_definition in indexes.items():
-            create_idx_sql = sql.SQL(
-                "CREATE INDEX IF NOT EXISTS {} ON {} {}"
-            ).format(sql.Identifier(idx_name), table_id, idx_definition)
-            try:
-                cur.execute(create_idx_sql)
-                self.log.debug("Index checked/created.", index_name=idx_name)
-            except Exception as idx_err:
-                 self.log.warning("Failed to create index", index_name=idx_name, error=str(idx_err))
+        existing_history_columns = self._stage_history_columns_dict.keys()
+        important_normalized_stages = ['prospect', 'contact_made', 'proposal_sent']
+        for history_col_name in existing_history_columns:
+             norm_stage_part = history_col_name.replace(self.STAGE_HISTORY_COLUMN_PREFIX, '')
+             if True:
+                 idx_name = f"idx_{self.TABLE_NAME}_{norm_stage_part}_entry"
+                 indexes_to_create[idx_name] = sql.SQL("({})").format(sql.Identifier(history_col_name))
+
+
+        for idx_name, idx_definition in indexes_to_create.items():
+            cur.execute("SELECT 1 FROM pg_class WHERE relname = %s AND relkind = 'i'", (idx_name,))
+            index_exists = cur.fetchone()
+
+            if not index_exists:
+                create_idx_sql = sql.SQL("CREATE INDEX {} ON {} {}").format(
+                    sql.Identifier(idx_name),
+                    table_id,
+                    idx_definition
+                )
+                try:
+                    self.log.debug("Creating index.", index_name=idx_name)
+                    cur.execute(create_idx_sql)
+                except Exception as idx_err:
+                    self.log.warning("Failed to create index", index_name=idx_name, error=str(idx_err))
+            else:
+                 self.log.debug("Index already exists.", index_name=idx_name)
 
         self.log.debug("Index check/creation process completed.")
+
 
     def _record_to_csv_line(self, record: Dict, columns: List[str]) -> str:
         """Converts a dictionary record to a CSV string line for COPY."""
@@ -309,9 +364,7 @@ class PipedriveRepository(DataRepositoryPort):
         return csv_line
 
     def save_data_upsert(self, data: List[Dict]):
-        """
-        Efficiently upserts data using a temporary staging table and COPY FROM STDIN.
-        """
+        """Efficiently upserts data using an UNLOGGED staging table and COPY."""
         if not data:
             self.log.debug("No data provided to save_data_upsert, skipping.")
             return
@@ -319,68 +372,81 @@ class PipedriveRepository(DataRepositoryPort):
         conn = None
         start_time = py_time.monotonic()
         columns = self._get_all_columns() 
-        staging_table_name = f"{self.STAGING_TABLE_PREFIX}{int(py_time.time())}_{abs(hash(tuple(data[0].keys())))}"
+        unique_suffix = f"{int(py_time.time())}_{random.randint(1000, 9999)}"
+        staging_table_name = f"{self.STAGING_TABLE_PREFIX}{unique_suffix}"
         staging_table_id = sql.Identifier(staging_table_name)
         target_table_id = sql.Identifier(self.TABLE_NAME)
         record_count = len(data)
+        self.log.debug("Starting upsert process", record_count=record_count, column_count=len(columns), target_table=self.TABLE_NAME)
 
         try:
             conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
-                # 1. Create Temporary Staging Table
                 staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
                 create_staging_sql = sql.SQL("""
                     CREATE UNLOGGED TABLE {staging_table} (
                         {columns}
-                    ) ON COMMIT DROP;
+                    )
                 """).format(
                     staging_table=staging_table_id,
-                    columns=sql.SQL(',\n').join(staging_col_defs)
+                    columns=sql.SQL(',\n    ').join(staging_col_defs)
                 )
+                self.log.debug("Creating unlogged staging table.", table_name=staging_table_name)
                 cur.execute(create_staging_sql)
-                self.log.debug("Created temporary staging table.", table_name=staging_table_name)
 
                 # 2. Prepare data buffer for COPY
                 buffer = StringIO()
-                for record in data:
-                    full_record = {col: record.get(col) for col in columns}
-                    line = self._record_to_csv_line(full_record, columns)
-                    buffer.write(line + '\n')
-                buffer.seek(0)
+                try: 
+                    for i, record in enumerate(data):
+                        full_record = {col: record.get(col) for col in columns}
+                        try:
+                            line = self._record_to_csv_line(full_record, columns)
+                            buffer.write(line + '\n')
+                        except Exception as csv_err:
+                            self.log.error("Error converting record to CSV line", record_index=i, record_preview=str(full_record)[:100], error=str(csv_err))
+                    buffer.seek(0)
 
-                # 3. COPY data into Staging Table
-                copy_sql = sql.SQL("COPY {staging_table} ({fields}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N')").format(
-                    staging_table=staging_table_id,
-                    fields=sql.SQL(', ').join(map(sql.Identifier, columns))
-                )
-                self.log.debug("Executing COPY command.", table_name=staging_table_name)
-                cur.copy_expert(copy_sql, buffer)
-                self.log.debug("Copied data to staging table.", record_count=record_count, table_name=staging_table_name)
+                    # 3. COPY data into Staging Table
+                    copy_sql = sql.SQL("COPY {staging_table} ({fields}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N', ENCODING 'UTF8')").format(
+                        staging_table=staging_table_id,
+                        fields=sql.SQL(', ').join(map(sql.Identifier, columns))
+                    )
+                    self.log.debug("Executing COPY command.", table_name=staging_table_name)
+                    cur.copy_expert(copy_sql, buffer)
+                    copy_row_count = cur.rowcount
+                    self.log.debug("Copied data to staging table.", copied_row_count=copy_row_count, expected_count=record_count, table_name=staging_table_name)
+                    if copy_row_count != record_count:
+                         self.log.warning("COPY command copied unexpected number of rows!", expected=record_count, actual=copy_row_count)
 
-                # 4. Perform UPSERT from Staging to Target Table
+                finally:
+                    buffer.close()
+
+                # 4. Perform UPSERT from Staging to Target Table with CASTING
                 insert_fields = sql.SQL(', ').join(map(sql.Identifier, columns))
-                update_columns = BASE_COLUMNS + list(self._custom_columns_dict.keys())
+                update_columns = [col for col in columns if col != 'id' and col != 'add_time'] 
                 update_assignments = sql.SQL(', ').join([
                     sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col))
-                    for col in update_columns if col != 'id'
+                    for col in update_columns
                 ])
 
-                # Build SELECT clause with appropriate CASTs from TEXT staging table
                 select_expressions = []
                 target_types = {**COLUMN_TYPES, **self._custom_columns_dict, **self._stage_history_columns_dict}
                 for col in columns:
                     full_type_definition = target_types.get(col, "TEXT")
-                    base_pg_type = full_type_definition.split()[0].split('(')[0]
-                    if base_pg_type.upper() not in ('TEXT', 'VARCHAR'):
+                    base_pg_type = full_type_definition.split()[0].split('(')[0].upper()
+
+                    if col == 'id':
+                         select_expressions.append(sql.Identifier(col))
+                    elif base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'BOOLEAN'):
                          select_expressions.append(
-                             sql.SQL("CAST(NULLIF({col}, '') AS {type})").format(
+                             sql.SQL("NULLIF({col}, '')::{type}").format(
                                  col=sql.Identifier(col),
                                  type=sql.SQL(base_pg_type)
                              )
                          )
                     else:
-                         select_expressions.append(sql.SQL("{col}").format(col=sql.Identifier(col)))
-                         
+                         select_expressions.append(sql.Identifier(col))
+
                 select_clause = sql.SQL(', ').join(select_expressions)
 
                 upsert_sql = sql.SQL("""
@@ -389,7 +455,9 @@ class PipedriveRepository(DataRepositoryPort):
                     FROM {staging_table}
                     ON CONFLICT (id) DO UPDATE SET
                         {update_assignments}
-x                """).format(
+                    -- Opcional: Adicionar WHERE para otimizar updates desnecessários
+                    -- WHERE t.update_time IS DISTINCT FROM EXCLUDED.update_time -- Exemplo
+                """).format(
                     target_table=target_table_id,
                     insert_fields=insert_fields,
                     select_clause=select_clause,
@@ -399,8 +467,11 @@ x                """).format(
 
                 self.log.debug("Executing UPSERT command.", target_table=self.TABLE_NAME)
                 cur.execute(upsert_sql)
-                upserted_count = cur.rowcount
-                conn.commit() 
+                upserted_count = cur.rowcount 
+                conn.commit()
+                self.log.debug("Commit successful after UPSERT.")
+
+                # 5. Drop Staging Table (SEMPRE fazer isso no finally)
 
                 duration = py_time.monotonic() - start_time
                 self.log.info(
@@ -411,13 +482,25 @@ x                """).format(
                 )
 
         except Exception as e:
-            if conn: conn.rollback()
+            if conn: conn.rollback() 
             self.log.error("Upsert failed", error=str(e), record_count=record_count, exc_info=True)
-            raise
+            raise 
         finally:
             if conn:
-                self.db_pool.release_connection(conn)
-                
+                try:
+                    with conn.cursor() as final_cur:
+                         drop_sql = sql.SQL("DROP TABLE IF EXISTS {staging_table}").format(staging_table=staging_table_id)
+                         self.log.debug("Dropping staging table.", table_name=staging_table_name)
+                         final_cur.execute(drop_sql)
+                         conn.commit()
+                except Exception as drop_err:
+                     self.log.error("Failed to drop staging table", table_name=staging_table_name, error=str(drop_err))
+                finally:
+                    self.db_pool.release_connection(conn)
+
+
+    # --- Funções de Leitura e Validação ---
+
     def get_deals_needing_history_backfill(self, limit: int = 10000) -> List[str]:
         """
         Busca IDs de deals que podem precisar de backfill histórico.
@@ -605,17 +688,63 @@ x                """).format(
         finally:
             if conn:
                 self.db_pool.release_connection(conn)
-                
-    def count_records(self) -> int:
-        """Conta o total de registros na tabela."""
-        conn = self.db_pool.get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM {self.TABLE_NAME}")
-                return cur.fetchone()[0]
-        finally:
-            self.db_pool.release_connection(conn)
 
+    def get_record_by_id(self, record_id: Any) -> Optional[Dict]:
+        """Busca um registro completo pelo ID, tratando ID como TEXT."""
+        conn = None
+        record_id_str = str(record_id)
+        self.log.debug("Fetching record by ID", record_id=record_id_str)
+        try:
+            conn = self.db_pool.get_connection()
+            with conn.cursor(cursor_factory=extras.DictCursor) as cur:
+                query = sql.SQL("SELECT * FROM {table} WHERE id = %s").format(
+                    table=sql.Identifier(self.TABLE_NAME)
+                )
+                cur.execute(query, (record_id_str,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+             self.log.error("Failed to get record by ID", record_id=record_id_str, error=str(e), exc_info=True)
+             return None
+        finally:
+            if conn:
+                self.db_pool.release_connection(conn)
+
+
+
+    def save_configuration(self, key: str, value: Dict):
+        """Salva configurações dinâmicas (formato JSONB) no banco."""
+        conn = None
+        config_table_id = sql.Identifier(self.CONFIG_TABLE_NAME)
+        self.log.debug("Saving configuration", config_key=key)
+        try:
+            conn = self.db_pool.get_connection()
+            with conn.cursor() as cur:
+                upsert_sql = sql.SQL("""
+                    INSERT INTO {config_table} (key, value, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        updated_at = EXCLUDED.updated_at;
+                """).format(config_table=config_table_id)
+
+                timestamp_str = value.get('updated_at', datetime.now(timezone.utc).isoformat())
+                try:
+                    ts_obj = datetime.fromisoformat(timestamp_str).astimezone(timezone.utc)
+                except Exception:
+                    self.log.warning("Could not parse timestamp from config value, using current time.", config_key=key, value_ts=timestamp_str)
+                    ts_obj = datetime.now(timezone.utc)
+
+                cur.execute(upsert_sql, (key, json.dumps(value), ts_obj)) 
+                conn.commit()
+                self.log.info("Configuration saved successfully", config_key=key)
+        except Exception as e:
+            if conn: conn.rollback()
+            self.log.error("Failed to save configuration", config_key=key, error=str(e), exc_info=True)
+        finally:
+            if conn:
+                self.db_pool.release_connection(conn)
+            
     def get_all_ids(self) -> Set[str]:
         """Retorna todos os IDs presentes no banco."""
         conn = self.db_pool.get_connection()
@@ -625,22 +754,7 @@ x                """).format(
                 return {row[0] for row in cur.fetchall()}
         finally:
             self.db_pool.release_connection(conn)
-
-    def get_record_by_id(self, record_id: str) -> Optional[Dict]:
-        """Busca um registro completo pelo ID."""
-        conn = self.db_pool.get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT * FROM {self.TABLE_NAME} WHERE id = %s",
-                    (record_id,)
-                )
-                cols = [desc[0] for desc in cur.description]
-                row = cur.fetchone()
-                return dict(zip(cols, row)) if row else None
-        finally:
-            self.db_pool.release_connection(conn)
-
+            
     def validate_date_consistency(self) -> int:
         """Verifica consistência básica de datas, retorna número de problemas."""
         conn = self.db_pool.get_connection()
@@ -656,22 +770,16 @@ x                """).format(
         finally:
             self.db_pool.release_connection(conn)
 
-    def save_configuration(self, key: str, value: Dict):
-        """Salva configurações dinâmicas no banco."""
+    def count_records(self) -> int:
+        """Conta o total de registros na tabela."""
         conn = self.db_pool.get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO config (key, value) 
-                    VALUES (%s, %s)
-                    ON CONFLICT (key) DO UPDATE SET
-                        value = EXCLUDED.value,
-                        updated_at = NOW()
-                """, (key, json.dumps(value)))
-                conn.commit()
+                cur.execute(f"SELECT COUNT(*) FROM {self.TABLE_NAME}")
+                return cur.fetchone()[0]
         finally:
             self.db_pool.release_connection(conn)
-
+            
     def save_data(self, data: List[Dict]) -> None:
         """Default save implementation, uses upsert."""
         self.log.debug("Calling save_data, delegating to save_data_upsert.")
