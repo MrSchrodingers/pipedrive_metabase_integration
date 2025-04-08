@@ -487,7 +487,7 @@ class ETLService:
             })
 
         except Exception as e:
-            etl_failure_counter.inc()
+            etl_failure_counter.labels(flow_type=flow_type).inc()
             run_log.critical("Critical ETL failure during run_etl", error=str(e), exc_info=True)
             result["status"] = "error"
             if result["message"] == "ETL process did not complete.": result["message"] = f"Critical ETL failure: {str(e)}"
@@ -502,7 +502,7 @@ class ETLService:
             duration = run_end_time - run_start_time
             result["duration_seconds"] = round(duration, 3) 
             result["end_time"] = run_end_utc.isoformat()
-            etl_duration_hist.observe(duration)
+            etl_duration_hist.labels(flow_type=flow_type).observe(duration)
             peak_mem_mb = 0
             if tracemalloc.is_tracing():
                 try:
