@@ -58,7 +58,7 @@ class ETLService:
     def run_etl_with_data(self, data: List[Dict], batch_size: int, flow_type: str) -> Dict:
         """Executa o ETL com dados fornecidos para fins de teste."""
         original_fetch = self.client.fetch_all_deals_stream
-        self.client.fetch_all_deals_stream = lambda: data
+        self.client.fetch_all_deals_stream = lambda **kwargs: data
         self.process_batch_size = batch_size
         result = self.run_etl(flow_type=flow_type)
         self.client.fetch_all_deals_stream = original_fetch
