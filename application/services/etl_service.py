@@ -42,7 +42,17 @@ class ETLService:
         self.log = log.bind(service="ETLService")
         self._all_stages_details = self.client.fetch_all_stages_details() 
         self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
-        self.batch_optimizer = DynamicBatchOptimizer(initial_size=batch_size)
+        self.batch_optimizer = DynamicBatchOptimizer(config={
+            'initial_size': batch_size,
+            'max_size': 2000, 
+            'min_size': 100,
+            'max_memory': 4096,  # 4GB
+            'memory_threshold': 0.8,
+            'reduce_factor': 0.75,
+            'increase_factor': 1.25,
+            'history_window': 5,
+            'duration_threshold': 300  # 5 minutos
+        })
         self._current_batch_size = batch_size
 
     def run_etl_with_data(self, data: List[Dict], batch_size: int) -> Dict:
