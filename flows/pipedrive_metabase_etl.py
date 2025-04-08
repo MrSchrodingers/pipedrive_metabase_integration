@@ -268,15 +268,16 @@ def batch_size_experiment_flow(
 
                 flow_log.info(
                     "Batch experiment completed",
-                    batch_size=size,
-                    duration=duration,
-                    throughput=records_processed / duration if duration > 0 else 0,
-                    memory_peak=result.get("peak_memory_mb", 0),
-                    success_rate=result.get("success_rate", 0),
-                    data_quality_issues=result.get("data_quality_issues", 0),
-                    validation_result=validation_result
+                    extra={
+                        "batch_size": size,
+                        "duration": duration,
+                        "throughput": records_processed / duration if duration > 0 else 0,
+                        "memory_peak": result.get("peak_memory_mb", 0),
+                        "success_rate": result.get("success_rate", 0),
+                        "data_quality_issues": result.get("data_quality_issues", 0),
+                        "validation_result": validation_result
+                    }
                 )
-                flow_log.info("Batch experiment completed")
                 
         # 3. Análise Automática
         optimal_size = calculate_optimal_batch_size(results)
