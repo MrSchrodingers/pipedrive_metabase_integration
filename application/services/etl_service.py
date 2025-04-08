@@ -272,13 +272,13 @@ class ETLService:
         )
         return validated_records, total_failed_in_batch
 
-    def _track_resources(self) -> float:
+    def _track_resources(self, flow_type: str) -> float:
         """Monitor memory usage and return current memory in bytes."""
         current_mem = 0.0
         if tracemalloc.is_tracing():
             try:
                 current, peak = tracemalloc.get_traced_memory()
-                memory_usage_gauge.set(peak / 1e6)  # Gauge em MB
+                memory_usage_gauge.labels(flow_type=flow_type).set(peak / 1e6)  # Gauge em MB
                 self.log.debug(f"Memory Usage: Current={current/1e6:.2f}MB, Peak={peak/1e6:.2f}MB")
                 current_mem = current
             except Exception as mem_err:
@@ -409,7 +409,7 @@ class ETLService:
                         total_failed += failed_in_batch
                         
                     batch_duration = time.monotonic() - batch_start_time
-                    current_mem_usage = self._track_resources() 
+                    current_mem_usage = self._track_resources(flow_type="main_sync") 
 
                     self._current_batch_size = self.batch_optimizer.update(
                         last_duration=batch_duration,
@@ -458,7 +458,7 @@ class ETLService:
                     failed_in_batch = len(batch_to_process) - failed_count_in_batch
                     etl_failure_counter.inc(failed_in_batch)
                     total_failed += failed_in_batch
-                self._track_resources()
+                self._track_resources( flow_type="main_sync" )
                 batch_duration = time.monotonic() - batch_start_time
                 batch_log.debug("Final ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
 
