@@ -4,12 +4,14 @@ import tracemalloc
 from typing import Any, Dict, List, Tuple, Optional, Set
 import pandas as pd
 import numpy as np
+from prometheus_client import start_http_server
 import requests
 import structlog
 import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
+from application.utils.batch_optimizer import DynamicBatchOptimizer
 from application.utils.column_utils import normalize_column_name
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
@@ -40,8 +42,24 @@ class ETLService:
         self.log = log.bind(service="ETLService")
         self._all_stages_details = self.client.fetch_all_stages_details() 
         self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
+        self.batch_optimizer = DynamicBatchOptimizer(initial_size=batch_size)
+        self._current_batch_size = batch_size
 
-
+    def run_etl_with_data(self, data: List[Dict], batch_size: int) -> Dict:
+        """Executa o ETL com dados fornecidos para fins de teste."""
+        self.process_batch_size = batch_size
+        self._current_batch_size = batch_size
+        
+        original_method = self.client.fetch_all_deals_stream
+        self.client.fetch_all_deals_stream = lambda: iter(data)
+        
+        try:
+            result = self.run_etl()
+            result['success_rate'] = result['total_loaded'] / len(data) if data else 0
+            return result
+        finally:
+            self.client.fetch_all_deals_stream = original_method
+    
     def _build_stage_id_map(self, all_stages: List[Dict]) -> Dict[int, str]:
         """Cria um mapa de stage_id para nome normalizado."""
         id_map = {}
@@ -250,17 +268,20 @@ class ETLService:
         )
         return validated_records, total_failed_in_batch
 
-    def _track_resources(self):
-        """Monitora uso de memória."""
+    def _track_resources(self) -> float:
+        """Monitor memory usage and return current memory in bytes."""
+        current_mem = 0.0
         if tracemalloc.is_tracing():
             try:
                 current, peak = tracemalloc.get_traced_memory()
-                memory_usage_gauge.set(peak / 1e6) # Gauge em MB
+                memory_usage_gauge.set(peak / 1e6)  # Gauge em MB
                 self.log.debug(f"Memory Usage: Current={current/1e6:.2f}MB, Peak={peak/1e6:.2f}MB")
+                current_mem = current
             except Exception as mem_err:
                 self.log.warning("Failed to track memory usage", error=str(mem_err))
         else:
             self.log.debug("Tracemalloc is not running, skipping memory tracking.")
+        return current_mem
 
     def run_etl(self) -> Dict[str, object]:
         """Executa o processo ETL completo."""
@@ -317,6 +338,15 @@ class ETLService:
             # --- Transformação e Carga (Batching) ---
             batch_num = 0
             records_for_processing_batch: List[Dict] = []
+            
+            dynamic_batch_log = run_log.bind(
+                initial_batch_size=self.process_batch_size,
+                optimizer_config={
+                    "min": self.batch_optimizer.min_size,
+                    "max": self.batch_optimizer.max_size
+                }
+            )
+            dynamic_batch_log.info("Starting ETL with dynamic batch optimization")
 
             for deal_record in deal_stream_iterator:
                 total_fetched += 1
@@ -335,7 +365,7 @@ class ETLService:
                     except (ValueError, TypeError):
                          run_log.warning("Could not parse update_time from fetched record", record_id=deal_record.get("id"), time_str=update_time_str)
                 
-                if len(records_for_processing_batch) >= self.process_batch_size:
+                if len(records_for_processing_batch) >= self._current_batch_size:
                     batch_num += 1
                     batch_to_process = records_for_processing_batch
                     records_for_processing_batch = []
@@ -373,9 +403,20 @@ class ETLService:
                         failed_in_batch = len(batch_to_process) - failed_count_in_batch 
                         etl_failure_counter.inc(failed_in_batch)
                         total_failed += failed_in_batch
-
-                    self._track_resources()
+                        
                     batch_duration = time.monotonic() - batch_start_time
+                    current_mem_usage = self._track_resources() 
+
+                    self._current_batch_size = self.batch_optimizer.update(
+                        last_duration=batch_duration,
+                        memory_usage=current_mem_usage
+                    )
+                    dynamic_batch_log.info(
+                        "Updated batch size dynamically",
+                        new_size=self._current_batch_size,
+                        reason="Performance metrics adjustment"
+                    )
+
                     batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
 
             # Processar o último batch parcial

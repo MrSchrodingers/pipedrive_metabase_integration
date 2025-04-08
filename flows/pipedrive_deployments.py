@@ -5,7 +5,7 @@ from prefect.server.schemas.schedules import IntervalSchedule
 from prefect_kubernetes.jobs import KubernetesJob
 
 
-from flows.pipedrive_metabase_etl import main_etl_flow, backfill_stage_history_flow
+from flows.pipedrive_metabase_etl import main_etl_flow, backfill_stage_history_flow, batch_size_experiment_flow
 
 # --- Configuração Comum da Infraestrutura K8s Job ---
 K8S_IMAGE_NAME = "pipedrive_metabase_integration-etl:latest"
@@ -86,7 +86,10 @@ main_sync_deployment = Deployment.build_from_flow(
     # Schedule para rodar a cada 30 minutos
     schedule=IntervalSchedule(interval=timedelta(minutes=30)),
     # Parâmetros padrão para este deployment
-    parameters={"run_batch_size": 1500},
+    parameters={
+        "run_batch_size": 1500,
+        "enable_dynamic_batch": True
+    },
     # Usar a infraestrutura K8s Job definida acima
     infrastructure=k8s_job_infra,
     # Especificar a fila que o agente escuta
@@ -123,6 +126,47 @@ backfill_deployment = Deployment.build_from_flow(
 #     work_queue_name=WORK_QUEUE_NAME,
 # )
 
+batch_experiment_deployment = Deployment.build_from_flow(
+    flow=batch_size_experiment_flow,
+    name="Batch Size Experiment",
+    description="Testa diferentes tamanhos de batch para otimização de performance.",
+    version="1.0",
+    tags=["experiment", "batch-size", "optimization"],
+    schedule=None,
+    parameters={
+        "batch_sizes": [300, 500, 750, 1000, 1500],
+        "test_data_size": 10000
+    },
+    infrastructure=k8s_job_infra.duplicate(
+        update={
+            "job": KubernetesJob.job_template(
+                metadata={
+                    "labels": {"app.kubernetes.io/created-by": "prefect"}
+                },
+                spec={
+                    "template": {
+                        "spec": {
+                            "initContainers": DEFAULT_INIT_CONTAINERS,
+                            "containers": [
+                                {
+                                    "name": "prefect-job",
+                                    "resources": {
+                                        "requests": {"memory": "2Gi", "cpu": "1"},
+                                        "limits": {"memory": "8Gi", "cpu": "2"}
+                                    },
+                                    "envFrom": DEFAULT_ENV_FROM,
+                                    "env": [{"name": k, "value": v} for k, v in DEFAULT_ENV.items()],
+                                }
+                            ],
+                        }
+                    }
+                }
+            )
+        }
+    ),
+    work_queue_name=WORK_QUEUE_NAME,
+)
+
 # Bloco para aplicar os deployments
 # Este script deve ser executado DEPOIS que o Prefect Orion estiver no ar
 if __name__ == "__main__":
@@ -134,6 +178,9 @@ if __name__ == "__main__":
 
     # print(f"Aplicando deployment para '{recent_updates_deployment.name}' (schedule inativo)...")
     # recent_updates_deployment.apply()
+    
+    print(f"Aplicando deployment para '{batch_experiment_deployment.name}'...")
+    batch_experiment_deployment.apply()  
 
     print("\nDeployments aplicados com sucesso!")
     print(f"Garanta que um agente Prefect esteja rodando e escutando a fila '{WORK_QUEUE_NAME}'.")

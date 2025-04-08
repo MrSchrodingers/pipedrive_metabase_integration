@@ -1,12 +1,13 @@
 import time
 from typing import Any, Dict, List, Tuple
+import pandas as pd
 import structlog
 from prefect import flow, get_run_logger, task, context
 from prefect.blocks.system import JSON
 import logging
-import math
 
 from application.services.etl_service import ETLService
+from flows.utils.flows_utils import calculate_optimal_batch_size, update_dynamic_batch_config, validate_loaded_data
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
@@ -191,6 +192,110 @@ def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dic
     result = etl_service.run_retroactive_backfill(deal_ids)
     logger.info("Backfill batch finished.", **result)
     return result
+
+@flow(
+    name="Batch Size Experiment Flow - Enhanced",
+    log_prints=True,
+    timeout_seconds=10800  # 3 horas para experimentos longos
+)
+def batch_size_experiment_flow(
+    batch_sizes: List[int] = [300, 500, 750, 1000, 1500, 2000],
+    test_data_size: int = 10000  # Quantidade de dados reais a serem usados
+):
+    """Fluxo aprimorado para experimentos de tamanho de batch com análise automática e validação."""
+    setup_logging(level=logging.INFO)
+    flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
+
+    try:
+        # 1. Buscar dados reais para o teste
+        client, repository, etl_service = initialize_components()
+        flow_log.info(f"Fetching {test_data_size} recent deals for testing...")
+        test_data = list(client.fetch_all_deals_stream(limit=test_data_size))
+        
+        if not test_data:
+            raise ValueError("No test data available for experiment")
+
+        # 2. Executar experimentos
+        results = []
+        for size in batch_sizes:
+            flow_log.info(f"Starting experiment with batch size: {size}")
+            
+            # Configurar métricas
+            metrics_labels = {
+                "experiment": "batch_size",
+                "batch_size": str(size),
+                "flow_run_id": str(flow_run_id)
+            }
+            
+            # Executar ETL e coletar métricas
+            with etl_counter.labels(**metrics_labels).count_exceptions():
+                start_time = time.monotonic()
+                
+                # Processar dados de teste
+                result = etl_service.run_etl_with_data(test_data, batch_size=size)
+                
+                duration = time.monotonic() - start_time
+                records_processed = result.get("total_loaded", 0)
+                
+                # Coletar métricas
+                batch_metrics = {
+                    'batch_size': size,
+                    'duration': duration,
+                    'throughput': records_processed / duration if duration > 0 else 0,
+                    'memory_peak': result.get("peak_memory_mb", 0),
+                    'success_rate': result.get("success_rate", 0),
+                    'data_quality_issues': result.get("data_quality_issues", 0)
+                }
+                
+                # Publicar métricas em tempo real
+                push_metrics_to_gateway(
+                    job_name="batch_experiment",
+                    grouping_key=metrics_labels
+                )
+                
+                # Validação dos dados
+                validation_result = validate_loaded_data(
+                    repository=repository,
+                    source_data=test_data,
+                    batch_size=size
+                )
+                
+                batch_metrics.update(validation_result)
+                results.append(batch_metrics)
+
+                flow_log.info(
+                    "Batch experiment completed",
+                    **batch_metrics,
+                    validation_result=validation_result
+                )
+
+        # 3. Análise Automática
+        optimal_size = calculate_optimal_batch_size(results)
+        flow_log.info(
+            "Optimal batch size determined",
+            optimal_batch_size=optimal_size,
+            analysis_metrics=results
+        )
+
+        # 4. Persistir resultados
+        df = pd.DataFrame(results)
+        df.to_csv('batch_metrics.csv', index=False)
+        
+        # 5. Atualizar configuração dinâmica
+        update_dynamic_batch_config(repository, optimal_size)
+        
+        return {
+            "status": "completed",
+            "optimal_batch_size": optimal_size,
+            "detailed_results": results
+        }
+
+    except Exception as e:
+        flow_log.error("Batch experiment failed", error=str(e), exc_info=True)
+        raise
+
 
 @flow(
     name="Pipedrive Stage History Backfill Flow",

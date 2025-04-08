@@ -30,7 +30,7 @@ class PipedriveAPIClient(PipedriveClientPort):
     DEFAULT_TIMEOUT = 45 
     DEFAULT_V2_LIMIT = 500
     MAX_V1_PAGINATION_LIMIT = 500
-    PERSON_BATCH_SIZE = 100
+    PERSON_BATCH_SIZE = 500
     CHANGELOG_PAGE_LIMIT = 500
     
     # TTL para mapas e lookups individuais

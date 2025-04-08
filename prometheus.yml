@@ -1,8 +1,4 @@
 ---
-# ======================================================================
-# Configuração do Prometheus
-# ======================================================================
-
 # --- 1. ConfigMap com prometheus.yml ---
 apiVersion: v1
 kind: ConfigMap
@@ -60,7 +56,6 @@ data:
 
 ---
 # --- 2. RBAC: Service Account, ClusterRole, ClusterRoleBinding ---
-# (Necessário para o Prometheus descobrir serviços via API do Kubernetes)
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -101,10 +96,10 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: prometheus-sa
-  namespace: default # Certifique-se que este é o namespace correto
+  namespace: default
 
 ---
-# --- 3. PersistentVolumeClaim (Opcional, mas recomendado para dados) ---
+# --- 3. PersistentVolumeClaim ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -113,10 +108,15 @@ metadata:
     app: prometheus
 spec:
   accessModes:
-    - ReadWriteOnce # Padrão para Minikube
+    - ReadWriteOnce
   resources:
     requests:
-      storage: 8Gi # Ajuste o tamanho conforme necessário
+      storage: 8Gi 
+      memory: "1Gi"  
+      cpu: "500m"   
+    limits:
+      memory: "2Gi"  
+      cpu: "1"     
 
 ---
 # --- 4. Deployment do Prometheus Server ---
@@ -139,13 +139,13 @@ spec:
       serviceAccountName: prometheus-sa
       containers:
         - name: prometheus
-          image: prom/prometheus:latest # Ou use uma versão específica
+          image: prom/prometheus:latest 
           args:
             - "--config.file=/etc/prometheus/prometheus.yml"
             - "--storage.tsdb.path=/prometheus/"
             - "--web.console.libraries=/usr/share/prometheus/console_libraries"
             - "--web.console.templates=/usr/share/prometheus/consoles"
-            - "--web.enable-lifecycle" # Permite recarregar config via API
+            - "--web.enable-lifecycle"
           ports:
             - containerPort: 9090
           volumeMounts:
@@ -159,21 +159,21 @@ spec:
             name: prometheus-config
         - name: storage-volume
           persistentVolumeClaim:
-            claimName: prometheus-pvc # Vincula ao PVC criado
+            claimName: prometheus-pvc 
 
 ---
 # --- 5. Service para expor o Prometheus internamente ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: prometheus-service # Nome usado para conectar o Grafana
+  name: prometheus-service 
   labels:
     app: prometheus
 spec:
   selector:
-    app: prometheus # Seleciona os pods do Deployment 'prometheus-deployment'
+    app: prometheus 
   ports:
     - protocol: TCP
-      port: 9090        # Porta que o serviço expõe
-      targetPort: 9090  # Porta no container do Prometheus
-  type: ClusterIP # Apenas acesso interno ao cluster (suficiente para o Grafana)
+      port: 9090      
+      targetPort: 9090  
+  type: ClusterIP 

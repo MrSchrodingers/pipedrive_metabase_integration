@@ -2,7 +2,7 @@ from datetime import datetime, time
 import time as py_time 
 import json
 import csv
-from typing import Any, List, Dict, Tuple
+from typing import Any, List, Dict, Optional, Set, Tuple
 from io import StringIO
 from psycopg2 import sql, extras
 from psycopg2.extensions import cursor as DbCursor 
@@ -330,9 +330,9 @@ class PipedriveRepository(DataRepositoryPort):
                 # 1. Create Temporary Staging Table
                 staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
                 create_staging_sql = sql.SQL("""
-                    CREATE TEMPORARY TABLE {staging_table} (
+                    CREATE UNLOGGED TABLE {staging_table} (
                         {columns}
-                    ) ON COMMIT DROP; -- Drop automatically on commit/rollback
+                    ) ON COMMIT DROP;
                 """).format(
                     staging_table=staging_table_id,
                     columns=sql.SQL(',\n').join(staging_col_defs)
@@ -605,6 +605,72 @@ x                """).format(
         finally:
             if conn:
                 self.db_pool.release_connection(conn)
+                
+    def count_records(self) -> int:
+        """Conta o total de registros na tabela."""
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {self.TABLE_NAME}")
+                return cur.fetchone()[0]
+        finally:
+            self.db_pool.release_connection(conn)
+
+    def get_all_ids(self) -> Set[str]:
+        """Retorna todos os IDs presentes no banco."""
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT id FROM {self.TABLE_NAME}")
+                return {row[0] for row in cur.fetchall()}
+        finally:
+            self.db_pool.release_connection(conn)
+
+    def get_record_by_id(self, record_id: str) -> Optional[Dict]:
+        """Busca um registro completo pelo ID."""
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM {self.TABLE_NAME} WHERE id = %s",
+                    (record_id,)
+                )
+                cols = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                return dict(zip(cols, row)) if row else None
+        finally:
+            self.db_pool.release_connection(conn)
+
+    def validate_date_consistency(self) -> int:
+        """Verifica consistência básica de datas, retorna número de problemas."""
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM {self.TABLE_NAME}
+                    WHERE add_time > CURRENT_DATE 
+                        OR update_time < add_time
+                        OR (close_time IS NOT NULL AND close_time < add_time)
+                """)
+                return cur.fetchone()[0]
+        finally:
+            self.db_pool.release_connection(conn)
+
+    def save_configuration(self, key: str, value: Dict):
+        """Salva configurações dinâmicas no banco."""
+        conn = self.db_pool.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO config (key, value) 
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        updated_at = NOW()
+                """, (key, json.dumps(value)))
+                conn.commit()
+        finally:
+            self.db_pool.release_connection(conn)
 
     def save_data(self, data: List[Dict]) -> None:
         """Default save implementation, uses upsert."""
