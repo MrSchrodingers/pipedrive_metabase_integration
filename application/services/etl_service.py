@@ -55,20 +55,14 @@ class ETLService:
         })
         self._current_batch_size = batch_size
 
-    def run_etl_with_data(self, data: List[Dict], batch_size: int) -> Dict:
+    def run_etl_with_data(self, data: List[Dict], batch_size: int, flow_type: str) -> Dict:
         """Executa o ETL com dados fornecidos para fins de teste."""
+        original_fetch = self.client.fetch_all_deals_stream
+        self.client.fetch_all_deals_stream = lambda: data
         self.process_batch_size = batch_size
-        self._current_batch_size = batch_size
-        
-        original_method = self.client.fetch_all_deals_stream
-        self.client.fetch_all_deals_stream = lambda: iter(data)
-        
-        try:
-            result = self.run_etl()
-            result['success_rate'] = result['total_loaded'] / len(data) if data else 0
-            return result
-        finally:
-            self.client.fetch_all_deals_stream = original_method
+        result = self.run_etl(flow_type=flow_type)
+        self.client.fetch_all_deals_stream = original_fetch
+        return result
     
     def _build_stage_id_map(self, all_stages: List[Dict]) -> Dict[int, str]:
         """Cria um mapa de stage_id para nome normalizado."""
@@ -293,12 +287,12 @@ class ETLService:
             self.log.debug("Tracemalloc is not running, skipping memory tracking.")
         return current_mem
 
-    def run_etl(self) -> Dict[str, object]:
+    def run_etl(self, flow_type: str) -> Dict[str, object]:
         """Executa o processo ETL completo."""
         run_start_time = time.monotonic()
         run_start_utc = datetime.now(timezone.utc)
         tracemalloc.start()
-        etl_counter.inc()
+        etl_counter.labels(flow_type=flow_type).inc()
 
         result = {
             "status": "error", "total_fetched": 0, "total_validated": 0, "total_loaded": 0,
