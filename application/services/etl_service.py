@@ -376,7 +376,7 @@ class ETLService:
                     batch_log = run_log.bind(batch_num=batch_num, batch_size=len(batch_to_process))
                     batch_log.info("Processing ETL batch")
                     batch_start_time = time.monotonic()
-                    batch_size_gauge.set(len(batch_to_process))
+                    batch_size_gauge.labels(flow_type=flow_type).set(len(batch_to_process))
 
                     try:
                         validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
@@ -430,7 +430,8 @@ class ETLService:
                 batch_log = run_log.bind(batch_num=batch_num, batch_size=len(batch_to_process))
                 batch_log.info("Processing final ETL batch")
                 batch_start_time = time.monotonic()
-                batch_size_gauge.set(len(batch_to_process))
+                batch_size_gauge.labels(flow_type=flow_type).set(len(batch_to_process))
+
                 try:
                     validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
                         batch_to_process, user_map, stage_map, pipeline_map
