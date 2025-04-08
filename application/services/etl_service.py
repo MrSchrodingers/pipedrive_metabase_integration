@@ -97,7 +97,8 @@ class ETLService:
         batch: List[Dict],
         user_map: Dict[int, str],
         stage_map: Dict[int, str],
-        pipeline_map: Dict[int, str]
+        pipeline_map: Dict[int, str],
+        flow_type: str
     ) -> Tuple[List[Dict], int]:
         """Valida, transforma e enriquece um batch de deals, buscando nomes de persons sob demanda."""
         start_time = time.monotonic()
@@ -263,7 +264,7 @@ class ETLService:
             return [], pydantic_failed_count + transform_failed_count
 
         duration = time.monotonic() - start_time
-        transform_duration_summary.observe(duration)
+        transform_duration_summary.labels(flow_type=flow_type).observe(duration)
         total_failed_in_batch = pydantic_failed_count + transform_failed_count
         transform_log.info( 
             "Batch transformation completed",
@@ -380,7 +381,7 @@ class ETLService:
 
                     try:
                         validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                            batch_to_process, user_map, stage_map, pipeline_map
+                            batch_to_process, user_map, stage_map, pipeline_map, flow_type
                         )
                         total_failed += failed_count_in_batch
                         total_validated += len(validated_batch)
@@ -396,7 +397,7 @@ class ETLService:
                                 load_duration = time.monotonic() - load_start
                                 batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
                             except Exception as load_error:
-                                etl_failure_counter.inc(len(validated_batch))
+                                etl_failure_counter.labels(flow_type=flow_type).labels(flow_type=flow_type).inc(len(validated_batch))
                                 total_failed += len(validated_batch)
                                 batch_log.error("Failed to load batch to repository", error=str(load_error), records_count=len(validated_batch), exc_info=True)
                         else:
@@ -405,7 +406,7 @@ class ETLService:
                     except Exception as batch_proc_err:
                         batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
                         failed_in_this_batch = len(batch_to_process)
-                        etl_failure_counter.inc(failed_in_this_batch)
+                        etl_failure_counter.labels(flow_type=flow_type).labels(flow_type=flow_type).inc(failed_in_this_batch)
                         total_failed += failed_in_this_batch
                         
                     batch_duration = time.monotonic() - batch_start_time
@@ -434,7 +435,7 @@ class ETLService:
 
                 try:
                     validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                        batch_to_process, user_map, stage_map, pipeline_map
+                        batch_to_process, user_map, stage_map, pipeline_map, flow_type
                     )
                     total_failed += failed_count_in_batch
                     total_validated += len(validated_batch)
@@ -449,7 +450,7 @@ class ETLService:
                             load_duration = time.monotonic() - load_start
                             batch_log.info("Final ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
                         except Exception as load_error:
-                            etl_failure_counter.inc(len(validated_batch))
+                            etl_failure_counter.labels(flow_type=flow_type).inc(len(validated_batch))
                             total_failed += len(validated_batch)
                             batch_log.error("Failed to load final batch to repository", error=str(load_error), records_count=len(validated_batch), exc_info=True)
                     else:
@@ -458,7 +459,7 @@ class ETLService:
                 except Exception as batch_proc_err:
                     batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
                     failed_in_this_batch = len(batch_to_process)
-                    etl_failure_counter.inc(failed_in_this_batch)
+                    etl_failure_counter.labels(flow_type=flow_type).inc(failed_in_this_batch)
                     total_failed += failed_in_this_batch
                         
                 self._track_resources( flow_type="main_sync" )
@@ -490,7 +491,7 @@ class ETLService:
             })
 
         except Exception as e:
-            etl_failure_counter.labels(flow_type=flow_type).inc()
+            etl_failure_counter.labels(flow_type=flow_type).labels(flow_type=flow_type).inc()
             run_log.critical("Critical ETL failure during run_etl", error=str(e), exc_info=True)
             result["status"] = "error"
             if result["message"] == "ETL process did not complete.": result["message"] = f"Critical ETL failure: {str(e)}"
