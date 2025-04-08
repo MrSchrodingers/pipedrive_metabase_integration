@@ -212,7 +212,7 @@ def batch_size_experiment_flow(
         # 1. Buscar dados reais para o teste
         client, repository, etl_service = initialize_components()
         flow_log.info(f"Fetching {test_data_size} recent deals for testing...")
-        test_data = list(client.fetch_all_deals_stream(limit=test_data_size))
+        test_data = list(client.fetch_all_deals_stream(items_limit=test_data_size))
         
         if not test_data:
             raise ValueError("No test data available for experiment")
@@ -293,7 +293,7 @@ def batch_size_experiment_flow(
         }
 
     except Exception as e:
-        flow_log.error("Batch experiment failed", error=str(e), exc_info=True)
+        flow_log.error("Batch experiment failed", exc_info=str(e))
         raise
 
 
