@@ -226,8 +226,10 @@ def batch_size_experiment_flow(
             metrics_labels = {
                 "experiment": "batch_size",
                 "batch_size": str(size),
-                "flow_run_id": str(flow_run_id)
+                "flow_run_id": str(flow_run_id),
+                "flow_type": "experiment" 
             }
+
             
             # Executar ETL e coletar métricas
             with etl_counter.labels(**metrics_labels).count_exceptions():
