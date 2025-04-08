@@ -266,7 +266,16 @@ def batch_size_experiment_flow(
                 batch_metrics.update(validation_result)
                 results.append(batch_metrics)
 
-                flow_log = flow_log.bind(**batch_metrics, validation_result=validation_result)
+                flow_log.info(
+                    "Batch experiment completed",
+                    batch_size=size,
+                    duration=duration,
+                    throughput=records_processed / duration if duration > 0 else 0,
+                    memory_peak=result.get("peak_memory_mb", 0),
+                    success_rate=result.get("success_rate", 0),
+                    data_quality_issues=result.get("data_quality_issues", 0),
+                    validation_result=validation_result
+                )
                 flow_log.info("Batch experiment completed")
                 
         # 3. Análise Automática
