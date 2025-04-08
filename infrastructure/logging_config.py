@@ -73,7 +73,8 @@ def setup_logging(level=logging.INFO, force_json=False):
 
     # 4. Configurar o logging padrão para usar o structlog
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=shared_processors,
+        processor=log_renderer,
+        foreign_pre_chain=shared_processors
     )
 
     handler = logging.StreamHandler(sys.stdout)
