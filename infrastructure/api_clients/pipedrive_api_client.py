@@ -690,16 +690,21 @@ class PipedriveAPIClient(PipedriveClientPort):
         self.log.info(f"V2 Stream fetch complete.", endpoint=endpoint_name, total_items_yielded=items_yielded, total_pages=page_num)
 
 
-    def fetch_all_deals_stream(self, updated_since: str = None) -> Generator[Dict, None, None]:
-        """Busca deals (V2) usando paginação por cursor e entrega registros um a um."""
+    def fetch_all_deals_stream(self, updated_since: str = None, items_limit: int = None) -> Generator[Dict, None, None]:
+        """Busca deals (V2) com limite opcional usando paginação por cursor."""
         url = f"{self.BASE_URL_V2}/deals"
         params = {"sort_by": "update_time", "sort_direction": "asc"}
         if updated_since:
             params["updated_since"] = updated_since
-            self.log.info("Fetching deals stream with filter", updated_since=updated_since)
-        else:
-            self.log.info("Fetching deals stream without update filter (full load).")
-        yield from self._fetch_paginated_v2_stream(url, params)
+        if items_limit:
+            params["limit"] = min(items_limit, self.DEFAULT_V2_LIMIT)
+        
+        count = 0
+        for deal in self._fetch_paginated_v2_stream(url, params):
+            if items_limit and count >= items_limit:
+                break
+            count += 1
+            yield deal
 
 
     def update_last_timestamp(self, new_timestamp: str):

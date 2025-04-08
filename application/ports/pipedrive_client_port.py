@@ -8,7 +8,7 @@ class PipedriveClientPort(ABC):
         pass
 
     @abstractmethod
-    def fetch_all_deals_stream(self, updated_since: str = None) -> Generator[List[Dict], None, None]:
+    def fetch_all_deals_stream(self, updated_since: str = None, items_limit: int = None) -> Generator[List[Dict], None, None]:
         """
         Fetches deals from Pipedrive in batches as a generator.
         Yields lists (batches) of deal dictionaries.
