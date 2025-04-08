@@ -6,90 +6,52 @@ import os
 
 def setup_logging(level=logging.INFO, force_json=False):
     """
-    Configura o logging padrão do Python e o structlog para uma saída
-    estruturada unificada (JSON por padrão em ambientes não-TTY ou se forçado,
-    ConsoleRenderer caso contrário).
-
-    Logs de bibliotecas padrão serão capturados e processados pelo structlog.
-
-    Args:
-        level: O nível de log mínimo (ex: logging.INFO, logging.DEBUG).
-        force_json (bool): Se True, força a saída JSON mesmo em TTY.
-                           Útil para testes ou ambientes específicos.
+    Configuração robusta e testada para structlog + logging padrão
     """
-    # 1. Configurar processadores compartilhados do structlog
-    shared_processors = [
-        # Adiciona contexto de structlog.contextvars e thread locals
+    # 1. Processadores comuns para todos os loggers
+    common_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.threadlocal.merge_threadlocal,
-        # Adiciona o nome do logger e nível de log padrão se não existirem
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        # Permite logar argumentos posicionais como {'positional_args': [1, 2]}
         structlog.stdlib.PositionalArgumentsFormatter(),
-        # Adiciona timestamp ISO 8601
         structlog.processors.TimeStamper(fmt="iso", utc=True),
-        # Renderiza stack traces e exceptions
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
-        # Decodifica bytes para unicode
         structlog.processors.UnicodeDecoder(),
-        # IMPORTANTE: Processador para preparar logs vindos do logging padrão
-        # Deve vir ANTES do renderer final
-        structlog.processors.KeyValueRenderer(
-            key_order=["timestamp", "level", "logger", "event", "flow_run_id"],
-            sort_keys=False
-        ),
-        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
-    # 2. Escolher o Renderer Final (JSON ou Console)
-    log_renderer = None
-    is_tty = sys.stdout.isatty()
-    log_format = os.getenv("LOG_FORMAT", "CONSOLE" if is_tty else "JSON").upper()
-
-    if not force_json and log_format == "CONSOLE":
-        # Renderer colorido para desenvolvimento local/TTY
-        log_renderer = structlog.dev.ConsoleRenderer(colors=True) # Ativar cores
-        log_level_key = "level" 
+    # 2. Escolher renderizador final
+    if not force_json and sys.stdout.isatty():
+        renderer = structlog.dev.ConsoleRenderer(colors=True)
     else:
-        # Renderer JSON para produção/logs agregados ou se forçado
-        # Adiciona 'event' como chave principal da mensagem
-        # keys_order garante ordem (opcional mas útil)
-        log_renderer = structlog.processors.JSONRenderer()
-        log_level_key = "level"
+        renderer = structlog.processors.JSONRenderer()
 
-    # 3. Configurar structlog para usar os processadores e o renderer
+    # 3. Configuração completa do structlog
     structlog.configure(
-        processors=shared_processors,
-        # Usa a factory padrão do logging para criar loggers
+        processors=common_processors + [renderer],
         logger_factory=structlog.stdlib.LoggerFactory(),
-        # Permite que loggers padrão usem processadores do structlog
         wrapper_class=structlog.stdlib.BoundLogger,
-        # Cacheia o logger na primeira utilização para performance
         cache_logger_on_first_use=True,
     )
 
-    # 4. Configurar o logging padrão para usar o structlog
+    # 4. Configurar logging padrão para usar structlog
     formatter = structlog.stdlib.ProcessorFormatter(
-        processor=log_renderer,
-        foreign_pre_chain=shared_processors
+        processor=renderer,
+        foreign_pre_chain=common_processors,
     )
 
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler()
     handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
-    # Limpar handlers existentes para evitar duplicação/formatos mistos
-    root_logger.handlers.clear()
-    root_logger.addHandler(handler)
+    root_logger.handlers = [handler]
     root_logger.setLevel(level)
 
-    # Configurar níveis de log para bibliotecas verbosas 
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # 5. Configurar níveis para bibliotecas ruidosas
+    for lib in ["httpx", "httpcore", "urllib3"]:
+        logging.getLogger(lib).setLevel(logging.WARNING)
 
-    # Log de confirmação usando structlog 
-    log = structlog.get_logger("logging_setup")
-    log.info("Logging configured.", level=logging.getLevelName(level), format=log_format)
+    # Log inicial
+    logger = structlog.get_logger(__name__)
+    logger.info("Logging configurado com sucesso", level=level)
