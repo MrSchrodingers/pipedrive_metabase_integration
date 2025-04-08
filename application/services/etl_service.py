@@ -397,9 +397,11 @@ class ETLService:
                                 load_duration = time.monotonic() - load_start
                                 batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
                             except Exception as load_error:
-                                etl_failure_counter.labels(flow_type=flow_type).labels(flow_type=flow_type).inc(len(validated_batch))
-                                total_failed += len(validated_batch)
-                                batch_log.error("Failed to load batch to repository", error=str(load_error), records_count=len(validated_batch), exc_info=True)
+                                etl_failure_counter.labels(flow_type=flow_type).inc(len(validated_batch))
+                                failed_on_load = len(validated_batch)
+                                total_failed += failed_on_load
+                                total_validated -= failed_on_load 
+                                batch_log.error("Failed to load batch to repository", error=str(load_error), records_count=failed_on_load, exc_info=True)
                         else:
                             batch_log.warning("ETL Batch resulted in no validated records to load", failed_in_batch=failed_count_in_batch)
 
