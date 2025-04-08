@@ -36,6 +36,10 @@ def setup_logging(level=logging.INFO, force_json=False):
         structlog.processors.UnicodeDecoder(),
         # IMPORTANTE: Processador para preparar logs vindos do logging padrão
         # Deve vir ANTES do renderer final
+        structlog.processors.KeyValueRenderer(
+            key_order=["timestamp", "level", "logger", "event", "flow_run_id"],
+            sort_keys=False
+        ),
         structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
@@ -52,17 +56,12 @@ def setup_logging(level=logging.INFO, force_json=False):
         # Renderer JSON para produção/logs agregados ou se forçado
         # Adiciona 'event' como chave principal da mensagem
         # keys_order garante ordem (opcional mas útil)
-        log_renderer = structlog.processors.JSONRenderer(
-            sort_keys=False, # Mais rápido sem ordenar
-            keys_order=["timestamp", "level", "logger", "event", "flow_run_id"]
-        )
+        log_renderer = structlog.processors.JSONRenderer()
         log_level_key = "level"
 
     # 3. Configurar structlog para usar os processadores e o renderer
     structlog.configure(
-        processors=shared_processors + [
-            log_renderer
-        ],
+        processors=shared_processors,
         # Usa a factory padrão do logging para criar loggers
         logger_factory=structlog.stdlib.LoggerFactory(),
         # Permite que loggers padrão usem processadores do structlog
