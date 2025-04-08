@@ -3,7 +3,7 @@ import requests
 import structlog
 import re
 import math
-from tenacity import RetryError, retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, wait_exponential, retry_if_exception_type
 from pybreaker import CircuitBreaker
 from typing import Dict, List, Optional, Generator, Any, Set, Tuple
 
@@ -30,7 +30,7 @@ class PipedriveAPIClient(PipedriveClientPort):
     DEFAULT_TIMEOUT = 45 
     DEFAULT_V2_LIMIT = 500
     MAX_V1_PAGINATION_LIMIT = 500
-    PERSON_BATCH_SIZE = 500
+    PERSON_BATCH_SIZE = 100
     CHANGELOG_PAGE_LIMIT = 500
     
     # TTL para mapas e lookups individuais
@@ -201,8 +201,8 @@ class PipedriveAPIClient(PipedriveClientPort):
             retry_if_exception_type(requests.exceptions.Timeout) |
             retry_if_exception_type(requests.exceptions.ConnectionError) |
             retry_if_exception_type(requests.exceptions.ChunkedEncodingError) |
-            retry_if_exception_type(lambda e: isinstance(e, requests.exceptions.HTTPError) and e.response.status_code >= 500) |
-            retry_if_exception_type(lambda e: isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 429) 
+            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) and getattr(e.response, 'status_code', None) >= 500) |
+            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) and getattr(e.response, 'status_code', None) == 429)
         ),
         reraise=True
     )

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import random
 from typing import Any, Dict, List
 import pandas as pd
+import numpy as np
 import structlog
 
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
@@ -69,40 +70,69 @@ def validate_loaded_data(
         return {"data_quality_issues": -1, "error": str(e)}
 
 def calculate_optimal_batch_size(results: List[Dict]) -> int:
-    """Calcula o tamanho ideal de batch com base nas métricas coletadas."""
+    """Calcula o tamanho ideal de batch com base nas métricas coletadas, ignorando falhas."""
+    default_batch_size = 1000 
+
     if not results:
-        return 1000  # Valor padrão
-    
+        print(f"WARN: No results provided, returning default batch size {default_batch_size}")
+        return default_batch_size
+
     df = pd.DataFrame(results)
-    
-    # Normalizar métricas
-    df['norm_duration'] = df['duration'] / df['duration'].max()
-    df['norm_memory'] = df['memory_peak'] / df['memory_peak'].max()
-    df['norm_quality'] = 1 - (df['data_quality_issues'] / df['data_quality_issues'].max())
-    
-    # Calcular score composto
+
+    valid_df = df[
+        (df['data_quality_issues'] != -1) &
+        df['duration'].notna() & (df['duration'] > 0) &
+        df['memory_peak'].notna() & (df['memory_peak'] >= 0)
+    ].copy() 
+
+    if valid_df.empty:
+        print(f"WARN: No valid results after filtering, returning default batch size {default_batch_size}")
+        print("Original results head:\n", df.head())
+        return default_batch_size
+
+    # --- Normalização e Cálculo do Score (apenas em dados válidos) ---
+    max_duration = valid_df['duration'].max()
+    max_memory = valid_df['memory_peak'].max()
+    max_quality_issues = valid_df['data_quality_issues'].max() 
+
+    valid_df['norm_duration'] = valid_df['duration'] / max_duration if max_duration > 0 else 0
+    valid_df['norm_memory'] = valid_df['memory_peak'] / max_memory if max_memory > 0 else 0
+
+    if max_quality_issues > 0:
+         valid_df['norm_quality'] = 1 - (valid_df['data_quality_issues'] / max_quality_issues)
+    else:
+         valid_df['norm_quality'] = 1.0 
+
+    valid_df.fillna(0, inplace=True)
+
     weights = {
-        'duration': 0.4,
-        'memory': 0.4,
-        'quality': 0.2
+        'duration': 0.4,  # Menor duração é melhor (1 - norm_duration)
+        'memory': 0.4,    # Menor memória é melhor (1 - norm_memory)
+        'quality': 0.2    # Maior qualidade é melhor (norm_quality)
     }
-    
-    df['score'] = (
-        weights['duration'] * (1 - df['norm_duration']) +
-        weights['memory'] * (1 - df['norm_memory']) +
-        weights['quality'] * df['norm_quality']
+
+    valid_df['score'] = (
+        weights['duration'] * (1 - valid_df['norm_duration']) +
+        weights['memory'] * (1 - valid_df['norm_memory']) +
+        weights['quality'] * valid_df['norm_quality']
     )
-    
-    # Selecionar melhor score
-    best = df.loc[df['score'].idxmax()]
-    return int(best['batch_size'])
+
+    best_idx = valid_df['score'].idxmax()
+    best = valid_df.loc[best_idx]
+
+    optimal_size = int(best['batch_size'])
+    print(f"INFO: Optimal batch size calculated: {optimal_size} based on score {best['score']:.3f}")
+    print("INFO: Scores per batch size (valid runs):\n", valid_df[['batch_size', 'score', 'duration', 'memory_peak', 'data_quality_issues']])
+
+    return optimal_size
 
 def update_dynamic_batch_config(repository: PipedriveRepository, optimal_size: int):
     """Atualiza a configuração dinâmica no banco de dados."""
     try:
+        now_iso = datetime.now(timezone.utc).isoformat() 
         repository.save_configuration(
             key='optimal_batch_size',
-            value={'value': optimal_size, 'updated_at': datetime.now(timezone.utc)}
+            value={'value': optimal_size, 'updated_at': now_iso } 
         )
     except Exception as e:
         structlog.get_logger().error("Failed to update batch config", error=str(e))
