@@ -228,6 +228,10 @@ class PipedriveRepository(DataRepositoryPort):
     def _create_or_alter_table(self, cur: DbCursor, table_name: str, get_col_defs_func: callable):
         """Generic function to create a table or add missing columns."""
         table_id = sql.Identifier(table_name)
+        log_ctx = self.log.bind(table_name=table_name)
+
+        log_ctx.debug("Starting schema check/update for table.")
+
         cur.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables
@@ -236,33 +240,45 @@ class PipedriveRepository(DataRepositoryPort):
         """, (table_name,))
         table_exists = cur.fetchone()[0]
 
-        column_defs_sql = get_col_defs_func()
-        expected_columns_with_types = {}
-        for col_def in column_defs_sql:
-            parts = col_def.strings
-            if len(parts) >= 2:
-                 col_name = parts[0]
-                 col_type = parts[1].strip() 
-                 expected_columns_with_types[col_name] = col_type
-            else:
-                 self.log.error("Could not parse column definition", definition=col_def.as_string(cur))
+        # 1. Obter definições SQL para CREATE TABLE (se necessário)
+        column_defs_sql: List[sql.SQL] = get_col_defs_func()
 
-        expected_column_names = list(expected_columns_with_types.keys())
+        # 2. Construir o dicionário de nomes e tipos esperados diretamente
+        if table_name == self.TABLE_NAME:
+            expected_columns_with_types: Dict[str, str] = {
+                **COLUMN_TYPES,
+                **self._custom_columns_dict,
+                **self._stage_history_columns_dict
+            }
+        elif table_name == self.CONFIG_TABLE_NAME:
+             config_defs = self._get_config_column_definitions()
+             expected_columns_with_types = {}
+             for cfg_def in config_defs:
+                 expected_columns_with_types = {
+                     'key': 'TEXT PRIMARY KEY',
+                     'value': 'JSONB',
+                     'updated_at': 'TIMESTAMPTZ'
+                 }
+        else:
+             log_ctx.error("Unknown table name provided to _create_or_alter_table", table_name=table_name)
+             raise ValueError(f"Schema definition logic missing for table: {table_name}")
+
+        expected_column_names: List[str] = list(expected_columns_with_types.keys())
 
         if not table_exists:
-            self.log.info("Table does not exist, creating.", table_name=table_name)
+            log_ctx.info("Table does not exist, creating.")
             if not column_defs_sql:
                 raise RuntimeError(f"Cannot create table '{table_name}' with no column definitions.")
 
-            create_sql = sql.SQL("CREATE TABLE IF NOT EXISTS {table} ({columns})").format( 
+            create_sql = sql.SQL("CREATE TABLE IF NOT EXISTS {table} ({columns})").format(
                 table=table_id,
                 columns=sql.SQL(',\n    ').join(column_defs_sql)
             )
-            self.log.debug(f"Executing CREATE TABLE for {table_name}", sql_query=create_sql.as_string(cur))
+            log_ctx.debug("Executing CREATE TABLE", sql_query=create_sql.as_string(cur))
             cur.execute(create_sql)
-            self.log.info("Table created successfully.", table_name=table_name)
+            log_ctx.info("Table created successfully.")
         else:
-            self.log.debug("Table exists, checking for missing columns.", table_name=table_name)
+            log_ctx.debug("Table exists, checking for missing columns.")
             cur.execute("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = %s;
@@ -272,31 +288,33 @@ class PipedriveRepository(DataRepositoryPort):
             missing_columns = set(expected_column_names) - existing_columns
 
             if missing_columns:
-                self.log.info(f"Adding missing columns to table '{table_name}'.", missing=sorted(list(missing_columns)))
+                log_ctx.info("Adding missing columns to table.", missing=sorted(list(missing_columns)))
                 alter_statements = []
                 for col_name in sorted(list(missing_columns)):
                     col_type = expected_columns_with_types.get(col_name)
                     if col_type:
                         alter_statements.append(sql.SQL("ADD COLUMN IF NOT EXISTS {} {}").format(
                             sql.Identifier(col_name),
-                            sql.SQL(col_type)
+                            sql.SQL(col_type) 
                         ))
                     else:
-                        self.log.error(f"Cannot add missing column to '{table_name}', type definition not found.", column_name=col_name)
+                        log_ctx.error("Cannot add missing column, type definition not found.", column_name=col_name)
 
                 if alter_statements:
                     for stmt in alter_statements:
                         alter_sql = sql.SQL("ALTER TABLE {table} {add}").format(table=table_id, add=stmt)
                         try:
-                            col_name_being_added = stmt.strings[0]
-                            self.log.debug(f"Executing ALTER TABLE ADD COLUMN on {table_name}", column_name=col_name_being_added)
+                            col_name_being_added = "unknown"
+                            if isinstance(stmt.seq[0], sql.Identifier):
+                                 col_name_being_added = stmt.seq[0].strings[0]
+
+                            log_ctx.debug("Executing ALTER TABLE ADD COLUMN", column_name=col_name_being_added)
                             cur.execute(alter_sql)
                         except Exception as alter_err:
-                            self.log.error(f"Failed to add column to {table_name}", column_name=col_name_being_added, error=str(alter_err))
-                self.log.info(f"Missing columns check/addition attempted for {table_name}.", count=len(missing_columns))
+                            log_ctx.error("Failed to add column", column_name=col_name_being_added, error=str(alter_err))
+                log_ctx.info("Missing columns check/addition attempted.", count=len(missing_columns))
             else:
-                self.log.debug(f"No missing columns found for {table_name}.")
-
+                log_ctx.debug("No missing columns found.")
 
     def _create_indexes(self, cur: DbCursor):
         """Creates standard indexes if they don't exist on the main data table."""
