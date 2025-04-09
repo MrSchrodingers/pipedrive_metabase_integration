@@ -332,23 +332,21 @@ class PipedriveAPIClient(PipedriveClientPort):
             return []
         
     def fetch_person_name(self, person_id: int) -> Optional[str]:
-        """Busca o nome de uma person específica por ID, usando cache."""
+        """Fetch a person’s name using cache; do not permanently cache empty values."""
         if not person_id or not isinstance(person_id, int) or person_id <= 0:
             self.log.warning("Invalid person_id received for lookup", person_id=person_id)
             return None
 
         cache_key = f"pipedrive:person_name:{person_id}"
-        person_log = self.log.bind(person_id=person_id)
-
         try:
-            cached_name = self.cache.get(cache_key)
-            if cached_name is not None: 
-                 person_log.debug("Person name retrieved from cache.", cache_hit=True, name=cached_name if cached_name else "''")
-                 return str(cached_name) if cached_name is not None else None
+            cached_value = self.cache.get(cache_key)
+            if cached_value is not None and cached_value != "":
+                self.log.debug("Person name retrieved from cache.", person_id=person_id, name=cached_value)
+                return str(cached_value)
         except Exception as cache_get_err:
-             person_log.error("Failed to get person name from cache", error=str(cache_get_err))
+            self.log.error("Failed to get person name from cache", error=str(cache_get_err))
 
-        person_log.info("Person name cache miss, fetching from API.", cache_hit=False)
+        self.log.info("Person name cache miss, fetching from API.", person_id=person_id)
         url = f"{self.BASE_URL_V2}/persons/{person_id}"
         try:
             response = self._get(url)
@@ -356,48 +354,45 @@ class PipedriveAPIClient(PipedriveClientPort):
                 data = response.json()
                 if data and data.get("success"):
                     person_data = data.get("data")
-                    if person_data and 'name' in person_data:
-                        name = person_data['name']
-                        person_log.debug("Person name fetched from API successfully.", name=name if name else "''")
+                    if person_data and person_data.get("name"):
+                        name = person_data["name"]
+                        self.log.debug("Person name fetched from API successfully.", person_id=person_id, name=name)
                         try:
-                            self.cache.set(cache_key, name if name is not None else '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                            self.cache.set(cache_key, name, ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
                         except Exception as cache_set_err:
-                            person_log.error("Failed to set person name in cache", error=str(cache_set_err))
+                            self.log.error("Failed to set person name in cache", error=str(cache_set_err))
                         return name
                     else:
-                         person_log.warning("Person data received from API but 'name' field missing or invalid.", api_response_data=person_data)
-                         self.cache.set(cache_key, '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
-                         return None 
+                        self.log.warning("API returned no name for person", person_id=person_id)
+                        self.cache.set(cache_key, "", ex_seconds=300)
+                        return None
                 else:
-                    person_log.warning("API request for person successful (200) but response indicates failure.", api_response=response.text[:200])
-                    return None 
+                    self.log.warning("API request for person (200) indicates failure.", person_id=person_id, api_response=response.text[:200])
+                    return None
             elif response.status_code == 404:
-                 person_log.warning("Person ID not found in Pipedrive API (404).")
-                 self.cache.set(cache_key, '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
-                 return None
+                self.log.warning("Person ID not found in Pipedrive API (404).", person_id=person_id)
+                self.cache.set(cache_key, "", ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                return None
             elif response.status_code == 429:
-                 person_log.warning("Rate limit reached in Pipedrive API (429).")
-                 raise Exception("Rate limit")
+                self.log.warning("Rate limit reached in Pipedrive API (429).", person_id=person_id)
+                raise Exception("Rate limit")
             else:
-                 person_log.warning(f"Failed to fetch person name from API, status code: {response.status_code}.")
-                 return None
+                self.log.warning(f"Failed to fetch person name from API, status code: {response.status_code}.", person_id=person_id)
+                return None
 
         except Exception as e:
-            person_log.error("Unexpected error fetching person name from API", error=str(e), exc_info=True)
+            self.log.error("Unexpected error fetching person name from API", person_id=person_id, error=str(e), exc_info=True)
             return None
-
 
     def fetch_person_names_for_ids(self, person_ids: Set[int]) -> Dict[int, str]:
         """
-        Busca nomes para um conjunto de IDs de persons, usando cache e API em lote V2.
-        Retorna um dicionário apenas com os IDs encontrados (no cache ou API).
-        IDs não encontrados (seja por cache miss seguido de 404 ou falha na API)
-        serão cacheados como '' mas não incluídos no dict retornado.
+        Fetch names for a set of person IDs using cache and bulk API calls.
+        Only include a name in the returned dictionary if it is non-empty.
+        IDs not found (or with empty names) are cached with a short TTL.
         """
         if not person_ids:
             return {}
 
-        # Filtrar IDs inválidos
         valid_person_ids = {p_id for p_id in person_ids if p_id > 0}
         if not valid_person_ids:
             self.log.warning("No valid person IDs provided after filtering.", original_count=len(person_ids))
@@ -408,7 +403,7 @@ class PipedriveAPIClient(PipedriveClientPort):
         fetch_log = self.log.bind(total_ids_requested=len(valid_person_ids))
         fetch_log.debug("Starting fetch for multiple person names (batch V2 strategy).")
 
-        # 1. Tentar buscar do cache
+        # 1. Attempt to fetch from cache
         cache_check_start_time = time.monotonic()
         cached_count = 0
         cache_error_count = 0
@@ -416,8 +411,9 @@ class PipedriveAPIClient(PipedriveClientPort):
             cache_key = f"pipedrive:person_name:{p_id}"
             try:
                 cached_value = self.cache.get(cache_key)
-                if cached_value is not None: 
-                    if cached_value: 
+                if cached_value is not None:
+                    # Only include if non-empty.
+                    if cached_value != "":
                         names_map[p_id] = str(cached_value)
                     cached_count += 1
                     self.log.debug("Person name cache hit.", person_id=p_id, cached_value=cached_value)
@@ -437,7 +433,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             duration_sec=f"{cache_check_duration:.3f}s"
         )
 
-        # 2. Buscar IDs restantes da API em lotes com paginação
+        # 2. For IDs missing in cache, fetch in batches
         if ids_to_fetch_from_api:
             api_fetch_start_time = time.monotonic()
             api_found_count = 0
@@ -445,7 +441,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             api_batch_error_count = 0
             processed_in_api_count = 0
 
-            list_ids_to_fetch = sorted(list(ids_to_fetch_from_api)) 
+            list_ids_to_fetch = sorted(list(ids_to_fetch_from_api))
             total_batches = math.ceil(len(list_ids_to_fetch) / self.PERSON_BATCH_SIZE)
             fetch_log.info(f"Fetching {len(list_ids_to_fetch)} person names from API in {total_batches} batches.")
 
@@ -463,7 +459,6 @@ class PipedriveAPIClient(PipedriveClientPort):
                 all_persons_in_batch = []
                 next_cursor = None
 
-                # Novo: Loop de paginação preservando parâmetros originais
                 while True:
                     current_params = params.copy()
                     if next_cursor:
@@ -480,8 +475,8 @@ class PipedriveAPIClient(PipedriveClientPort):
                         current_data = json_response.get("data", [])
                         all_persons_in_batch.extend(current_data)
 
-                        # Atualizar cursor para próxima página
-                        additional_data = json_response.get("additional_data", {}); next_cursor = additional_data.get("next_cursor")
+                        additional_data = json_response.get("additional_data", {})
+                        next_cursor = additional_data.get("next_cursor")
                         if not next_cursor:
                             break
 
@@ -489,7 +484,6 @@ class PipedriveAPIClient(PipedriveClientPort):
                         batch_log.error("API request failed", error=str(api_err))
                         break
 
-                # Processar todos os dados coletados (todas as páginas)
                 returned_ids_set = set()
                 if all_persons_in_batch:
                     for person_data in all_persons_in_batch:
@@ -500,18 +494,19 @@ class PipedriveAPIClient(PipedriveClientPort):
                             person_name_str = str(name) if name else ''
                             if person_name_str:
                                 names_map[p_id] = person_name_str
+                                # Cache with full TTL if found
                                 self.cache.set(f"pipedrive:person_name:{p_id}", person_name_str, ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
                                 api_found_count += 1
                             else:
-                                self.cache.set(f"pipedrive:person_name:{p_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                                # If empty, set a short TTL for retrying soon
+                                self.cache.set(f"pipedrive:person_name:{p_id}", "", ex_seconds=300)
                                 batch_log.debug("Person name empty in API response", person_id=p_id)
 
-                # Verificar IDs ausentes
                 missing_in_response_ids = current_batch_ids_set - returned_ids_set
                 if missing_in_response_ids:
                     batch_log.warning("Missing IDs in API response", missing_count=len(missing_in_response_ids))
                     for missing_id in missing_in_response_ids:
-                        self.cache.set(f"pipedrive:person_name:{missing_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                        self.cache.set(f"pipedrive:person_name:{missing_id}", "", ex_seconds=300)
                         api_not_found_count += 1
 
             api_fetch_duration = time.monotonic() - api_fetch_start_time
