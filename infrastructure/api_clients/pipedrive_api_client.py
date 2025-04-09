@@ -457,46 +457,59 @@ class PipedriveAPIClient(PipedriveClientPort):
                 url = f"{self.BASE_URL_V2}/persons"
                 params = {"ids": id_string, "limit": len(current_batch_ids_list)}
 
-                batch_log.debug("Making batch API call for person names.")
-                try:
-                    # Alteração principal: usar fetch_paginated_v2 para lidar com paginação
-                    all_persons_in_batch = self._fetch_paginated_v2(url, params=params)
-                    returned_ids_set = set()
+                all_persons_in_batch = []
+                next_cursor = None
 
-                    if all_persons_in_batch:
-                        for person_data in all_persons_in_batch:
-                            p_id = person_data.get("id")
-                            name = person_data.get("name")
-                            if isinstance(p_id, int):
-                                returned_ids_set.add(p_id)
-                                person_name_str = str(name) if name else ''
-                                if person_name_str:
-                                    names_map[p_id] = person_name_str
-                                    self.cache.set(f"pipedrive:person_name:{p_id}", person_name_str, ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
-                                    api_found_count += 1
-                                else:
-                                    self.cache.set(f"pipedrive:person_name:{p_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
-                                    batch_log.debug("Person ID returned in batch but name is missing or empty.", person_id=p_id)
+                # Novo: Loop de paginação preservando parâmetros originais
+                while True:
+                    current_params = params.copy()
+                    if next_cursor:
+                        current_params["cursor"] = next_cursor
 
-                    # Identificar IDs ausentes
-                    missing_in_response_ids = current_batch_ids_set - returned_ids_set
-                    if missing_in_response_ids:
-                        batch_log.warning("Some person IDs requested in batch were not returned by API.",
-                                        missing_ids=list(missing_in_response_ids),
-                                        returned_count=len(returned_ids_set),
-                                        requested_count=len(current_batch_ids_set))
-                        for missing_id in missing_in_response_ids:
-                            self.cache.set(f"pipedrive:person_name:{missing_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
-                            api_not_found_count += 1
+                    try:
+                        response = self._get(url, params=current_params)
+                        json_response = response.json()
+                        
+                        if not json_response.get("success"):
+                            batch_log.warning("API response indicates failure", response_preview=str(json_response)[:200])
+                            break
 
-                except Exception as api_err:
-                    batch_log.error("Failed to execute or process batch API call for person names.", error=str(api_err), exc_info=True)
-                    api_batch_error_count += len(current_batch_ids_list)
-                    for failed_id in current_batch_ids_list:
-                        try:
-                            self.cache.set(f"pipedrive:person_name:{failed_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
-                        except Exception as cache_set_err:
-                            self.log.error("Failed to set empty cache value after API batch error", person_id=failed_id, error=str(cache_set_err))
+                        current_data = json_response.get("data", [])
+                        all_persons_in_batch.extend(current_data)
+
+                        # Atualizar cursor para próxima página
+                        next_cursor = json_response.get("additional_data", {}).get("next_cursor")
+                        if not next_cursor:
+                            break
+
+                    except Exception as api_err:
+                        batch_log.error("API request failed", error=str(api_err))
+                        break
+
+                # Processar todos os dados coletados (todas as páginas)
+                returned_ids_set = set()
+                if all_persons_in_batch:
+                    for person_data in all_persons_in_batch:
+                        p_id = person_data.get("id")
+                        name = person_data.get("name")
+                        if isinstance(p_id, int):
+                            returned_ids_set.add(p_id)
+                            person_name_str = str(name) if name else ''
+                            if person_name_str:
+                                names_map[p_id] = person_name_str
+                                self.cache.set(f"pipedrive:person_name:{p_id}", person_name_str, ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                                api_found_count += 1
+                            else:
+                                self.cache.set(f"pipedrive:person_name:{p_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                                batch_log.debug("Person name empty in API response", person_id=p_id)
+
+                # Verificar IDs ausentes
+                missing_in_response_ids = current_batch_ids_set - returned_ids_set
+                if missing_in_response_ids:
+                    batch_log.warning("Missing IDs in API response", missing_count=len(missing_in_response_ids))
+                    for missing_id in missing_in_response_ids:
+                        self.cache.set(f"pipedrive:person_name:{missing_id}", '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
+                        api_not_found_count += 1
 
             api_fetch_duration = time.monotonic() - api_fetch_start_time
             fetch_log.info(
