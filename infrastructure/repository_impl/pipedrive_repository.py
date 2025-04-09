@@ -21,8 +21,7 @@ BASE_COLUMNS = [
     "owner_id", "owner_name", "status", "value", "currency",
     "add_time", "update_time",
     "org_id", "org_name", "lost_reason", "visible_to", "close_time", "won_time", "lost_time",
-    "first_won_time", "expected_close_date", "probability", "label",
-    "owner_id", "owner_name"
+    "first_won_time", "expected_close_date", "probability", "label"
 ]
 
 COLUMN_TYPES = {
