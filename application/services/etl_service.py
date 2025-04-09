@@ -478,7 +478,7 @@ class ETLService:
             if latest_update_time_in_run and total_fetched > 0:
                  try:
                     buffered_time = latest_update_time_in_run + timedelta(seconds=1)
-                    iso_timestamp = buffered_time.isoformat(timespec='seconds') + 'Z'
+                    iso_timestamp = buffered_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                     self.client.update_last_timestamp(iso_timestamp)
                     run_log.info("Last timestamp updated in cache", timestamp=iso_timestamp)
                  except Exception as cache_err:
