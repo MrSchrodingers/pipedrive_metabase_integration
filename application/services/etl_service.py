@@ -466,7 +466,6 @@ class ETLService:
                 except Exception as batch_proc_err:
                     batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
                     failed_in_this_batch = len(batch_to_process)
-                    etl_failure_counter.labels(flow_type=flow_type).inc(failed_in_this_batch)
                     total_failed += failed_in_this_batch
                         
                 self._track_resources( flow_type="main_sync" )
