@@ -413,16 +413,21 @@ class ETLService:
                         
                     batch_duration = time.monotonic() - batch_start_time
                     current_mem_usage = self._track_resources(flow_type="main_sync") 
-
-                    self._current_batch_size = self.batch_optimizer.update(
-                        last_duration=batch_duration,
-                        memory_usage=current_mem_usage
-                    )
-                    dynamic_batch_log.info(
-                        "Updated batch size dynamically",
-                        new_size=self._current_batch_size,
-                        reason="Performance metrics adjustment"
-                    )
+                    
+                    try:
+                        self._current_batch_size = self.batch_optimizer.update(
+                            last_duration=batch_duration,
+                            memory_usage=current_mem_usage
+                        )
+                        dynamic_batch_log.info(
+                            "Updated batch size dynamically",
+                            new_size=self._current_batch_size,
+                            reason="Performance metrics adjustment",
+                            last_duration=f"{batch_duration:.3f}s",
+                            last_mem_usage_bytes=f"{current_mem_usage:.2f}"
+                        )
+                    except Exception as optimizer_err:
+                         run_log.error("Non-critical error during batch optimizer update, continuing ETL.", error=str(optimizer_err), exc_info=True)
 
                     batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
 
@@ -473,12 +478,12 @@ class ETLService:
 
             if latest_update_time_in_run and total_fetched > 0:
                  try:
-                     buffered_time = latest_update_time_in_run + timedelta(seconds=1)
-                     iso_timestamp = buffered_time.isoformat(timespec='seconds')
-                     self.client.update_last_timestamp(iso_timestamp)
-                     run_log.info("Last timestamp updated in cache", timestamp=iso_timestamp)
+                    buffered_time = latest_update_time_in_run + timedelta(seconds=1)
+                    iso_timestamp = buffered_time.isoformat(timespec='seconds') + 'Z'
+                    self.client.update_last_timestamp(iso_timestamp)
+                    run_log.info("Last timestamp updated in cache", timestamp=iso_timestamp)
                  except Exception as cache_err:
-                     run_log.error("Failed to update last timestamp in cache", error=str(cache_err), exc_info=True)
+                    run_log.error("Failed to update last timestamp in cache", error=str(cache_err), exc_info=True)
             elif total_fetched == 0:
                  run_log.info("No new records fetched since last run. Last timestamp not updated.")
             else:
