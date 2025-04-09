@@ -24,6 +24,11 @@ BASE_COLUMNS = [
     "first_won_time", "expected_close_date", "probability", "label"
 ]
 
+NAME_COLUMNS_TO_PRESERVE = {
+    "creator_user_name", "person_name", "stage_name", "pipeline_name",
+    "owner_name", "org_name"
+}
+
 COLUMN_TYPES = {
     "id": "TEXT PRIMARY KEY", "titulo": "TEXT", "creator_user_id": "INTEGER",
     "creator_user_name": "TEXT", "person_id": "INTEGER", "person_name": "TEXT",
@@ -440,11 +445,31 @@ class PipedriveRepository(DataRepositoryPort):
 
                 # 4. Perform UPSERT from Staging to Target Table with CASTING
                 insert_fields = sql.SQL(', ').join(map(sql.Identifier, columns))
-                update_columns = [col for col in columns if col != 'id' and col != 'add_time'] 
-                update_assignments = sql.SQL(', ').join([
-                    sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col))
-                    for col in update_columns
-                ])
+                update_assignments_list = []
+                for col in columns:
+                    if col == 'id':
+                        continue
+                    if col == 'add_time': 
+                         update_assignments_list.append(
+                             sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
+                                 col=sql.Identifier(col),
+                                 target=target_table_id 
+                             )
+                         )
+                         continue
+                    if col in NAME_COLUMNS_TO_PRESERVE:
+                        update_assignments_list.append(
+                            sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
+                                col=sql.Identifier(col),
+                                target=target_table_id 
+                            )
+                        )
+                    else:
+                        update_assignments_list.append(
+                            sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col))
+                        )
+
+                update_assignments = sql.SQL(', ').join(update_assignments_list)
 
                 select_expressions = []
                 target_types = {**COLUMN_TYPES, **self._custom_columns_dict, **self._stage_history_columns_dict}
@@ -452,28 +477,26 @@ class PipedriveRepository(DataRepositoryPort):
                     full_type_definition = target_types.get(col, "TEXT")
                     base_pg_type = full_type_definition.split()[0].split('(')[0].upper()
 
-                    if col == 'id':
-                         select_expressions.append(sql.Identifier(col))
-                    elif base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'BOOLEAN'):
-                         select_expressions.append(
-                             sql.SQL("NULLIF({col}, '')::{type}").format(
-                                 col=sql.Identifier(col),
-                                 type=sql.SQL(base_pg_type)
-                             )
-                         )
-                    else:
-                         select_expressions.append(sql.Identifier(col))
+                    if base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE PRECISION', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'BOOLEAN'):
+                        select_expressions.append(
+                            sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
+                                col=sql.Identifier(col),
+                                type=sql.SQL(base_pg_type)
+                            )
+                        )
+                    else: 
+                         select_expressions.append(sql.Identifier(col)) 
 
                 select_clause = sql.SQL(', ').join(select_expressions)
 
+                # Construct the final UPSERT SQL
                 upsert_sql = sql.SQL("""
                     INSERT INTO {target_table} ({insert_fields})
                     SELECT {select_clause}
                     FROM {staging_table}
                     ON CONFLICT (id) DO UPDATE SET
                         {update_assignments}
-                    -- Opcional: Adicionar WHERE para otimizar updates desnecessários
-                    -- WHERE t.update_time IS DISTINCT FROM EXCLUDED.update_time -- Exemplo
+                    WHERE {target_table}.update_time IS DISTINCT FROM EXCLUDED.update_time
                 """).format(
                     target_table=target_table_id,
                     insert_fields=insert_fields,
@@ -484,12 +507,11 @@ class PipedriveRepository(DataRepositoryPort):
 
                 self.log.debug("Executing UPSERT command.", target_table=self.TABLE_NAME)
                 cur.execute(upsert_sql)
-                upserted_count = cur.rowcount 
+                upserted_count = cur.rowcount
                 conn.commit()
                 self.log.debug("Commit successful after UPSERT.")
 
-                # 5. Drop Staging Table (SEMPRE fazer isso no finally)
-
+                # 5. Drop Staging Table (handled in finally)
                 duration = py_time.monotonic() - start_time
                 self.log.info(
                     "Upsert completed successfully.",

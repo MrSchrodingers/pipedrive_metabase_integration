@@ -27,49 +27,50 @@ class PipedriveAPIClient(PipedriveClientPort):
     BASE_URL_V1 = "https://api.pipedrive.com/v1"
     BASE_URL_V2 = "https://api.pipedrive.com/api/v2"
 
-    DEFAULT_TIMEOUT = 45 
+    DEFAULT_TIMEOUT = 45
     DEFAULT_V2_LIMIT = 500
     MAX_V1_PAGINATION_LIMIT = 500
     PERSON_BATCH_SIZE = 100
     CHANGELOG_PAGE_LIMIT = 500
     
     # TTL para mapas e lookups individuais
-    DEFAULT_MAP_CACHE_TTL_SECONDS = 3600 * 12 # 12 hours
-    PERSON_LOOKUP_CACHE_TTL_SECONDS = 3600 * 1 # 1 hour
-    STAGE_DETAILS_CACHE_TTL_SECONDS = 3600 * 6 # 6 hours
+    DEFAULT_MAP_CACHE_TTL_SECONDS = 3600 * 12  # 12 hours
+    PERSON_LOOKUP_CACHE_TTL_SECONDS = 3600 * 1  # 1 hour
+    STAGE_DETAILS_CACHE_TTL_SECONDS = 3600 * 6  # 6 hours
     
     ENDPOINT_COSTS = {
         # V1 endpoints
-        '/deals/detail/changelog': 20,  # Custo para GET /v1/deals/{id}/changelog
-        '/dealFields': 20,              # Custo para GET /v1/dealFields
-        '/users': 20,                   # Custo para GET /v1/users
-        
+        '/deals/detail/changelog': 20,  # GET /v1/deals/{id}/changelog
+        '/dealFields': 20,              # GET /v1/dealFields
+        '/users': 20,                   # GET /v1/users
+        '/users/detail': 5,             # GET /v1/users/{id} se existir
+
         # V2 endpoints
-        '/deals': 10,                   # Custo para GET /api/v2/deals
-        '/stages': 5,                   # Custo para GET /api/v2/stages
-        '/pipelines': 5,                # Custo para GET /api/v2/pipelines
-        '/persons/detail': 1,           # Custo para GET /api/v2/persons/{id}
-        '/persons': 10,                 # Custo para GET /api/v2/persons
+        '/deals': 10,                   # GET /api/v2/deals
+        '/stages': 5,                   # GET /api/v2/stages
+        '/pipelines': 5,                # GET /api/v2/pipelines
+        '/persons/detail': 1,           # GET /api/v2/persons/{id}
+        '/persons': 10,                 # GET /api/v2/persons?ids=...
     }
     
-    DEFAULT_ENDPOINT_COST = 10          # Custo padrão para outras requisições (estimado)
+    DEFAULT_ENDPOINT_COST = 10  # Custo padrão para rotas não mapeadas
     
     def __init__(self, cache: RedisCache):
         self.api_key = settings.PIPEDRIVE_API_KEY
         if not self.api_key:
             log.error("PIPEDRIVE_API_KEY is not set!")
             raise ValueError("Pipedrive API Key is required.")
-
+        
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
         self.cache = cache
         self.log = log.bind(client="PipedriveAPIClient")
-        
+    
     def _normalize_endpoint_for_metrics(self, url_path: str) -> str:
-        """Normaliza o path da URL para usar como label na métrica, tratando IDs."""
+        """Normaliza o path da URL para usar como label na métrica, tratando IDs etc."""
         base_url_v1_len = len(self.BASE_URL_V1)
         base_url_v2_len = len(self.BASE_URL_V2)
-        path = url_path # Default
+        path = url_path
 
         if url_path.startswith(self.BASE_URL_V1):
             path = url_path[base_url_v1_len:]
@@ -85,114 +86,31 @@ class PipedriveAPIClient(PipedriveClientPort):
         resource = parts[0]
         normalized_path = f"/{resource}"
 
-        # Handle /resource/{id} -> /resource/detail
+        # /resource/{id} -> /resource/detail
         if len(parts) > 1 and parts[1].isdigit():
             normalized_path += "/detail"
-            # Handle /resource/{id}/subresource -> /resource/detail/subresource
+            # /resource/{id}/subresource -> /resource/detail/subresource
             if len(parts) > 2:
-                 known_subresources = [
-                     'changelog', 'participantsChangelog', 'followers', 'activities',
-                     'files', 'flow', 'mailMessages', 'participants', 'permittedUsers',
-                     'persons', 'products', 'discounts', 'installments', 'duplicate'
-                 ]
-                 if parts[2] in known_subresources:
-                     normalized_path += f"/{parts[2]}"
-                 # Handle potential subresource IDs like /deals/{id}/products/{product_id} -> /deals/detail/products/detail
-                 elif len(parts) > 3 and parts[3].isdigit():
-                      normalized_path += f"/{parts[2]}/detail"
+                # (exemplo: /deals/detail/changelog)
+                known_subresources = [
+                    'changelog', 'followers', 'activities', 'files',
+                    'mailMessages', 'participants', 'products'
+                ]
+                if parts[2] in known_subresources:
+                    normalized_path += f"/{parts[2]}"
+                # /resource/{id}/products/{product_id} => /resource/detail/products/detail
+                elif len(parts) > 3 and parts[3].isdigit():
+                    normalized_path += f"/{parts[2]}/detail"
 
-        # Handle /resource/subresource (without ID)
+        # /resource/subresource
         elif len(parts) > 1:
             known_actions = ['search', 'summary', 'timeline', 'collection', 'products', 'installments']
             if parts[1] in known_actions:
                 normalized_path += f"/{parts[1]}"
 
-        self.log.debug("Normalized endpoint", original=url_path, normalized=normalized_path) 
+        self.log.debug("Normalized endpoint", original=url_path, normalized=normalized_path)
         return normalized_path
     
-    def fetch_all_stages_details(self) -> List[Dict]:
-        """Busca detalhes de todos os stages (necessário para nomes normalizados)."""
-        cache_key = "pipedrive:all_stages_details"
-        cached = self.cache.get(cache_key)
-        if cached and isinstance(cached, list):
-            self.log.info("Stage details retrieved from cache.", cache_hit=True, count=len(cached))
-            return cached
-
-        self.log.info("Fetching stage details from API (V2).", cache_hit=False)
-        url = f"{self.BASE_URL_V2}/stages"
-        try:
-            all_stages = self._fetch_paginated_v2(url)
-            if all_stages:
-                self.cache.set(cache_key, all_stages, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS)
-                self.log.info("Stage details fetched and cached.", count=len(all_stages))
-            else:
-                self.log.warning("Fetched stage list was empty.")
-            return all_stages
-        except Exception as e:
-            self.log.error("Failed to fetch/process stage details", error=str(e), exc_info=True)
-            return []
-
-    def fetch_deal_changelog(self, deal_id: int) -> List[Dict]:
-        """Busca o changelog de um deal específico usando paginação por cursor."""
-        if not deal_id or deal_id <= 0:
-            self.log.warning("Invalid deal_id for changelog lookup", deal_id=deal_id)
-            return []
-
-        url = f"{self.BASE_URL_V1}/deals/{deal_id}/changelog" 
-        all_changes = []
-        next_cursor: Optional[str] = None
-        params = {"limit": 500}
-        page_num = 0
-        changelog_log = self.log.bind(deal_id=deal_id, endpoint='/deals/detail/changelog')
-
-        while True:
-            page_num += 1
-            current_params = params.copy()
-            if next_cursor:
-                current_params["cursor"] = next_cursor
-            page_log = changelog_log.bind(page=page_num, cursor=next_cursor)
-            page_log.debug("Fetching deal changelog page")
-            try:
-                response = self._get(url, params=current_params) 
-                json_response = response.json()
-
-                if not json_response or not json_response.get("success"):
-                    page_log.warning("Changelog API response indicates failure or empty data", response_preview=str(json_response)[:200])
-                    break
-
-                current_data = json_response.get("data", [])
-                if not current_data:
-                    page_log.debug("No more changelog data found.")
-                    break
-
-                all_changes.extend(current_data)
-                page_log.debug(f"Fetched {len(current_data)} changelog items.")
-
-                additional_data = json_response.get("additional_data", {})
-                pagination_info = additional_data.get("pagination", {})
-                next_cursor = pagination_info.get("next_cursor") 
-
-                if not next_cursor:
-                     more_items = pagination_info.get("more_items_in_collection", False)
-                     if more_items:
-                         next_start = pagination_info.get("next_start")
-                         if next_start is not None:
-                             page_log.warning("Changelog API uses next_start, pagination logic needs adjustment here.", pagination=pagination_info)
-                             break 
-                         else:
-                              page_log.warning("API indicates more items but no cursor/next_start. Stopping.", pagination=pagination_info)
-                              break
-                     else:
-                         page_log.debug("API indicates no more items (no cursor/more_items flag false).")
-                         break
-
-            except Exception as e:
-                page_log.error("Error fetching deal changelog page", error=str(e), exc_info=True)
-                break
-
-        changelog_log.info("Deal changelog fetch complete.", total_items=len(all_changes), total_pages=page_num)
-        return all_changes
-
     @api_breaker
     @retry(
         stop=stop_after_attempt(4),
@@ -201,86 +119,97 @@ class PipedriveAPIClient(PipedriveClientPort):
             retry_if_exception_type(requests.exceptions.Timeout) |
             retry_if_exception_type(requests.exceptions.ConnectionError) |
             retry_if_exception_type(requests.exceptions.ChunkedEncodingError) |
-            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) and getattr(e.response, 'status_code', None) >= 500) |
-            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) and getattr(e.response, 'status_code', None) == 429)
+            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) 
+                               and getattr(e.response, 'status_code', None) >= 500) |
+            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) 
+                               and getattr(e.response, 'status_code', None) == 429)
         ),
         reraise=True
     )
     def _get(self, url: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        """Faz uma requisição GET com retry, timeout, circuit breaker e métricas."""
-        effective_params = params.copy() if params else {} 
+        """
+        Único método que realmente faz uma requisição GET ao Pipedrive.
+        - Só aqui incrementamos o custo de tokens.
+        - Se algo vier do cache, não passará por aqui.
+        """
+        effective_params = params.copy() if params else {}
         if "api_token" not in effective_params:
-              effective_params["api_token"] = self.api_key
+            effective_params["api_token"] = self.api_key
 
         start_time = time.monotonic()
-        error_type = "success"; status_code = None; response = None
-        log_params = {k:v for k,v in effective_params.items() if k != 'api_token'}
+        error_type = "success"
+        status_code = None
+        response = None
+        log_params = {k: v for k, v in effective_params.items() if k != 'api_token'}
 
         raw_endpoint_path = url
         normalized_endpoint_label = self._normalize_endpoint_for_metrics(raw_endpoint_path)
-
         request_log = self.log.bind(endpoint=normalized_endpoint_label, method='GET', params=log_params)
 
         try:
-            request_log.debug("Making API GET request", url=url) 
-
+            request_log.debug("Making API GET request", url=url)
             response = self.session.get(url, params=effective_params, timeout=self.DEFAULT_TIMEOUT)
             status_code = response.status_code
-            
+
             # Rate limit handling
             if status_code == 429:
                 retry_after = response.headers.get("Retry-After")
                 request_log.warning("Rate limit hit (429)", retry_after=retry_after)
-                
+
             if not response.ok:
                 error_type = f"http_{status_code}"
                 try:
-                     response.raise_for_status()
+                    response.raise_for_status()
                 except requests.exceptions.HTTPError as e:
-                     response_text_snippet = e.response.text[:200] if e.response else "N/A"
-                     log_method = request_log.error if status_code >= 500 else request_log.warning
-                     log_method("API request failed with HTTP error", status_code=status_code, response_text=response_text_snippet, error=str(e))
-                     raise e 
+                    snippet = e.response.text[:200] if e.response else "N/A"
+                    log_method = request_log.error if status_code >= 500 else request_log.warning
+                    log_method("API request failed with HTTP error", 
+                               status_code=status_code, 
+                               response_text=snippet, 
+                               error=str(e))
+                    raise e
 
-            # --- Processamento de sucesso (2xx) ---
+            # --- Se chegou aqui, é 2xx (ok) ou 3xx sem raise_for_status ---
             cost = self.ENDPOINT_COSTS.get(normalized_endpoint_label, self.DEFAULT_ENDPOINT_COST)
-            request_log.debug(
-                 "Attempting to increment API token cost for successful request",
-                 cost=cost,
-                 raw_endpoint=raw_endpoint_path
-            )
-            if cost > 0:
-                pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(cost)
-                request_log.debug("API Token cost incremented", cost=cost)
-            elif normalized_endpoint_label not in self.ENDPOINT_COSTS:
-                 request_log.warning("API endpoint cost not defined, using default.", endpoint_called=raw_endpoint_path, default_cost=self.DEFAULT_ENDPOINT_COST)
-                 if self.DEFAULT_ENDPOINT_COST > 0:
-                       pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(self.DEFAULT_ENDPOINT_COST)
+            request_log.debug("Incrementing API token cost", cost=cost, endpoint=normalized_endpoint_label)
+            pipedrive_api_token_cost_total.labels(endpoint=normalized_endpoint_label).inc(cost)
 
             duration = time.monotonic() - start_time
-            api_request_duration_hist.labels(endpoint=normalized_endpoint_label, method='GET', status_code=status_code).observe(duration)
+            api_request_duration_hist.labels(
+                endpoint=normalized_endpoint_label, 
+                method='GET', 
+                status_code=status_code
+            ).observe(duration)
+
             request_log.debug("API GET request successful", status_code=status_code, duration_sec=f"{duration:.3f}s")
             return response
 
         except requests.exceptions.Timeout as e:
-             error_type = "timeout"; request_log.warning("API request timed out", error=str(e)); raise
+            error_type = "timeout"
+            request_log.warning("API request timed out", error=str(e))
+            raise
         except requests.exceptions.ConnectionError as e:
-             error_type = "connection_error"; request_log.warning("API connection error", error=str(e)); raise
+            error_type = "connection_error"
+            request_log.warning("API connection error", error=str(e))
+            raise
         except requests.exceptions.RequestException as e:
-             error_type = "request_exception"
-             request_log.error("API request failed (RequestException)", error=str(e), exc_info=True)
+            error_type = "request_exception"
+            request_log.error("API request failed (RequestException)", error=str(e), exc_info=True)
 
+        # Caso de exceção
         current_status_code = status_code
         if hasattr(e, 'response') and e.response is not None:
-                current_status_code = e.response.status_code
+            current_status_code = e.response.status_code
         elif isinstance(e, RetryError) and hasattr(e.cause, 'response') and e.cause.response is not None:
-                current_status_code = e.cause.response.status_code
+            current_status_code = e.cause.response.status_code
 
-        # Record error metric
         final_status_code_label = str(current_status_code) if current_status_code else 'N/A'
-        api_errors_counter.labels(endpoint=normalized_endpoint_label, error_type=error_type, status_code=final_status_code_label).inc()
-        request_log.debug("API Error counter incremented", error_type=error_type, status_code=final_status_code_label)
-
+        api_errors_counter.labels(endpoint=normalized_endpoint_label, 
+                                  error_type=error_type, 
+                                  status_code=final_status_code_label).inc()
+        request_log.debug("API Error counter incremented", 
+                          error_type=error_type, 
+                          status_code=final_status_code_label)
         raise
 
     def _fetch_paginated_v1(self, url: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
