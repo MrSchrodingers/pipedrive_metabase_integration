@@ -136,11 +136,12 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
         if peak_mem > 0 and peak_mem >= sla_memory_mb:
              flow_log.warning(f"ETL peak memory ({peak_mem:.2f}MB) approached or exceeded limit ({sla_memory_mb}MB)")
 
+        peak_mem_str = f"{peak_mem:.2f}" if peak_mem > 0 else "N/A"
         flow_log.info(
-            "ETL flow completed successfully.",
-            processed_records=processed,
-            duration_seconds=f"{duration:.2f}",
-            peak_memory_mb=f"{peak_mem:.2f}" if peak_mem > 0 else "N/A"
+            f"ETL flow completed successfully. "
+            f"Processed Records: {processed}, "
+            f"Duration: {duration:.2f}s, "
+            f"Peak Memory: {peak_mem_str}MB"
         )
         
         if peak_mem > 0:
@@ -150,12 +151,13 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
     except Exception as e:
         if result.get("status") != "error": 
             etl_failure_counter.labels(flow_type=flow_type).inc()
-        flow_log.critical("Main ETL flow failed critically.", error=str(e), exc_info=True)
-        raise
+        flow_log.critical(f"Main ETL flow failed critically: {str(e)}", exc_info=True)
+        raise 
 
     finally:
-        flow_log.info("Pushing metrics to Pushgateway for main sync flow.") 
+        flow_log.info("Pushing metrics to Pushgateway for main sync flow.")
         push_metrics_to_gateway(job_name="pipedrive_sync_job", grouping_key={'flow_run_id': str(flow_run_id)})
+
 
 
     
