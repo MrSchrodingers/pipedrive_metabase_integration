@@ -92,9 +92,9 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
     flow_run_ctx = context.get_run_context().flow_run
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
 
-    flow_log = base_flow_log # Use o logger diretamente
-    flow_name = flow_run_ctx.flow_name if flow_run_ctx else "Unknown Flow"
-    flow_log.info(f"Starting {flow_name} flow...")
+    flow_log = base_flow_log
+    flow_run_name = flow_run_ctx.name if flow_run_ctx else "Unknown Run"
+    flow_log.info(f"Starting flow run '{flow_run_name}'...")
 
     flow_log.info(f"Starting main ETL flow with batch size: {run_batch_size}")
     flow_type = "sync"
