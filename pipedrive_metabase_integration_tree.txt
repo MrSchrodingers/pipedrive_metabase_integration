@@ -30,14 +30,19 @@ infrastructure
 ├── ├── pipedrive_api_client.py
 ├── ├── __init__.py
 ├── logging_config.py
+create_or_update_core_blocks.py
 .gitignore
 kubectl.sha256
 flows
 ├── pipedrive_deployments.py
 ├── pipedrive_metabase_etl.py
+├── utils
+├── ├── __init__.py
+├── ├── flows_utils.py
 ├── __init__.py
 scripts
 ├── register_k8s_block.py
+├── __init__.py
 pushgateway.yaml
 application
 ├── schemas
@@ -54,6 +59,7 @@ application
 ├── ├── data_processing_utils.py
 ├── ├── replace_nan_with_none_recursive.py
 ├── ├── column_utils.py
+├── ├── batch_optimizer.py
 ├── ├── __init__.py
 ├── __init__.py
 ├── use_cases
@@ -83,4 +89,7 @@ tests
 ├── test_infrastructure.py
 pipedrive_metabase_integration_tree.txt
 db-secrets.yaml
+benchmark
+├── batch_size_optimizer.py
+├── __init__.py
 poetry.lock
