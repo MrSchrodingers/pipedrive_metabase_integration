@@ -74,6 +74,41 @@ class PipedriveRepository(DataRepositoryPort):
     def custom_field_mapping(self) -> Dict[str, str]:
         """Returns the mapping of Pipedrive API Key -> Normalized Column Name."""
         return self._raw_custom_field_mapping
+    
+    def get_configuration(self, key: str) -> Optional[Dict]:
+        """
+        Consulta na tabela de configuração (self.CONFIG_TABLE_NAME) o registro
+        que corresponde à chave 'key' e retorna o valor (como dicionário), se encontrado.
+        
+        Se nenhum registro for encontrado, retorna None.
+        """
+        conn = None
+        try:
+            conn = self.db_pool.get_connection()
+            with conn.cursor() as cur:
+                query = sql.SQL("SELECT value, updated_at FROM {config_table} WHERE key = %s").format(
+                    config_table=sql.Identifier(self.CONFIG_TABLE_NAME)
+                )
+                cur.execute(query, (key,))
+                result = cur.fetchone()
+                if result:
+                    value, updated_at = result
+                    if isinstance(value, dict):
+                        return value
+                    try:
+                        return json.loads(value)
+                    except Exception as decode_err:
+                        self.log.error("Failed to decode configuration for key", config_key=key, error=str(decode_err))
+                        return None
+                else:
+                    self.log.info("Configuration not found for key", config_key=key)
+                    return None
+        except Exception as e:
+            self.log.error("Error getting configuration", config_key=key, error=str(e), exc_info=True)
+            return None
+        finally:
+            if conn:
+                self.db_pool.release_connection(conn)
 
     def _prepare_custom_columns(self, api_mapping: Dict[str, str]) -> Dict[str, str]:
         """Prepares custom column names and types, ensuring no clashes with base columns or prefixes."""

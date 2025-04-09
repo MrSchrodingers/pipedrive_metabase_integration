@@ -7,7 +7,7 @@ from prefect.blocks.system import JSON
 import logging
 
 from application.services.etl_service import ETLService
-from flows.utils.flows_utils import calculate_optimal_batch_size, update_dynamic_batch_config, validate_loaded_data
+from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, update_dynamic_batch_config, validate_loaded_data
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
@@ -107,8 +107,11 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
         client, repository, etl_service = initialize_components()
 
         # 2. Executa o ETL principal (run_etl agora foca na sincronização atual)
-        etl_service.process_batch_size = run_batch_size
-        result = etl_service.run_etl(flow_type="sync") 
+        optimal_batch = get_optimal_batch_size(repository)
+        base_flow_log.info(f"Using optimal batch size from config: {optimal_batch}")
+        etl_service.process_batch_size = optimal_batch
+        
+        result = etl_service.run_etl(flow_type="sync")
 
         # --- Validação e Métricas ---
         flow_log.info("Performing post-load validation.")

@@ -34,9 +34,9 @@ class PipedriveAPIClient(PipedriveClientPort):
     CHANGELOG_PAGE_LIMIT = 500
     
     # TTL para mapas e lookups individuais
-    DEFAULT_MAP_CACHE_TTL_SECONDS = 3600 * 12  # 12 hours
-    PERSON_LOOKUP_CACHE_TTL_SECONDS = 3600 * 1  # 1 hour
-    STAGE_DETAILS_CACHE_TTL_SECONDS = 3600 * 6  # 6 hours
+    DEFAULT_MAP_CACHE_TTL_SECONDS = 300 * 12  # 12 hours
+    PERSON_LOOKUP_CACHE_TTL_SECONDS = 300 * 1  # 1 hour
+    STAGE_DETAILS_CACHE_TTL_SECONDS = 300 * 6  # 6 hours
     
     ENDPOINT_COSTS = {
         # V1 endpoints
@@ -113,8 +113,8 @@ class PipedriveAPIClient(PipedriveClientPort):
     
     @api_breaker
     @retry(
-        stop=stop_after_attempt(4),
-        wait=wait_exponential(multiplier=1, min=4, max=30),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=4, max=60),
         retry=(
             retry_if_exception_type(requests.exceptions.Timeout) |
             retry_if_exception_type(requests.exceptions.ConnectionError) |
@@ -375,6 +375,9 @@ class PipedriveAPIClient(PipedriveClientPort):
                  person_log.warning("Person ID not found in Pipedrive API (404).")
                  self.cache.set(cache_key, '', ex_seconds=self.PERSON_LOOKUP_CACHE_TTL_SECONDS)
                  return None
+            elif response.status_code == 429:
+                 person_log.warning("Rate limit reached in Pipedrive API (429).")
+                 raise Exception("Rate limit")
             else:
                  person_log.warning(f"Failed to fetch person name from API, status code: {response.status_code}.")
                  return None
@@ -478,7 +481,7 @@ class PipedriveAPIClient(PipedriveClientPort):
                         all_persons_in_batch.extend(current_data)
 
                         # Atualizar cursor para próxima página
-                        next_cursor = json_response.get("additional_data", {}).get("next_cursor")
+                        additional_data = json_response.get("additional_data", {}); next_cursor = additional_data.get("next_cursor")
                         if not next_cursor:
                             break
 

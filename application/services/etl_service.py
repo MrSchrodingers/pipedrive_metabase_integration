@@ -44,14 +44,14 @@ class ETLService:
         self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
         self.batch_optimizer = DynamicBatchOptimizer(config={
             'initial_size': batch_size,
-            'max_size': 2000, 
-            'min_size': 100,
-            'max_memory': 4096,  # 4GB
+            'max_size': 2000,
+            'min_size': 500,  # Aumentar o mínimo para reduzir oscilações
+            'max_memory': 4096,
             'memory_threshold': 0.8,
-            'reduce_factor': 0.75,
-            'increase_factor': 1.25,
-            'history_window': 5,
-            'duration_threshold': 300  # 5 minutos
+            'reduce_factor': 0.5,  # Reduzir mais gradualmente
+            'increase_factor': 1.1,  # Aumentar mais lentamente
+            'history_window': 10,
+            'duration_threshold': 600  # Permitir mais tempo
         })
         self._current_batch_size = batch_size
 
@@ -188,7 +188,6 @@ class ETLService:
             transformed_df["owner_id"] = df["owner_id"]
             transformed_df["owner_name"] = transformed_df["owner_id"].map(user_map).fillna(UNKNOWN_NAME)
             
-            # Obter IDs únicos de persons neste batch (ignorando nulos)
             unique_person_ids_in_batch: Set[int] = set(transformed_df["person_id"].dropna().unique())
 
             batch_person_map = {}
@@ -425,23 +424,6 @@ class ETLService:
                         total_failed += failed_in_this_batch
                         
                     batch_duration = time.monotonic() - batch_start_time
-                    current_mem_usage = self._track_resources(flow_type="main_sync") 
-                    
-                    try:
-                        self._current_batch_size = self.batch_optimizer.update(
-                            last_duration=batch_duration,
-                            memory_usage=current_mem_usage
-                        )
-                        dynamic_batch_log.info(
-                            "Updated batch size dynamically",
-                            new_size=self._current_batch_size,
-                            reason="Performance metrics adjustment",
-                            last_duration=f"{batch_duration:.3f}s",
-                            last_mem_usage_bytes=f"{current_mem_usage:.2f}"
-                        )
-                    except Exception as optimizer_err:
-                         run_log.error("Non-critical error during batch optimizer update, continuing ETL.", error=str(optimizer_err), exc_info=True)
-
                     batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
 
             # Processar o último batch parcial
