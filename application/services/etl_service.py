@@ -40,6 +40,7 @@ class ETLService:
         self.repository = repository
         self.process_batch_size = batch_size
         self.log = log.bind(service="ETLService")
+        # Obtém detalhes e gera mapa de stages normalizados (já aplicando a função normalize)
         self._all_stages_details = self.client.fetch_all_stages_details() 
         self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
         self.batch_optimizer = DynamicBatchOptimizer(config={
@@ -63,22 +64,23 @@ class ETLService:
         result = self.run_etl(flow_type=flow_type)
         self.client.fetch_all_deals_stream = original_fetch
         return result
-    
+
     def _build_stage_id_map(self, all_stages: List[Dict]) -> Dict[int, str]:
         """Cria um mapa de stage_id para nome normalizado."""
         id_map = {}
         if not all_stages:
-             return {}
+            return {}
         for stage in all_stages:
-             stage_id = stage.get('id')
-             stage_name = stage.get('name')
-             if stage_id and stage_name:
-                 try:
-                     normalized = normalize_column_name(stage_name)
-                     if normalized:
-                         id_map[stage_id] = normalized
-                 except Exception as e:
-                     self.log.warning("Failed to normalize stage name for map", stage_id=stage_id, name=stage_name, error=str(e))
+            stage_id = stage.get('id')
+            stage_name = stage.get('name')
+            if stage_id and stage_name:
+                try:
+                    normalized = normalize_column_name(stage_name)
+                    if normalized:
+                        id_map[stage_id] = normalized
+                except Exception as e:
+                    self.log.warning("Failed to normalize stage name for map",
+                                     stage_id=stage_id, name=stage_name, error=str(e))
         return id_map
 
     def _parse_changelog_timestamp(self, timestamp_str: Optional[str]) -> Optional[datetime]:
@@ -96,7 +98,7 @@ class ETLService:
         self,
         batch: List[Dict],
         user_map: Dict[int, str],
-        stage_map: Dict[int, str],
+        stage_map_unused: Dict[int, str],  # Não será usado, agora usamos o mapa normalizado interno
         pipeline_map: Dict[int, str],
         flow_type: str
     ) -> Tuple[List[Dict], int]:
@@ -109,7 +111,7 @@ class ETLService:
         if not batch:
             return [], 0
 
-        # 1. Validação Pydantic 
+        # 1. Validação com Pydantic
         valid_input_for_df = []
         for i, record in enumerate(batch):
             record_id = record.get("id", f"no-id-index-{i}")
@@ -131,7 +133,7 @@ class ETLService:
             transform_log.warning("No records passed Pydantic validation in the batch.")
             return [], pydantic_failed_count
 
-        # 2. DataFrame e Transformação
+        # 2. DataFrame e transformação
         validated_records: List[Dict] = []
         transform_failed_count = 0
         try:
@@ -146,7 +148,7 @@ class ETLService:
 
             transformed_df = pd.DataFrame()
 
-            # --- IDs Básicos e Conversões --- 
+            # --- IDs Básicos e Conversões ---
             transformed_df["id"] = df["id"].astype(str)
             transformed_df["titulo"] = df["title"].fillna("").astype(str)
             transformed_df["status"] = df["status"].fillna("").astype(str)
@@ -162,58 +164,60 @@ class ETLService:
             transformed_df["add_time"] = pd.to_datetime(df["add_time"], errors='coerce', utc=True)
             transformed_df["update_time"] = pd.to_datetime(df["update_time"], errors='coerce', utc=True)
 
-            # --- Mapeamento de Nomes (Users, Stages, Pipelines) ---
+            # --- Mapeamento de Nomes para Users ---
             transformed_df["creator_user_id"] = pd.to_numeric(df["creator_user_id"], errors='coerce').astype('Int64')
             transformed_df['creator_user_name'] = transformed_df['creator_user_id'].map(user_map).fillna(UNKNOWN_NAME)
 
+            # --- Mapeamento de Stages com uso do mapa normalizado ---
             transformed_df["stage_id"] = pd.to_numeric(df["stage_id"], errors='coerce').astype('Int64')
-            transformed_df['stage_name'] = transformed_df['stage_id'].map(stage_map).fillna(UNKNOWN_NAME)
+            # Utiliza o mapa de stages normalizado criado na inicialização
+            transformed_df['stage_name'] = transformed_df['stage_id'].map(self._stage_id_to_normalized_name_map).fillna(UNKNOWN_NAME)
 
+            # --- Mapeamento de Pipelines ---
             transformed_df["pipeline_id"] = pd.to_numeric(df["pipeline_id"], errors='coerce').astype('Int64')
             transformed_df['pipeline_name'] = transformed_df['pipeline_id'].map(pipeline_map).fillna(UNKNOWN_NAME)
 
-            # --- Mapeamento de Persons (Sob Demanda) ---
+            # --- Mapeamento de Persons ---
             transformed_df["person_id"] = pd.to_numeric(df["person_id"], errors='coerce').astype('Int64')
-            
+
             # --- Mapeamento de Owner ---
-            # 1) Extrair owner_id (caso venha aninhado como dict ou direto)
             df["owner_id"] = df["owner_id"].apply(
                 lambda x: x["id"] if isinstance(x, dict) and "id" in x else x
             )
-
-            # 2) Converter para número
             df["owner_id"] = pd.to_numeric(df["owner_id"], errors='coerce').astype('Int64')
-
-            # 3) Mapear owner_name a partir do user_map 
             transformed_df["owner_id"] = df["owner_id"]
             transformed_df["owner_name"] = transformed_df["owner_id"].map(user_map).fillna(UNKNOWN_NAME)
-            
-            unique_person_ids_in_batch: Set[int] = set(transformed_df["person_id"].dropna().unique())
 
+            # --- Resolução dos nomes de persons de forma determinística ---
+            unique_person_ids_in_batch: Set[int] = set(transformed_df["person_id"].dropna().unique())
             batch_person_map = {}
             if unique_person_ids_in_batch:
-                 transform_log.info(f"Found {len(unique_person_ids_in_batch)} unique person IDs in batch to fetch names for.")
-                 fetch_names_start = time.monotonic()
-                 try:
-                     batch_person_map = self.client.fetch_person_names_for_ids(unique_person_ids_in_batch)
-                     fetch_names_duration = time.monotonic() - fetch_names_start
-                     transform_log.info(
-                         f"Fetched {len(batch_person_map)} names for {len(unique_person_ids_in_batch)} unique person IDs.",
-                         duration_sec=f"{fetch_names_duration:.3f}s"
-                     )
-                 except Exception as person_fetch_err:
-                     transform_log.error(
-                         "Failed to fetch person names for batch. Names will be 'Desconhecido'.",
-                         error=str(person_fetch_err),
-                         exc_info=True 
-                     )
-                     batch_person_map = {}
+                transform_log.info(f"Found {len(unique_person_ids_in_batch)} unique person IDs in batch to fetch names for.")
+                fetch_names_start = time.monotonic()
+                try:
+                    batch_person_map = self.client.fetch_person_names_for_ids(unique_person_ids_in_batch)
+                    fetch_names_duration = time.monotonic() - fetch_names_start
+                    transform_log.info(
+                        f"Fetched {len(batch_person_map)} names for {len(unique_person_ids_in_batch)} unique person IDs.",
+                        duration_sec=f"{fetch_names_duration:.3f}s"
+                    )
+                except Exception as person_fetch_err:
+                    transform_log.error(
+                        "Failed to fetch person names for batch. Names will be 'Desconhecido'.",
+                        error=str(person_fetch_err),
+                        exc_info=True 
+                    )
+                    batch_person_map = {}
 
+            # Função para garantir que um nome vazio seja substituído por UNKNOWN_NAME
+            def resolve_person_name(name):
+                if name and str(name).strip():
+                    return name
+                return UNKNOWN_NAME
 
-            # Usar o mapa específico do batch (pode estar vazio se a busca falhar ou não houver IDs)
-            transformed_df['person_name'] = transformed_df['person_id'].map(batch_person_map).fillna(UNKNOWN_NAME)
+            transformed_df['person_name'] = transformed_df['person_id'].map(batch_person_map).apply(resolve_person_name)
 
-            # --- Campos Customizados --- 
+            # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping
             if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
                 def extract_custom(row):
@@ -230,13 +234,11 @@ class ETLService:
                                 custom_data[normalized_name] = str(field_data) 
                             else:
                                 transform_log.debug("Unexpected type for custom field value", api_key=api_key, type=type(field_data).__name__)
-                                custom_data[normalized_name] = str(field_data) 
-
+                                custom_data[normalized_name] = str(field_data)
                     for normalized_name in repo_custom_mapping.values():
                         if normalized_name not in custom_data:
-                             custom_data[normalized_name] = None 
+                            custom_data[normalized_name] = None 
                     return pd.Series(custom_data)
-
                 custom_df = df.loc[df['custom_fields'].notna(), 'custom_fields'].apply(extract_custom)
                 transformed_df = pd.concat([transformed_df, custom_df], axis=1)
 
@@ -247,9 +249,10 @@ class ETLService:
             missing_final_cols = [col for col in final_columns if col not in existing_cols_in_df]
             if missing_final_cols:
                 transform_log.warning("Columns defined in repository are missing in transformed DataFrame", missing_columns=missing_final_cols)
-                for col in missing_final_cols:
-                     transformed_df[col] = None
-                     ordered_final_columns.append(col)
+                # Cria um DataFrame para as colunas ausentes (evitar inserções iterativas)
+                missing_df = pd.DataFrame({col: None for col in missing_final_cols}, index=transformed_df.index)
+                transformed_df = pd.concat([transformed_df, missing_df], axis=1)
+                ordered_final_columns.extend(missing_final_cols)
 
             extra_cols = [col for col in existing_cols_in_df if col not in ordered_final_columns]
             if extra_cols:
@@ -258,8 +261,7 @@ class ETLService:
 
             transformed_df = transformed_df[ordered_final_columns]
 
-
-            # --- Limpeza Final NaN/NaT (Nível Superior) ---
+            # --- Limpeza Final ---
             transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
 
             validated_records = transformed_df.to_dict('records')
@@ -267,18 +269,18 @@ class ETLService:
             transform_failed_count = pydantic_valid_count - transform_succeeded_count
 
         except AttributeError as ae: 
-             transform_failed_count = pydantic_valid_count 
-             transform_log.error("Pandas transformation failed due to AttributeError", error=str(ae), exc_info=True)
-             raise ae
+            transform_failed_count = pydantic_valid_count 
+            transform_log.error("Pandas transformation failed due to AttributeError", error=str(ae), exc_info=True)
+            raise ae
         except Exception as e:
             transform_failed_count = pydantic_valid_count 
             transform_log.error("Pandas transformation/enrichment failed", error=str(e), exc_info=True)
-            return [], pydantic_failed_count + transform_failed_count
+            return [], pydantic_valid_count + transform_failed_count
 
         duration = time.monotonic() - start_time
         transform_duration_summary.labels(flow_type=flow_type).observe(duration)
         total_failed_in_batch = pydantic_failed_count + transform_failed_count
-        transform_log.info( 
+        transform_log.info(
             "Batch transformation completed",
             validated_count=len(validated_records), transform_errors=transform_failed_count,
             total_failed_in_batch=total_failed_in_batch, duration_sec=f"{duration:.3f}s"
@@ -286,12 +288,12 @@ class ETLService:
         return validated_records, total_failed_in_batch
 
     def _track_resources(self, flow_type: str) -> float:
-        """Monitor memory usage and return current memory in bytes."""
+        """Monitora o uso de memória e retorna a memória atual em bytes."""
         current_mem = 0.0
         if tracemalloc.is_tracing():
             try:
                 current, peak = tracemalloc.get_traced_memory()
-                memory_usage_gauge.labels(flow_type=flow_type).set(peak / 1e6)  # Gauge em MB
+                memory_usage_gauge.labels(flow_type=flow_type).set(peak / 1e6)  # em MB
                 self.log.debug(f"Memory Usage: Current={current/1e6:.2f}MB, Peak={peak/1e6:.2f}MB")
                 current_mem = current
             except Exception as mem_err:
@@ -327,8 +329,9 @@ class ETLService:
                 user_map = self.client.fetch_all_users_map()
                 run_log.info("Users map fetched.", count=len(user_map))
 
-                stage_map = {s['id']: s['name'] for s in self._all_stages_details if s.get('id') and s.get('name')}
-                run_log.info("Stages map (for display name) built.", count=len(stage_map))
+                # Para stages, utilizamos o mapa normalizado já construído
+                normalized_stage_map = self._stage_id_to_normalized_name_map
+                run_log.info("Stages map (normalized) built.", count=len(normalized_stage_map))
 
                 run_log.info("Fetching Pipelines map...")
                 pipeline_map = self.client.fetch_all_pipelines_map()
@@ -344,10 +347,10 @@ class ETLService:
                 result["message"] = f"Failed to fetch auxiliary maps: {map_err}"
                 raise map_err
 
-            # --- Verificação de Schema --- (mantido)
+            # --- Verificação de Schema (assumida feita pelo Repository) ---
             run_log.info("Database schema assumed verified/created by Repository initialization.")
 
-            # --- Extração (Streaming) --- 
+            # --- Extração (Streaming) ---
             last_timestamp_str = self.client.get_last_timestamp()
             run_log.info("Fetching deals stream from Pipedrive", updated_since=last_timestamp_str)
             deal_stream_iterator = self.client.fetch_all_deals_stream(updated_since=last_timestamp_str)
@@ -376,11 +379,10 @@ class ETLService:
                         current_record_time = datetime.fromisoformat(update_time_str.replace('Z', '+00:00'))
                         if current_record_time.tzinfo is None:
                             current_record_time = current_record_time.replace(tzinfo=timezone.utc)
-
                         if latest_update_time_in_run is None or current_record_time > latest_update_time_in_run:
                             latest_update_time_in_run = current_record_time
                     except (ValueError, TypeError):
-                         run_log.warning("Could not parse update_time from fetched record", record_id=deal_record.get("id"), time_str=update_time_str)
+                        run_log.warning("Could not parse update_time from fetched record", record_id=deal_record.get("id"), time_str=update_time_str)
                 
                 if len(records_for_processing_batch) >= self._current_batch_size:
                     batch_num += 1
@@ -393,7 +395,7 @@ class ETLService:
 
                     try:
                         validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                            batch_to_process, user_map, stage_map, pipeline_map, flow_type
+                            batch_to_process, user_map, normalized_stage_map, pipeline_map, flow_type
                         )
                         total_failed += failed_count_in_batch
                         total_validated += len(validated_batch)
@@ -403,30 +405,32 @@ class ETLService:
                             try:
                                 with db_operation_duration_hist.labels(operation='upsert').time():
                                     self.repository.save_data_upsert(validated_batch)
-                                current_loaded_count = len(validated_batch) 
+                                current_loaded_count = len(validated_batch)
                                 total_loaded += current_loaded_count
                                 records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
                                 load_duration = time.monotonic() - load_start
-                                batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
+                                batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count,
+                                               load_duration_sec=f"{load_duration:.3f}s")
                             except Exception as load_error:
                                 etl_failure_counter.labels(flow_type=flow_type).inc(len(validated_batch))
                                 failed_on_load = len(validated_batch)
                                 total_failed += failed_on_load
                                 total_validated -= failed_on_load 
-                                batch_log.error("Failed to load batch to repository", error=str(load_error), records_count=failed_on_load, exc_info=True)
+                                batch_log.error("Failed to load batch to repository", error=str(load_error),
+                                                records_count=failed_on_load, exc_info=True)
                         else:
                             batch_log.warning("ETL Batch resulted in no validated records to load", failed_in_batch=failed_count_in_batch)
 
                     except Exception as batch_proc_err:
                         batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
                         failed_in_this_batch = len(batch_to_process)
-                        etl_failure_counter.labels(flow_type=flow_type).labels(flow_type=flow_type).inc(failed_in_this_batch)
+                        etl_failure_counter.labels(flow_type=flow_type).inc(failed_in_this_batch)
                         total_failed += failed_in_this_batch
                         
                     batch_duration = time.monotonic() - batch_start_time
                     batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
 
-            # Processar o último batch parcial
+            # Processa último batch parcial, se houver
             if records_for_processing_batch:
                 batch_num += 1
                 batch_to_process = records_for_processing_batch
@@ -437,7 +441,7 @@ class ETLService:
 
                 try:
                     validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                        batch_to_process, user_map, stage_map, pipeline_map, flow_type
+                        batch_to_process, user_map, normalized_stage_map, pipeline_map, flow_type
                     )
                     total_failed += failed_count_in_batch
                     total_validated += len(validated_batch)
@@ -450,52 +454,52 @@ class ETLService:
                             total_loaded += current_loaded_count
                             records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
                             load_duration = time.monotonic() - load_start
-                            batch_log.info("Final ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
+                            batch_log.info("Final ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count,
+                                           load_duration_sec=f"{load_duration:.3f}s")
                         except Exception as load_error:
                             etl_failure_counter.labels(flow_type=flow_type).inc(len(validated_batch))
                             total_failed += len(validated_batch)
-                            batch_log.error("Failed to load final batch to repository", error=str(load_error), records_count=len(validated_batch), exc_info=True)
+                            batch_log.error("Failed to load final batch to repository", error=str(load_error),
+                                            records_count=len(validated_batch), exc_info=True)
                     else:
                         batch_log.warning("Final ETL Batch resulted in no validated records to load", failed_in_batch=failed_count_in_batch)
                     
                 except Exception as batch_proc_err:
-                    batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
+                    batch_log.error("Critical error processing final ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
                     failed_in_this_batch = len(batch_to_process)
                     total_failed += failed_in_this_batch
                         
-                self._track_resources( flow_type="main_sync" )
+                self._track_resources(flow_type="main_sync")
                 batch_duration = time.monotonic() - batch_start_time
-                batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
+                batch_log.debug("Final ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
                 if flow_type != "sync":
                     self._current_batch_size = self.batch_optimizer.update(
                         last_duration=batch_duration,
                         memory_usage=self._track_resources(flow_type="main_sync")
                     )
                     dynamic_batch_log.info("Updated batch size dynamically",
-                                        new_size=self._current_batch_size,
-                                        reason="Performance metrics adjustment",
-                                        last_duration=f"{batch_duration:.3f}s")
+                                            new_size=self._current_batch_size,
+                                            reason="Performance metrics adjustment",
+                                            last_duration=f"{batch_duration:.3f}s")
                 else:
                     dynamic_batch_log.info("Using fixed batch size from configuration",
-                                        fixed_batch_size=self._current_batch_size)
+                                            fixed_batch_size=self._current_batch_size)
 
             # --- Finalização ---
             run_log.info("ETL stream processing finished.")
-
             if latest_update_time_in_run and total_fetched > 0:
-                 try:
+                try:
                     buffered_time = latest_update_time_in_run + timedelta(seconds=1)
                     iso_timestamp = buffered_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                     self.client.update_last_timestamp(iso_timestamp)
                     run_log.info("Last timestamp updated in cache", timestamp=iso_timestamp)
-                 except Exception as cache_err:
+                except Exception as cache_err:
                     run_log.error("Failed to update last timestamp in cache", error=str(cache_err), exc_info=True)
             elif total_fetched == 0:
-                 run_log.info("No new records fetched since last run. Last timestamp not updated.")
+                run_log.info("No new records fetched since last run. Last timestamp not updated.")
             else:
-                 run_log.warning("ETL fetched records but could not determine or save the last timestamp reliably. Timestamp NOT updated.",
+                run_log.warning("ETL fetched records but could not determine or save the last timestamp reliably. Timestamp NOT updated.",
                                 fetched=total_fetched, loaded=total_loaded, last_time=latest_update_time_in_run)
-
 
             result.update({
                 "status": "success", "total_fetched": total_fetched, "total_validated": total_validated,
@@ -504,45 +508,48 @@ class ETLService:
             })
 
         except Exception as e:
-            etl_failure_counter.labels(flow_type=flow_type).labels(flow_type=flow_type).inc()
+            etl_failure_counter.labels(flow_type=flow_type).inc()
             run_log.critical("Critical ETL failure during run_etl", error=str(e), exc_info=True)
             result["status"] = "error"
-            if result["message"] == "ETL process did not complete.": result["message"] = f"Critical ETL failure: {str(e)}"
+            if result["message"] == "ETL process did not complete.":
+                result["message"] = f"Critical ETL failure: {str(e)}"
             if total_failed == 0 and total_fetched > 0:
-                 result["total_failed"] = total_fetched 
+                result["total_failed"] = total_fetched 
             elif total_failed > 0 and total_failed < total_fetched and result["status"] == "error":
-                 result["total_failed"] = total_fetched
+                result["total_failed"] = total_fetched
 
         finally:
             run_end_time = time.monotonic()
             run_end_utc = datetime.now(timezone.utc)
             duration = run_end_time - run_start_time
-            result["duration_seconds"] = round(duration, 3) 
+            result["duration_seconds"] = round(duration, 3)
             result["end_time"] = run_end_utc.isoformat()
             etl_duration_hist.labels(flow_type=flow_type).observe(duration)
             peak_mem_mb = 0
             if tracemalloc.is_tracing():
                 try:
                     current_mem, peak_mem = tracemalloc.get_traced_memory()
-                    peak_mem_mb = round(peak_mem / 1e6, 2) 
+                    peak_mem_mb = round(peak_mem / 1e6, 2)
                     tracemalloc.stop()
                     run_log.debug(f"Final Memory Usage: Current={current_mem/1e6:.2f}MB, Peak={peak_mem_mb:.2f}MB")
-                except Exception as trace_err: run_log.error("Error stopping tracemalloc", error=str(trace_err))
+                except Exception as trace_err:
+                    run_log.error("Error stopping tracemalloc", error=str(trace_err))
             result["peak_memory_mb"] = peak_mem_mb
 
             result["total_fetched"] = total_fetched
             result["total_validated"] = total_validated
             result["total_loaded"] = total_loaded
             if result["status"] == "error" and result.get("total_failed", 0) < total_fetched:
-                 result["total_failed"] = total_fetched
-
+                result["total_failed"] = total_fetched
 
             log_level = run_log.info if result["status"] == "success" else run_log.error
             log_level("ETL run summary", **result)
-            try: print(f"ETL_COMPLETION_METRICS: {json.dumps(result)}")
-            except TypeError: print(f"ETL_COMPLETION_METRICS: {result}")
+            try:
+                print(f"ETL_COMPLETION_METRICS: {json.dumps(result)}")
+            except TypeError:
+                print(f"ETL_COMPLETION_METRICS: {result}")
             return result
-        
+
     def run_retroactive_backfill(self, deal_ids: List[str]) -> Dict[str, Any]:
         """
         Executa o backfill do histórico de stages para uma lista de deal IDs (Fluxo 2).
@@ -562,9 +569,8 @@ class ETLService:
 
         stage_id_map = self._stage_id_to_normalized_name_map
         if not stage_id_map:
-             run_log.error("Stage ID to normalized name map is empty. Cannot perform backfill.")
-             return {"status": "error", "message": "Stage ID map is empty."}
-
+            run_log.error("Stage ID to normalized name map is empty. Cannot perform backfill.")
+            return {"status": "error", "message": "Stage ID map is empty."}
 
         for deal_id_str in deal_ids:
             try:
@@ -585,19 +591,17 @@ class ETLService:
                         ts = self._parse_changelog_timestamp(entry.get('log_time') or entry.get('timestamp'))
                         new_stage_id = entry.get('new_value')
                         if ts and new_stage_id is not None:
-                             try:
-                                 new_stage_id_int = int(new_stage_id)
-                                 stage_changes.append({'timestamp': ts, 'stage_id': new_stage_id_int})
-                             except (ValueError, TypeError):
-                                 deal_log.warning("Could not parse new_value as int for stage_id change", entry=entry)
-
+                            try:
+                                new_stage_id_int = int(new_stage_id)
+                                stage_changes.append({'timestamp': ts, 'stage_id': new_stage_id_int})
+                            except (ValueError, TypeError):
+                                deal_log.warning("Could not parse new_value as int for stage_id change", entry=entry)
 
                 if not stage_changes:
-                     deal_log.debug("No 'stage_id' changes found in changelog.")
-                     continue
+                    deal_log.debug("No 'stage_id' changes found in changelog.")
+                    continue
 
                 stage_changes.sort(key=lambda x: x['timestamp'])
-
                 first_entry_times: Dict[int, datetime] = {}
                 for change in stage_changes:
                     stage_id = change['stage_id']
@@ -616,16 +620,15 @@ class ETLService:
                         })
                     else:
                         deal_log.warning("Stage ID from changelog not found in current stage map", stage_id=stage_id)
-
-            except RetryError as retry_err: 
-                 api_errors += 1
-                 run_log.error("API RetryError fetching changelog", deal_id=deal_id_str, error=str(retry_err.last_attempt.exception()))
+            except RetryError as retry_err:
+                api_errors += 1
+                run_log.error("API RetryError fetching changelog", deal_id=deal_id_str, error=str(retry_err.last_attempt.exception()))
             except requests.exceptions.RequestException as req_err:
-                 api_errors += 1
-                 run_log.error("API RequestException fetching changelog", deal_id=deal_id_str, error=str(req_err))
+                api_errors += 1
+                run_log.error("API RequestException fetching changelog", deal_id=deal_id_str, error=str(req_err))
             except ValueError:
-                 processing_errors += 1
-                 run_log.error("Invalid deal_id format, skipping", deal_id_str=deal_id_str)
+                processing_errors += 1
+                run_log.error("Invalid deal_id format, skipping", deal_id_str=deal_id_str)
             except Exception as e:
                 processing_errors += 1
                 run_log.error("Error processing changelog for deal", deal_id=deal_id_str, error=str(e), exc_info=True)
@@ -635,23 +638,21 @@ class ETLService:
             try:
                 self.repository.update_stage_history(updates_to_apply)
             except Exception as db_err:
-                 run_log.error("Failed during database update for stage history", error=str(db_err), exc_info=True)
-                 return {
-                     "status": "error",
-                     "message": f"Database update failed: {db_err}",
-                     "processed_deals": processed_deals_count,
-                     "updates_generated": len(updates_to_apply),
-                     "api_errors": api_errors,
-                     "processing_errors": processing_errors
-                 }
+                run_log.error("Failed during database update for stage history", error=str(db_err), exc_info=True)
+                return {
+                    "status": "error",
+                    "message": f"Database update failed: {db_err}",
+                    "processed_deals": processed_deals_count,
+                    "updates_generated": len(updates_to_apply),
+                    "api_errors": api_errors,
+                    "processing_errors": processing_errors
+                }
         else:
-             run_log.info("No stage history updates to apply for this batch.")
-
+            run_log.info("No stage history updates to apply for this batch.")
 
         duration = time.monotonic() - run_start_time
         status = "success" if api_errors == 0 and processing_errors == 0 else "partial_success"
         run_log.info("Retroactive backfill run finished.", status=status, duration_sec=f"{duration:.3f}s")
-
         return {
             "status": status,
             "processed_deals": processed_deals_count,
