@@ -465,7 +465,19 @@ class ETLService:
                         
                 self._track_resources( flow_type="main_sync" )
                 batch_duration = time.monotonic() - batch_start_time
-                batch_log.debug("Final ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
+                batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
+                if flow_type != "sync":
+                    self._current_batch_size = self.batch_optimizer.update(
+                        last_duration=batch_duration,
+                        memory_usage=self._track_resources(flow_type="main_sync")
+                    )
+                    dynamic_batch_log.info("Updated batch size dynamically",
+                                        new_size=self._current_batch_size,
+                                        reason="Performance metrics adjustment",
+                                        last_duration=f"{batch_duration:.3f}s")
+                else:
+                    dynamic_batch_log.info("Using fixed batch size from configuration",
+                                        fixed_batch_size=self._current_batch_size)
 
             # --- Finalização ---
             run_log.info("ETL stream processing finished.")
