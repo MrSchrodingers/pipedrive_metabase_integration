@@ -393,7 +393,7 @@ class ETLService:
                                     self.repository.save_data_upsert(validated_batch)
                                 current_loaded_count = len(validated_batch) 
                                 total_loaded += current_loaded_count
-                                records_processed_counter.inc(current_loaded_count)
+                                records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
                                 load_duration = time.monotonic() - load_start
                                 batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
                             except Exception as load_error:
@@ -448,7 +448,7 @@ class ETLService:
                                 self.repository.save_data_upsert(validated_batch)
                             current_loaded_count = len(validated_batch)
                             total_loaded += current_loaded_count
-                            records_processed_counter.inc(current_loaded_count)
+                            records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
                             load_duration = time.monotonic() - load_start
                             batch_log.info("Final ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count, load_duration_sec=f"{load_duration:.3f}s")
                         except Exception as load_error:
