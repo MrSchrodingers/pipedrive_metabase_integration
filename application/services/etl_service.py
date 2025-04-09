@@ -174,7 +174,20 @@ class ETLService:
 
             # --- Mapeamento de Persons (Sob Demanda) ---
             transformed_df["person_id"] = pd.to_numeric(df["person_id"], errors='coerce').astype('Int64')
+            
+            # --- Mapeamento de Owner ---
+            # 1) Extrair owner_id (caso venha aninhado como dict ou direto)
+            df["owner_id"] = df["owner_id"].apply(
+                lambda x: x["id"] if isinstance(x, dict) and "id" in x else x
+            )
 
+            # 2) Converter para número
+            df["owner_id"] = pd.to_numeric(df["owner_id"], errors='coerce').astype('Int64')
+
+            # 3) Mapear owner_name a partir do user_map 
+            transformed_df["owner_id"] = df["owner_id"]
+            transformed_df["owner_name"] = transformed_df["owner_id"].map(user_map).fillna(UNKNOWN_NAME)
+            
             # Obter IDs únicos de persons neste batch (ignorando nulos)
             unique_person_ids_in_batch: Set[int] = set(transformed_df["person_id"].dropna().unique())
 
