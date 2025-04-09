@@ -496,7 +496,6 @@ class PipedriveRepository(DataRepositoryPort):
                     FROM {staging_table}
                     ON CONFLICT (id) DO UPDATE SET
                         {update_assignments}
-                    WHERE {target_table}.update_time IS DISTINCT FROM EXCLUDED.update_time
                 """).format(
                     target_table=target_table_id,
                     insert_fields=insert_fields,

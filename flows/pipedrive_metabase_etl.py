@@ -119,7 +119,8 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
 
         if status != "success":
             etl_failure_counter.labels(flow_type=flow_type).inc() 
-            flow_log.critical("ETL task reported failure.", result_message=result.get("message"))
+            message = result.get("message", "Unknown error")
+            flow_log.critical(f"ETL task reported failure. Message: {message}")
             raise RuntimeError(f"ETL task failed: {result.get('message', 'Unknown error')}")
 
 
