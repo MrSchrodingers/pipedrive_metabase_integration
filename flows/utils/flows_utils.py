@@ -136,3 +136,9 @@ def update_dynamic_batch_config(repository: PipedriveRepository, optimal_size: i
         )
     except Exception as e:
         structlog.get_logger().error("Failed to update batch config", error=str(e))
+        
+def get_optimal_batch_size(repository: PipedriveRepository) -> int:
+    config = repository.get_configuration("optimal_batch_size")
+    if config and "value" in config:
+        return int(config["value"])
+    return 1000
