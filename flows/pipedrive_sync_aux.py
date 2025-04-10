@@ -4,7 +4,7 @@ from prefect import flow, task, get_run_logger
 
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
-from flows.pipedrive_metabase_etl import initialize_components
+from flows.pipedrive_metabase_etl import initialize_components_no_maps
 from infrastructure.monitoring.metrics import (
   push_metrics_to_gateway, records_synced_counter, sync_counter, sync_failure_counter,
 )
@@ -111,7 +111,7 @@ def sync_pipedrive_users_flow():
     logger.info("Starting Pipedrive Users sync flow...")
     flow_run_id = get_run_logger().extra.get("flow_run_id", "local_sync_users")
     try:
-        client, repository, _ = initialize_components()
+        client, repository, _ = initialize_components_no_maps()
         sync_entity_task(entity_type="users", client=client, repository=repository)
         logger.info("Pipedrive Users sync flow finished successfully.")
     except Exception as e:
@@ -126,7 +126,7 @@ def sync_pipedrive_persons_orgs_flow():
     logger.info("Starting Pipedrive Persons & Orgs sync flow...")
     flow_run_id = get_run_logger().extra.get("flow_run_id", "local_sync_persons_orgs")
     try:
-        client, repository, _ = initialize_components()
+        client, repository, _ = initialize_components_no_maps()
         sync_entity_task(entity_type="persons", client=client, repository=repository)
         sync_entity_task(entity_type="organizations", client=client, repository=repository)
         logger.info("Pipedrive Persons & Orgs sync flow finished successfully.")
@@ -142,7 +142,7 @@ def sync_pipedrive_stages_pipelines_flow():
     logger.info("Starting Pipedrive Stages & Pipelines sync flow...")
     flow_run_id = get_run_logger().extra.get("flow_run_id", "local_sync_stages_pipelines")
     try:
-        client, repository, _ = initialize_components()
+        client, repository, _ = initialize_components_no_maps()
         sync_entity_task(entity_type="stages", client=client, repository=repository)
         sync_entity_task(entity_type="pipelines", client=client, repository=repository)
         logger.info("Pipedrive Stages & Pipelines sync flow finished successfully.")
