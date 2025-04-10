@@ -550,7 +550,7 @@ class PipedriveRepository(DataRepositoryPort):
         cols = ['user_id', 'user_name', 'is_active'] # Colunas esperadas no dict `data`
         # Mapear 'id' da API para 'user_id', 'name' para 'user_name', 'active_flag' para 'is_active'
         mapped_data = [
-            {'user_id': r['id'], 'user_name': r.get('name', self.UNKNOWN_NAME), 'is_active': r.get('active_flag', True)}
+            {'user_id': r['id'], 'user_name': r.get('name', UNKNOWN_NAME), 'is_active': r.get('active_flag', True)}
             for r in data if 'id' in r
         ]
         return self._upsert_lookup_data(LOOKUP_TABLE_USERS, mapped_data, 'user_id', cols)
@@ -561,7 +561,7 @@ class PipedriveRepository(DataRepositoryPort):
         mapped_data = [
             {
                 'person_id': r['id'],
-                'person_name': r.get('name', self.UNKNOWN_NAME),
+                'person_name': r.get('name', UNKNOWN_NAME),
                 # Pega o ID da org se for um dict, senão None
                 'org_id': r.get('org_id', {}).get('value') if isinstance(r.get('org_id'), dict) else r.get('org_id')
             }
@@ -575,8 +575,8 @@ class PipedriveRepository(DataRepositoryPort):
         mapped_data = []
         for r in data:
             if 'id' in r:
-                 stage_name = r.get('name', self.UNKNOWN_NAME)
-                 normalized = normalize_column_name(stage_name) if stage_name != self.UNKNOWN_NAME else None
+                 stage_name = r.get('name', UNKNOWN_NAME)
+                 normalized = normalize_column_name(stage_name) if stage_name != UNKNOWN_NAME else None
                  mapped_data.append({
                      'stage_id': r['id'],
                      'stage_name': stage_name,
@@ -593,7 +593,7 @@ class PipedriveRepository(DataRepositoryPort):
         mapped_data = [
             {
                 'pipeline_id': r['id'],
-                'pipeline_name': r.get('name', self.UNKNOWN_NAME),
+                'pipeline_name': r.get('name', UNKNOWN_NAME),
                 'is_active': r.get('active_flag', True) # Verificar nome correto do campo na API
             }
              for r in data if 'id' in r
@@ -604,7 +604,7 @@ class PipedriveRepository(DataRepositoryPort):
         """Faz upsert na tabela pipedrive_organizations."""
         cols = ['org_id', 'org_name'] # Ajustar se sincronizar mais campos
         mapped_data = [
-            {'org_id': r['id'], 'org_name': r.get('name', self.UNKNOWN_NAME)}
+            {'org_id': r['id'], 'org_name': r.get('name', UNKNOWN_NAME)}
             for r in data if 'id' in r
         ]
         return self._upsert_lookup_data(LOOKUP_TABLE_ORGANIZATIONS, mapped_data, 'org_id', cols)
