@@ -534,7 +534,7 @@ class PipedriveRepository(DataRepositoryPort):
                 conn.commit()
                 duration = py_time.monotonic() - start_time
                 self.log.info("Upsert successful for lookup table", table_name=table_name,
-                              records_processed=len(data), rows_affected=rows_affected, duration_sec=f"{duration:.3f}s")
+                records_processed=len(data), rows_affected=rows_affected, duration_sec=f"{duration:.3f}s")
                 return rows_affected
         except Exception as e:
             if conn: conn.rollback()
