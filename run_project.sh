@@ -187,11 +187,17 @@ deploy_prefect_flows() {
     fi
 
     # --- Aplicação dos Deployments ---
-    log "info" "Aplicando/Atualizando Deployments Prefect a partir do ${PREFECT_YAML_FILE}..."
-    if prefect deploy --all; then
-        log "success" "Deployments Prefect aplicados com sucesso via CLI."
+    log "info" "Aplicando/Atualizando Deployments Prefect via script Python..."
+    local deployment_script_path="infrastructure/deployments/pipedrive_deployments.py"
+
+    if [[ ! -f "${deployment_script_path}" ]]; then
+        fail "Script de deployment Python não encontrado em: ${deployment_script_path}"
+    fi
+
+    if python "${deployment_script_path}"; then 
+        log "success" "Deployments Prefect aplicados com sucesso via script Python."
     else
-        fail "Falha ao aplicar deployments Prefect via CLI. Verifique os logs do comando."
+        fail "Falha ao aplicar deployments Prefect via script Python. Verifique os logs do script acima."
     fi
 }
 

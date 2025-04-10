@@ -1,29 +1,28 @@
-prefect-version: 3.3.2
+# yaml-language-server: $schema=https://raw.githubusercontent.com/PrefectHQ/prefect/main/src/prefect/server/schemas/core/deployment.json
+prefect-version: 3.3.2 
 
 name: pipedrive-etl
 
 deployments:
+# --- Main ETL Flow ---
 - name: Pipedrive Sync
-  version: '1.2'
+  version: '2.0' 
   tags:
   - pipedrive
   - sync
   - etl
-  description: Sincroniza dados recentes do Pipedrive com o banco de dados.
+  - main
+  description: Sincroniza deals recentes do Pipedrive com o banco de dados, usando lookups no DB.
   entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
-  parameters:
-    run_batch_size: 1500
+  parameters: {} 
   work_pool:
     name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/k8s-job-infra-block
+    work_queue_name: kubernetes 
+    job_variables: {} 
   concurrency_limit: 1
   schedules:
-  - interval: 1800.0
-    anchor_date: '2025-04-07T18:00:00+00:00'
+  - interval: 1800.0 # 30 minutos
+    anchor_date: '2025-04-10T12:00:00+00:00'
     timezone: America/Sao_Paulo
     active: true
   pull:
@@ -31,6 +30,8 @@ deployments:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
+
+# --- Backfill Flow ---
 - name: Pipedrive Backfill Stage History
   version: '1.0'
   tags:
@@ -46,21 +47,22 @@ deployments:
     name: kubernetes-pool
     work_queue_name: kubernetes
     job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/k8s-job-infra-block
-  schedules: []
+  schedules: [] 
   pull:
   - prefect.deployments.steps.git_clone:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit:
+  concurrency_limit: 1 
+
+# --- Batch Size Experiment Flow ---
 - name: Batch Size Experiment
   version: '1.0'
   tags:
   - experiment
   - batch-size
+  - optimization 
+  description: Testa diferentes tamanhos de batch, calcula e salva o ótimo na config. # Descrição atualizada
   entrypoint: flows/pipedrive_metabase_etl.py:batch_size_experiment_flow
   parameters:
     batch_sizes:
@@ -75,18 +77,109 @@ deployments:
     work_queue_name: kubernetes
     job_variables:
       resources:
+        requests:
+          memory: 2Gi
+          cpu: '1'
         limits:
-          memory: 8Gi
+          memory: 8Gi 
           cpu: '2'
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/k8s-job-infra-block
+  schedules: [] 
   pull:
   - prefect.deployments.steps.git_clone:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
-  description: Fluxo aprimorado para experimentos de tamanho de batch com análise
-    automática e validação.
-  schedules: []
+
+# --- Auxiliary Sync Flows ---
+- name: Sync Pipedrive Users
+  version: '1.0'
+  tags:
+  - pipedrive
+  - sync
+  - aux
+  - users
+  description: Sincroniza a tabela pipedrive_users com a API.
+  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_users_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables:
+       resources:
+         requests:
+            memory: "512Mi"
+            cpu: "250m"
+         limits:
+            memory: "1Gi"
+            cpu: "500m"
+  schedules:
+  - cron: "0 3 * * *" # Diariamente às 03:00
+    timezone: America/Sao_Paulo
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: main
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+
+- name: Sync Pipedrive Persons & Orgs
+  version: '1.0'
+  tags:
+  - pipedrive
+  - sync
+  - aux
+  - persons
+  - orgs
+  description: Sincroniza as tabelas pipedrive_persons e pipedrive_organizations.
+  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_persons_orgs_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {} # Usa infra default definida no script python
+  schedules:
+  - interval: 14400.0 # 4 horas (4 * 60 * 60)
+    anchor_date: '2025-04-10T12:00:00+00:00' # Ajustar data de início
+    timezone: America/Sao_Paulo
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: main
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+
+- name: Sync Pipedrive Stages & Pipelines
+  version: '1.0'
+  tags:
+  - pipedrive
+  - sync
+  - aux
+  - stages
+  - pipelines
+  description: Sincroniza as tabelas pipedrive_stages e pipedrive_pipelines.
+  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_stages_pipelines_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables:
+       resources:
+         requests:
+            memory: "512Mi"
+            cpu: "250m"
+         limits:
+            memory: "1Gi"
+            cpu: "500m"
+  schedules:
+  - cron: "0 4 * * *" # Diariamente às 04:00
+    timezone: America/Sao_Paulo
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: main
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
