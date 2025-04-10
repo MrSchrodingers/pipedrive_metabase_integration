@@ -12,7 +12,8 @@ deployments:
   - sync
   - etl
   - main
-  description: Sincroniza deals recentes do Pipedrive com o banco de dados, usando lookups no DB.
+  description: Sincroniza deals recentes do Pipedrive com o banco de dados, usando
+    lookups no DB.
   entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
   parameters: {}
   work_pool:
@@ -21,7 +22,7 @@ deployments:
     job_variables: {}
   infrastructure:
     type: kubernetes-job
-    block: kubernetes-job/default-k8s-job # <--- REFERÊNCIA AO BLOCO
+    block: kubernetes-job/default-k8s-job
   concurrency_limit: 1
   schedules:
   - interval: 1800.0
@@ -33,8 +34,6 @@ deployments:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
-
-# --- Backfill Flow ---
 - name: Pipedrive Backfill Stage History
   version: '1.0'
   tags:
@@ -52,7 +51,7 @@ deployments:
     job_variables: {}
   infrastructure:
     type: kubernetes-job
-    block: kubernetes-job/default-k8s-job # <--- REFERÊNCIA AO BLOCO
+    block: kubernetes-job/default-k8s-job
   schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
@@ -60,8 +59,6 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
-
-# --- Batch Size Experiment Flow ---
 - name: Batch Size Experiment
   version: '1.0'
   tags:
@@ -84,7 +81,7 @@ deployments:
     job_variables: {}
   infrastructure:
     type: kubernetes-job
-    block: kubernetes-job/experiment-k8s-job # <--- REFERÊNCIA AO BLOCO DO EXPERIMENTO
+    block: kubernetes-job/experiment-k8s-job
   schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
@@ -92,8 +89,6 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
-
-# --- Auxiliary Sync Flows ---
 - name: Sync Pipedrive Users
   version: '1.0'
   tags:
@@ -110,10 +105,11 @@ deployments:
     job_variables: {}
   infrastructure:
     type: kubernetes-job
-    block: kubernetes-job/light-sync-k8s-job # <--- REFERÊNCIA AO BLOCO LEVE
+    block: kubernetes-job/light-sync-k8s-job
   schedules:
-  - cron: "0 3 * * *"
+  - cron: 0 3 * * *
     timezone: America/Sao_Paulo
+    day_or: true
     active: true
   pull:
   - prefect.deployments.steps.git_clone:
@@ -121,7 +117,6 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
-
 - name: Sync Pipedrive Persons & Orgs
   version: '1.0'
   tags:
@@ -171,7 +166,7 @@ deployments:
     type: kubernetes-job
     block: kubernetes-job/light-sync-k8s-job # <--- REFERÊNCIA AO BLOCO LEVE
   schedules:
-  - cron: "0 4 * * *"
+  - cron: 0 4 * * *
     timezone: America/Sao_Paulo
     active: true
   pull:
