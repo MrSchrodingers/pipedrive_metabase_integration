@@ -569,7 +569,7 @@ def batch_size_experiment_flow(
                 **validation_result 
             }
             results.append(metrics)
-            flow_log.info(f"Experiment completed for batch size: {size}", **metrics)
+            flow_log.info("Experiment completed", extra={"batch_size": size, "success": True})
 
             # Pequena pausa entre testes
             time.sleep(5)
