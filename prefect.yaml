@@ -134,7 +134,7 @@ deployments:
     job_variables: {}
   infrastructure:
     type: kubernetes-job
-    block: kubernetes-job/default-k8s-job # <--- REFERÊNCIA AO BLOCO PADRÃO
+    block: kubernetes-job/default-k8s-job
   schedules:
   - interval: 14400.0
     anchor_date: '2025-04-10T12:00:00+00:00'
@@ -146,8 +146,7 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
-
-- name: Sync Pipedrive Stages & Pipelines
+- name: Sync Pipedrive Stages and Pipelines
   version: '1.0'
   tags:
   - pipedrive

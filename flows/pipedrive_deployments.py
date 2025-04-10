@@ -160,7 +160,7 @@ persons_orgs_sync_deployment = Deployment.build_from_flow(
 # Sync Stages & Pipelines
 stages_pipelines_sync_deployment = Deployment.build_from_flow(
     flow=sync_pipedrive_stages_pipelines_flow,
-    name="Sync Pipedrive Stages & Pipelines",
+    name="Sync Pipedrive Stages and Pipelines",
     description="Sincroniza as tabelas pipedrive_stages e pipedrive_pipelines.",
     version="1.0",
     tags=["pipedrive", "sync", "aux", "stages", "pipelines"],
