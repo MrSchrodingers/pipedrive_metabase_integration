@@ -43,6 +43,9 @@ COLUMN_TYPES = {
     "label": "TEXT",
 }
 
+# Mover a constante para o nível do módulo
+UNKNOWN_NAME = "Desconhecido"
+
 # Nomes das tabelas de lookup persistentes
 LOOKUP_TABLE_USERS = "pipedrive_users"
 LOOKUP_TABLE_PERSONS = "pipedrive_persons"
@@ -56,7 +59,6 @@ class PipedriveRepository(DataRepositoryPort):
     STAGING_TABLE_PREFIX = "staging_pipedrive_"
     STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_"
     SCHEMA_LOCK_ID = 47835
-    UNKNOWN_NAME = "Desconhecido" 
 
     def __init__(
         self,
