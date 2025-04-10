@@ -82,9 +82,21 @@ default_env = {
     "PREFECT_API_URL": "http://prefect-orion:4200/api"
 }
 default_init_containers = [
-     { "name": "wait-for-db", "image": "busybox:1.36", "command": ['sh', '-c', 'echo Waiting for db...; while ! nc -z -w 1 db 5432; do sleep 2; done; echo DB ready.'] },
-     { "name": "wait-for-redis", "image": "busybox:1.36", "command": ['sh', '-c', 'echo Waiting for redis...; while ! nc -z -w 1 redis 6379; do sleep 2; done; echo Redis ready.'] },
-     { "name": "wait-for-orion", "image": "curlimages/curl:latest", "command": ['sh', '-c', 'echo Waiting for orion...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n "."; sleep 3; done; echo Orion ready.'] }
+    { 
+        "name": "wait-for-db", 
+        "image": "busybox:1.36", 
+        "command": ['sh', '-c', 'echo Waiting for db...; while ! nc -z -w 1 db 5432; do sleep 2; done; echo DB ready.'] 
+    },
+    { 
+        "name": "wait-for-redis", 
+        "image": "busybox:1.36", 
+        "command": ['sh', '-c', 'echo Waiting for redis...; while ! nc -z -w 1 redis 6379; do sleep 2; done; echo Redis ready.'] 
+    },
+    { 
+        "name": "wait-for-orion", 
+        "image": "curlimages/curl:latest", 
+        "command": ['sh', '-c', 'echo Waiting for orion...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n "."; sleep 3; done; echo Orion ready.'] 
+    }
 ]
 default_job_watch_timeout = 120
 
@@ -127,16 +139,15 @@ try:
     # Gerar o dicionário completo do Job
     default_job_dict = create_job_spec_dict(image=default_image, resources=default_resources)
 
-    # Instanciar o Bloco passando o dicionário para o parâmetro 'job'
+    # Instanciar o Bloco usando o parâmetro v1_job
     default_k8s_job_block = KubernetesJob(
         namespace=default_namespace,
-        job=default_job_dict,  
+        v1_job=default_job_dict,
         job_watch_timeout_seconds=default_job_watch_timeout
     )
     default_k8s_job_block.save(name=default_k8s_job_block_name, overwrite=True)
     print(f"-> Bloco KubernetesJob '{default_k8s_job_block_name}' salvo com sucesso.")
 except Exception as e:
-    # Usar logger para capturar traceback completo
     log.error(f"Erro ao salvar Bloco KubernetesJob '{default_k8s_job_block_name}'", error=str(e), exc_info=True)
 
 
@@ -152,7 +163,7 @@ try:
 
     experiment_k8s_job_block = KubernetesJob(
         namespace=default_namespace,
-        job=experiment_job_dict,
+        v1_job=experiment_job_dict,
         job_watch_timeout_seconds=default_job_watch_timeout
     )
     experiment_k8s_job_block.save(name=experiment_k8s_job_block_name, overwrite=True)
@@ -173,7 +184,7 @@ try:
 
     light_sync_k8s_job_block = KubernetesJob(
         namespace=default_namespace,
-        job=light_sync_job_dict,
+        v1_job=light_sync_job_dict,
         job_watch_timeout_seconds=default_job_watch_timeout
     )
     light_sync_k8s_job_block.save(name=light_sync_k8s_job_block_name, overwrite=True)
