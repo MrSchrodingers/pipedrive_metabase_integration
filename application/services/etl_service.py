@@ -220,7 +220,9 @@ class ETLService:
             transformed_df["close_time"] = pd.to_datetime(df["close_time"], errors='coerce', utc=True)
             transformed_df["won_time"] = pd.to_datetime(df["won_time"], errors='coerce', utc=True)
             transformed_df["lost_time"] = pd.to_datetime(df["lost_time"], errors='coerce', utc=True)
-            transformed_df["first_won_time"] = pd.to_datetime(df["first_won_time"], errors='coerce', utc=True)
+            transformed_df["first_won_time"] = pd.to_datetime(
+                df.get("first_won_time", pd.NaT), errors='coerce', utc=True
+            )
             transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
             transformed_df["label"] = df["label"].fillna("").astype(str)
