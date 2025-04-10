@@ -163,10 +163,11 @@ deployments:
     job_variables: {}
   infrastructure:
     type: kubernetes-job
-    block: kubernetes-job/light-sync-k8s-job # <--- REFERÊNCIA AO BLOCO LEVE
+    block: kubernetes-job/light-sync-k8s-job
   schedules:
   - cron: 0 4 * * *
     timezone: America/Sao_Paulo
+    day_or: true
     active: true
   pull:
   - prefect.deployments.steps.git_clone:
