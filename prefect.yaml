@@ -117,7 +117,7 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
-- name: Sync Pipedrive Persons & Orgs
+- name: Sync Pipedrive Persons and Orgs
   version: '1.0'
   tags:
   - pipedrive

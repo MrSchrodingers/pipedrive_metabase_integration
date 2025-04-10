@@ -120,7 +120,7 @@ def sync_pipedrive_users_flow():
         push_metrics_to_gateway(job_name="pipedrive_sync_users", grouping_key={'flow_run_id': str(flow_run_id)})
 
 
-@flow(name="Sync Pipedrive Persons & Orgs", log_prints=True)
+@flow(name="Sync Pipedrive Persons and Orgs", log_prints=True)
 def sync_pipedrive_persons_orgs_flow():
     logger = get_run_logger()
     logger.info("Starting Pipedrive Persons & Orgs sync flow...")

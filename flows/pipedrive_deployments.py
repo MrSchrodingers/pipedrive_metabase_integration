@@ -146,7 +146,7 @@ users_sync_deployment = Deployment.build_from_flow(
 # Sync Persons & Orgs
 persons_orgs_sync_deployment = Deployment.build_from_flow(
     flow=sync_pipedrive_persons_orgs_flow,
-    name="Sync Pipedrive Persons & Orgs",
+    name="Sync Pipedrive Persons and Orgs",
     description="Sincroniza as tabelas pipedrive_persons e pipedrive_organizations.",
     version="1.0",
     tags=["pipedrive", "sync", "aux", "persons", "orgs"],
