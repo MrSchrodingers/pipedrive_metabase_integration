@@ -312,31 +312,43 @@ class PipedriveAPIClient(PipedriveClientPort):
         except Exception as e: self.log.error("Failed to fetch/process pipelines map", error=str(e), exc_info=True); return {}
 
     def fetch_all_persons_map(self) -> Dict[int, str]:
-        """Busca todos os persons usando paginação V2 e armazena em cache."""
+        """
+        Busca todos os persons usando paginação V2 via stream
+        e armazena em cache de forma eficiente em memória.
+        """
         cache_key = "pipedrive:all_persons_map"
         cached = self.cache.get(cache_key)
         if cached and isinstance(cached, dict):
             self.log.info("Persons map retrieved from cache.", cache_hit=True, map_size=len(cached))
             return cached
 
-        self.log.info("Fetching persons map from API (V2 - paginated).", cache_hit=False)
+        self.log.info("Fetching persons map from API (V2 - streamed).", cache_hit=False)
         url = f"{self.BASE_URL_V2}/persons"
-        try:
-            all_persons = self._fetch_paginated_v2(url) 
-            person_map = {
-                person['id']: person.get('name', self.UNKNOWN_NAME).strip() 
-                for person in all_persons if person and 'id' in person and person.get('name') 
-            }
-            person_map_filtered = {pid: name for pid, name in person_map.items() if name}
+        person_map: Dict[int, str] = {}
+        total_persons_processed = 0
 
-            if person_map_filtered:
-                self.cache.set(cache_key, person_map_filtered, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS)
-                self.log.info("Persons map fetched and cached.", map_size=len(person_map_filtered), total_persons_api=len(all_persons))
+        try:
+            person_stream = self._fetch_paginated_v2_stream(url)
+
+            for person in person_stream:
+                total_persons_processed += 1
+                person_id = person.get('id')
+                person_name = person.get('name', '').strip() 
+                if person_id and person_name:
+                    person_map[person_id] = person_name
+                elif person_id:
+                    self.log.debug("Person found with empty name, skipping map entry.", person_id=person_id)
+
+            if person_map:
+                self.cache.set(cache_key, person_map, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS)
+                self.log.info("Persons map fetched via stream and cached.", map_size=len(person_map), total_persons_processed=total_persons_processed)
             else:
-                self.log.warning("Fetched person list resulted in an empty map (no valid names found?).")
-            return person_map_filtered
+                self.log.warning("Fetched person stream resulted in an empty map (no valid names found?).", total_persons_processed=total_persons_processed)
+
+            return person_map
+
         except Exception as e:
-            self.log.error("Failed to fetch/process persons map", error=str(e), exc_info=True)
+            self.log.error("Failed to fetch/process persons map via stream", error=str(e), exc_info=True)
             return {}
         
     def fetch_all_stages_details(self) -> List[Dict]:
