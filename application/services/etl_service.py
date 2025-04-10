@@ -10,22 +10,21 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.batch_optimizer import DynamicBatchOptimizer
 from application.utils.column_utils import normalize_column_name
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
     db_operation_duration_hist,
-    transform_duration_summary
+    transform_duration_summary,
 )
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from application.ports.data_repository_port import DataRepositoryPort
 from application.schemas.deal_schema import DealSchema
 from infrastructure.repository_impl.pipedrive_repository import BASE_COLUMNS as REPO_BASE_COLUMNS
+from infrastructure.repository_impl.pipedrive_repository import UNKNOWN_NAME
 
 log = structlog.get_logger()
 
-UNKNOWN_NAME = "Desconhecido"
 STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_"
 
 class ETLService:
@@ -33,33 +32,22 @@ class ETLService:
         self,
         client: PipedriveClientPort,
         repository: DataRepositoryPort,
-        batch_size: int = 1000
+        batch_size: int = 1000 
     ):
         self.client = client
         self.repository = repository
-        self.process_batch_size = batch_size
+        self.process_batch_size = batch_size 
         self.log = log.bind(service="ETLService")
-        self._all_stages_details = self.client.fetch_all_stages_details()
-        self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
-        self.batch_optimizer = DynamicBatchOptimizer(config={
-            'initial_size': batch_size,
-            'max_size': 2000,
-            'min_size': 500,
-            'max_memory': 4096,
-            'memory_threshold': 0.8,
-            'reduce_factor': 0.5,
-            'increase_factor': 1.1,
-            'history_window': 10,
-            'duration_threshold': 600
-        })
-        self._current_batch_size = batch_size
-        # Mapas carregados no início do run_etl
-        self._user_map: Dict[int, str] = {}
-        self._pipeline_map: Dict[int, str] = {}
-        self._person_map: Dict[int, str] = {}
+
+        try:
+             self._all_stages_details = self.client.fetch_all_stages_details()
+             self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
+        except Exception as stage_err:
+             self.log.error("Failed to fetch initial stage details during init.", error=str(stage_err))
+             self._all_stages_details = []
+             self._stage_id_to_normalized_name_map = {}
         
     def run_etl_with_data(self, data: List[Dict], batch_size: int, flow_type: str) -> Dict:
-        """Executa o ETL com dados fornecidos para fins de teste."""
         self.log.warning("Running ETL with provided data for test/experiment.", data_size=len(data), batch_size=batch_size)
         original_fetch = self.client.fetch_all_deals_stream
         original_process_batch_size = self.process_batch_size
@@ -72,7 +60,6 @@ class ETLService:
         self.process_batch_size = batch_size
         result = self.run_etl(flow_type=flow_type)
 
-        # Restaurar estado original
         self.client.fetch_all_deals_stream = original_fetch
         self.process_batch_size = original_process_batch_size
         self.log.info("Restored original deal stream and batch size after test run.")
@@ -110,12 +97,9 @@ class ETLService:
     def _validate_and_transform_batch_pandas(
         self,
         batch: List[Dict],
-        user_map: Dict[int, str],        
-        pipeline_map: Dict[int, str],     
-        person_map: Dict[int, str],    
         flow_type: str
     ) -> Tuple[List[Dict], int]:
-        """Valida, transforma e enriquece um batch de deals usando mapas pré-carregados."""
+        """Valida, transforma e enriquece um batch de deals usando lookups no DB."""
         start_time = time.monotonic()
         pydantic_failed_count = 0
         original_count = len(batch)
@@ -149,68 +133,97 @@ class ETLService:
         # 2. DataFrame e transformação
         validated_records: List[Dict] = []
         transform_failed_count = 0
+        db_lookup_maps = {}
+        
         try:
             df = pd.DataFrame(valid_input_for_df)
 
-            # Garantir colunas básicas
-            required_cols = [
-                col for col in REPO_BASE_COLUMNS
-                if col not in ['creator_user_name', 'person_name', 'stage_name', 'pipeline_name', 'raw_data']
-            ] + ['org_name']
-            for col in required_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA 
+            # --- Coletar IDs para Lookup no DB ---
+            user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
+            df["owner_id_parsed"] = df["owner_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
+            owner_ids_needed = set(df['owner_id_parsed'].dropna().unique())
+            user_ids_needed.update(owner_ids_needed) 
 
+            person_ids_needed = set(df['person_id'].dropna().unique())
+            stage_ids_needed = set(df['stage_id'].dropna().unique())
+            pipeline_ids_needed = set(df['pipeline_id'].dropna().unique())
+            df["org_id_parsed"] = df["org_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
+            org_ids_needed = set(df['org_id_parsed'].dropna().unique())
+
+
+            transform_log.debug("IDs collected for DB lookup",
+                                users=len(user_ids_needed), persons=len(person_ids_needed),
+                                stages=len(stage_ids_needed), pipelines=len(pipeline_ids_needed),
+                                orgs=len(org_ids_needed))
+
+            # --- Buscar Mapas do DB para o Batch ---
+            lookup_start_time = time.monotonic()
+            try:
+                db_lookup_maps = self.repository.get_lookup_maps_for_batch(
+                    user_ids={int(uid) for uid in user_ids_needed if pd.notna(uid)}, 
+                    person_ids={int(pid) for pid in person_ids_needed if pd.notna(pid)},
+                    stage_ids={int(sid) for sid in stage_ids_needed if pd.notna(sid)},
+                    pipeline_ids={int(plid) for plid in pipeline_ids_needed if pd.notna(plid)},
+                    org_ids={int(oid) for oid in org_ids_needed if pd.notna(oid)}
+                )
+                lookup_duration = time.monotonic() - lookup_start_time
+                transform_log.info("Fetched batch lookups from DB", duration_sec=f"{lookup_duration:.3f}s",
+                                   users=len(db_lookup_maps.get('users', {})), persons=len(db_lookup_maps.get('persons', {})),
+                                   stages=len(db_lookup_maps.get('stages', {})), pipelines=len(db_lookup_maps.get('pipelines', {})),
+                                   orgs=len(db_lookup_maps.get('orgs', {})))
+            except Exception as lookup_err:
+                 transform_log.error("Failed to fetch lookups from DB for batch", error=str(lookup_err), exc_info=True)
+                 db_lookup_maps = {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
+
+
+            # --- Transformações usando os mapas buscados do DB ---
             transformed_df = pd.DataFrame()
-
-            # --- IDs Básicos e Conversões ---
             transformed_df["id"] = df["id"].astype(str)
             transformed_df["titulo"] = df["title"].fillna("").astype(str)
-            transformed_df["status"] = df["status"].fillna("").astype(str)
             status_map = { "won": "Ganho", "lost": "Perdido", "open": "Em aberto", "deleted": "Deletado" }
-            transformed_df["status"] = transformed_df["status"].map(status_map).fillna(transformed_df["status"])
+            transformed_df["status"] = df["status"].fillna("").astype(str).map(status_map).fillna(df["status"])
             transformed_df["currency"] = df["currency"].fillna("USD").astype(str)
             transformed_df["value"] = pd.to_numeric(df["value"], errors='coerce').fillna(0.0)
             transformed_df["add_time"] = pd.to_datetime(df["add_time"], errors='coerce', utc=True)
             transformed_df["update_time"] = pd.to_datetime(df["update_time"], errors='coerce', utc=True)
 
-            # --- Mapeamento de Nomes para Users (usando mapa pré-carregado) ---
+            # Mapeamentos usando db_lookup_maps
+            batch_user_map = db_lookup_maps.get('users', {})
+            batch_person_map = db_lookup_maps.get('persons', {})
+            batch_stage_map = db_lookup_maps.get('stages', {}) 
+            batch_pipeline_map = db_lookup_maps.get('pipelines', {})
+            batch_org_map = db_lookup_maps.get('orgs', {})
+
             transformed_df["creator_user_id"] = pd.to_numeric(df["creator_user_id"], errors='coerce').astype('Int64')
-            transformed_df['creator_user_name'] = transformed_df['creator_user_id'].map(user_map).fillna(UNKNOWN_NAME)
+            transformed_df['creator_user_name'] = transformed_df['creator_user_id'].map(batch_user_map).fillna(UNKNOWN_NAME)
 
-            # --- Mapeamento de Stages (usando mapa normalizado interno) ---
             transformed_df["stage_id"] = pd.to_numeric(df["stage_id"], errors='coerce').astype('Int64')
-            transformed_df['stage_name'] = transformed_df['stage_id'].map(self._stage_id_to_normalized_name_map).fillna(UNKNOWN_NAME)
+            transformed_df['stage_name'] = transformed_df['stage_id'].map(batch_stage_map).fillna(UNKNOWN_NAME)
 
-            # --- Mapeamento de Pipelines (usando mapa pré-carregado) ---
             transformed_df["pipeline_id"] = pd.to_numeric(df["pipeline_id"], errors='coerce').astype('Int64')
-            transformed_df['pipeline_name'] = transformed_df['pipeline_id'].map(pipeline_map).fillna(UNKNOWN_NAME)
+            transformed_df['pipeline_name'] = transformed_df['pipeline_id'].map(batch_pipeline_map).fillna(UNKNOWN_NAME)
 
-            # --- Mapeamento de Persons (usando mapa pré-carregado) ---
             transformed_df["person_id"] = pd.to_numeric(df["person_id"], errors='coerce').astype('Int64')
-            transformed_df['person_name'] = transformed_df['person_id'].map(person_map).fillna(UNKNOWN_NAME)
+            transformed_df['person_name'] = transformed_df['person_id'].map(batch_person_map).fillna(UNKNOWN_NAME)
 
-            # --- Mapeamento de Owner (usando mapa de usuários pré-carregado) ---
-            df["owner_id_parsed"] = df["owner_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x)
-            transformed_df["owner_id"] = pd.to_numeric(df["owner_id_parsed"], errors='coerce').astype('Int64')
-            transformed_df["owner_name"] = transformed_df["owner_id"].map(user_map).fillna(UNKNOWN_NAME)
+            # Usar owner_id_parsed que já foi calculado
+            transformed_df["owner_id"] = df["owner_id_parsed"] 
+            transformed_df["owner_name"] = transformed_df["owner_id"].map(batch_user_map).fillna(UNKNOWN_NAME)
 
-            # --- Mapeamento de Organization ---
-            df["org_id_parsed"] = df["org_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x)
-            transformed_df["org_id"] = pd.to_numeric(df["org_id_parsed"], errors='coerce').astype('Int64')
-            transformed_df["org_name"] = df["org_name"].fillna(UNKNOWN_NAME).astype(str)
+            # Usar org_id_parsed que já foi calculado
+            transformed_df["org_id"] = df["org_id_parsed"] 
+            transformed_df['org_name'] = transformed_df['org_id'].map(batch_org_map).fillna(UNKNOWN_NAME)
 
             # --- Outros campos base ---
             transformed_df["lost_reason"] = df["lost_reason"].fillna("").astype(str)
-            transformed_df["visible_to"] = df["visible_to"].fillna("").astype(str) # Ajustar tipo se necessário
+            transformed_df["visible_to"] = df["visible_to"].fillna("").astype(str)
             transformed_df["close_time"] = pd.to_datetime(df["close_time"], errors='coerce', utc=True)
             transformed_df["won_time"] = pd.to_datetime(df["won_time"], errors='coerce', utc=True)
             transformed_df["lost_time"] = pd.to_datetime(df["lost_time"], errors='coerce', utc=True)
             transformed_df["first_won_time"] = pd.to_datetime(df["first_won_time"], errors='coerce', utc=True)
             transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
-            transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce') 
+            transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
             transformed_df["label"] = df["label"].fillna("").astype(str)
-
 
             # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping
@@ -263,10 +276,8 @@ class ETLService:
             # Selecionar apenas as colunas finais na ordem definida
             transformed_df = transformed_df[ordered_final_columns]
 
-            # --- Limpeza Final (sem alterações) ---
-            # Substituir todos os tipos de nulos/NA por None para consistência JSON/DB
+            # --- Limpeza Final ---
             transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
-
             validated_records = transformed_df.to_dict('records')
             transform_succeeded_count = len(validated_records)
             transform_failed_count = pydantic_valid_count - transform_succeeded_count 
@@ -312,11 +323,11 @@ class ETLService:
         return current_mem
 
     def run_etl(self, flow_type: str) -> Dict[str, object]:
-        """Executa o processo ETL completo."""
+        """Executa o processo ETL completo, agora sem buscar mapas na inicialização."""
         run_start_time = time.monotonic()
         run_start_utc = datetime.now(timezone.utc)
         if not tracemalloc.is_tracing():
-             tracemalloc.start()
+            tracemalloc.start()
         etl_counter.labels(flow_type=flow_type).inc()
 
         result = {
@@ -331,45 +342,6 @@ class ETLService:
         try:
             run_log.info(f"Starting ETL run ({flow_type})")
 
-            # --- Busca dos Mapas Auxiliares ---
-            run_log.info("Fetching auxiliary data maps (Users, Stages, Pipelines, Persons)...")
-            fetch_maps_start = time.monotonic()
-            try:
-                run_log.info("Fetching Users map...")
-                self._user_map = self.client.fetch_all_users_map()
-                run_log.info("Users map fetched.", count=len(self._user_map))
-
-                run_log.info("Using pre-built normalized Stages map.", count=len(self._stage_id_to_normalized_name_map))
-                normalized_stage_map = self._stage_id_to_normalized_name_map
-
-                run_log.info("Fetching Pipelines map...")
-                self._pipeline_map = self.client.fetch_all_pipelines_map()
-                run_log.info("Pipelines map fetched.", count=len(self._pipeline_map))
-
-                run_log.info("Fetching Persons map...")
-                self._person_map = self.client.fetch_all_persons_map()
-                run_log.info("Persons map fetched.", count=len(self._person_map))
-
-                fetch_duration = time.monotonic() - fetch_maps_start
-                run_log.info("Auxiliary data maps fetched successfully.", duration_sec=f"{fetch_duration:.3f}s")
-
-                # Validar se mapas essenciais foram carregados
-                if not self._user_map or not self._pipeline_map or not self._person_map or not normalized_stage_map:
-                    run_log.critical("One or more essential auxiliary maps are empty. Aborting ETL.",
-                                     users_count=len(self._user_map),
-                                     pipelines_count=len(self._pipeline_map),
-                                     persons_count=len(self._person_map),
-                                     stages_count=len(normalized_stage_map))
-                    raise ValueError("Essential auxiliary maps could not be loaded.")
-
-            except Exception as map_err:
-                run_log.critical("Critical error fetching auxiliary maps. Aborting ETL.", error=str(map_err), exc_info=True)
-                result["message"] = f"Failed to fetch auxiliary maps: {map_err}"
-                raise map_err 
-
-            # --- Verificação de Schema ---
-            run_log.info("Database schema assumed verified/created by Repository initialization.")
-
             # --- Extração (Streaming) ---
             last_timestamp_str = self.client.get_last_timestamp()
             run_log.info("Fetching deals stream from Pipedrive", updated_since=last_timestamp_str)
@@ -378,21 +350,13 @@ class ETLService:
             # --- Transformação e Carga (Batching) ---
             batch_num = 0
             records_for_processing_batch: List[Dict] = []
-
-            dynamic_batch_log = run_log.bind(
-                initial_batch_size=self.process_batch_size,
-                optimizer_config={
-                    "min": self.batch_optimizer.min_size, "max": self.batch_optimizer.max_size
-                }
-            )
-            dynamic_batch_log.info("Starting ETL batch processing loop", current_batch_size=self._current_batch_size)
-
+            run_log.info("Starting ETL batch processing loop", batch_size=self.process_batch_size)
 
             for deal_record in deal_stream_iterator:
                 total_fetched += 1
                 records_for_processing_batch.append(deal_record)
-
                 update_time_str = deal_record.get("update_time")
+                
                 if update_time_str:
                     try:
                         current_record_time = pd.to_datetime(update_time_str, errors='coerce', utc=True)
@@ -405,10 +369,10 @@ class ETLService:
                         run_log.warning("Could not parse update_time from fetched record", record_id=deal_record.get("id"), time_str=update_time_str)
 
 
-                if len(records_for_processing_batch) >= self._current_batch_size:
+                if len(records_for_processing_batch) >= self.process_batch_size:
                     batch_num += 1
                     batch_to_process = records_for_processing_batch
-                    records_for_processing_batch = [] 
+                    records_for_processing_batch = []
                     batch_log = run_log.bind(batch_num=batch_num, batch_size=len(batch_to_process))
                     batch_log.info("Processing ETL batch")
                     batch_start_time = time.monotonic()
@@ -417,9 +381,6 @@ class ETLService:
                     try:
                         validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
                             batch=batch_to_process,
-                            user_map=self._user_map,
-                            pipeline_map=self._pipeline_map,
-                            person_map=self._person_map,
                             flow_type=flow_type
                         )
                         total_failed += failed_count_in_batch
@@ -466,11 +427,8 @@ class ETLService:
                 try:
                     validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
                          batch=batch_to_process,
-                         user_map=self._user_map,
-                         pipeline_map=self._pipeline_map,
-                         person_map=self._person_map,
                          flow_type=flow_type
-                    )
+                     )
                     total_failed += failed_count_in_batch
                     total_validated += len(validated_batch)
 
@@ -573,11 +531,7 @@ class ETLService:
             except TypeError: 
                 print(f"ETL_COMPLETION_METRICS: {str(result)}")
 
-            self._user_map = {}
-            self._pipeline_map = {}
-            self._person_map = {}
             self.log.debug("Cleared internal maps after ETL run.")
-
             return result
 
     def run_retroactive_backfill(self, deal_ids: List[str]) -> Dict[str, Any]:

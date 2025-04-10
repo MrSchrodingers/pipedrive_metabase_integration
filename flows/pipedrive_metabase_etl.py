@@ -7,7 +7,7 @@ from prefect.blocks.system import JSON
 import logging
 
 from application.services.etl_service import ETLService
-from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, update_dynamic_batch_config, validate_loaded_data
+from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, update_dynamic_batch_config, validate_loaded_data, update_optimal_batch_config
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
@@ -25,34 +25,34 @@ from infrastructure.monitoring.metrics import (
 
 log = structlog.get_logger() 
 
-# --- Constantes e Configurações ---
-DEFAULT_BATCH_SIZE = 1000
-DEFAULT_MAIN_FLOW_TIMEOUT = 9000        # Timeout para o fluxo principal
-DEFAULT_BACKFILL_FLOW_TIMEOUT = 10800   # Timeout maior para backfill
-BACKFILL_BATCH_SIZE = 1000              # Quantos deals buscar do DB por vez
-BACKFILL_DAILY_LIMIT = 10000            # Limite diário sugerido
+# Constantes e Configurações
+DEFAULT_OPTIMAL_BATCH_SIZE = 1000 
+DEFAULT_MAIN_FLOW_TIMEOUT = 9000
+DEFAULT_BACKFILL_FLOW_TIMEOUT = 10800
+BACKFILL_BATCH_SIZE = 1000
+BACKFILL_DAILY_LIMIT = 10000
 DEFAULT_TASK_RETRIES = 3
 DEFAULT_TASK_RETRY_DELAY = 60
 
-
-
-@task(name="Initialize ETL Components", retries=2, retry_delay_seconds=30)
-def initialize_components() -> Tuple[PipedriveAPIClient, PipedriveRepository, ETLService]:
-    """Inicializa e retorna os componentes principais."""
+@task(name="Initialize ETL Components (No Maps)", retries=2, retry_delay_seconds=30)
+def initialize_components_no_maps() -> Tuple[PipedriveAPIClient, PipedriveRepository, ETLService]:
+    """Inicializa componentes principais SEM buscar mapas na memória."""
     task_log = get_run_logger()
-    task_log.info("Initializing ETL components...")
+    task_log.info("Initializing ETL components (Lookups via DB)...")
 
+    # Carregar configurações de conexão 
     postgres_config = JSON.load("postgres-pool").value
     redis_config = JSON.load("redis-cache").value
 
     db_pool = DBConnectionPool(
-        minconn=postgres_config.get("minconn", 1), 
-        maxconn=postgres_config.get("maxconn", 5),
+        minconn=postgres_config.get("minconn", 1),
+        maxconn=postgres_config.get("maxconn", 10), 
         dsn=postgres_config["dsn"]
     )
     redis_cache = RedisCache(connection_string=redis_config["connection_string"])
     pipedrive_client = PipedriveAPIClient(cache=redis_cache)
 
+    # Repository ainda precisa de stages/fields para schema e backfill
     try:
         all_stages = pipedrive_client.fetch_all_stages_details()
         if not all_stages:
@@ -67,51 +67,52 @@ def initialize_components() -> Tuple[PipedriveAPIClient, PipedriveRepository, ET
         task_log.error("Failed to fetch custom field mapping.", error=str(mapping_err))
         raise mapping_err
 
+    # Repository garante o schema
     repository = PipedriveRepository(
         db_pool=db_pool,
         custom_field_api_mapping=custom_mapping,
         all_stages_details=all_stages
     )
+
+    # ETLService é inicializado com batch_size default, será sobrescrito no flow
     etl_service = ETLService(
         client=pipedrive_client,
         repository=repository,
+        batch_size=DEFAULT_OPTIMAL_BATCH_SIZE 
     )
-    task_log.info("ETL components initialized.")
+    task_log.info("ETL components initialized (Lookups via DB).")
     return pipedrive_client, repository, etl_service
 
 
 @flow(
     name="Pipedrive to Database ETL Flow (Main Sync)",
     log_prints=True,
-    timeout_seconds=DEFAULT_MAIN_FLOW_TIMEOUT 
+    timeout_seconds=DEFAULT_MAIN_FLOW_TIMEOUT
 )
-def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
-    """Main ETL orchestration flow for current data sync."""
+def main_etl_flow():
+    """Fluxo principal ETL: busca deals recentes e usa lookups no DB."""
     setup_logging(level=logging.INFO)
-    base_flow_log = get_run_logger() 
+    flow_log = get_run_logger()
     flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
+    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_main_sync"
+    flow_run_name = flow_run_ctx.name if flow_run_ctx else "MainSyncRun"
+    flow_log = flow_log.bind(flow_run_id=str(flow_run_id))
 
-    flow_log = base_flow_log
-    flow_run_name = flow_run_ctx.name if flow_run_ctx else "Unknown Run"
     flow_log.info(f"Starting flow run '{flow_run_name}'...")
-
-    flow_log.info(f"Starting main ETL flow with batch size: {run_batch_size}")
-    flow_type = "sync"
-    etl_counter.labels(flow_type=flow_type).inc()
-    start_time = time.time()
+    flow_type = "sync" 
     result = {}
 
     try:
         # 1. Inicializa componentes (incluindo busca de stages/fields)
-        client, repository, etl_service = initialize_components()
+        _, repository, etl_service = initialize_components_no_maps()
 
         # 2. Executa o ETL principal (run_etl agora foca na sincronização atual)
-        optimal_batch = get_optimal_batch_size(repository)
-        base_flow_log.info(f"Using optimal batch size from config: {optimal_batch}")
-        etl_service.process_batch_size = optimal_batch
+        optimal_batch_size = get_optimal_batch_size(repository, default_size=DEFAULT_OPTIMAL_BATCH_SIZE)
+        flow_log.info(f"Using optimal batch size from config: {optimal_batch_size}")
+        etl_service.process_batch_size = optimal_batch_size 
         
-        result = etl_service.run_etl(flow_type="sync")
+        # 3. Executa o ETL principal
+        result = etl_service.run_etl(flow_type=flow_type)
 
         # --- Validação e Métricas ---
         flow_log.info("Performing post-load validation.")
@@ -161,8 +162,6 @@ def main_etl_flow(run_batch_size: int = DEFAULT_BATCH_SIZE):
     finally:
         flow_log.info("Pushing metrics to Pushgateway for main sync flow.")
         push_metrics_to_gateway(job_name="pipedrive_sync_job", grouping_key={'flow_run_id': str(flow_run_id)})
-
-
 
     
 @task(name="Get Deals for Backfill Task", retries=1)
@@ -219,7 +218,7 @@ def batch_size_experiment_flow(
 
     try:
         # 1. Buscar dados reais para o teste
-        client, repository, etl_service = initialize_components()
+        client, repository, etl_service = initialize_components_no_maps()
         flow_log.info(f"Fetching {test_data_size} recent deals for testing...")
         test_data = list(client.fetch_all_deals_stream(items_limit=test_data_size))
         
@@ -345,8 +344,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     result_payload = {}
 
     try:
-        client, repository, etl_service = initialize_components()
-
+        _, repository, etl_service = initialize_components_no_maps()
         initial_count = get_initial_backfill_count_task(repository)
 
         while total_processed_today < daily_deal_limit:
@@ -442,3 +440,153 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     finally:
         flow_log.info("Pushing metrics to Pushgateway for backfill flow.")
         push_metrics_to_gateway(job_name="pipedrive_backfill_job", grouping_key={'flow_run_id': str(flow_run_id)})
+        
+@task(name="Calculate and Save Optimal Batch Size")
+def calculate_and_save_optimal_batch_task(results: List[Dict], repository: PipedriveRepository) -> int:
+    """
+    Calcula o tamanho ótimo de batch com base nas métricas e salva na config do DB.
+    Retorna o tamanho ótimo calculado.
+    """
+    logger = get_run_logger()
+    if not results:
+        logger.warning("No results provided for batch size calculation.")
+        return DEFAULT_OPTIMAL_BATCH_SIZE 
+
+    df = pd.DataFrame(results)
+    logger.info("Batch experiment results:\n" + df.to_string())
+
+    valid_df = df[
+        (df['status'] == 'success') & 
+        df['duration'].notna() & (df['duration'] > 0) &
+        df['memory_peak'].notna() & (df['memory_peak'] >= 0) &
+        df['data_quality_issues'].notna() & (df['data_quality_issues'] == 0)
+    ].copy()
+
+    if valid_df.empty:
+        logger.error("No valid results found after filtering for batch size calculation. Using default.", original_results_count=len(df))
+        optimal_size = get_optimal_batch_size(repository, default_size=DEFAULT_OPTIMAL_BATCH_SIZE)
+        logger.warning(f"Could not calculate optimal size, will keep/use: {optimal_size}")
+        return optimal_size
+
+    # Normalização e Score 
+    # Priorizar throughput (loaded/duration), penalizar memória e duração alta
+    valid_df['throughput'] = valid_df['total_loaded'] / valid_df['duration']
+    max_throughput = valid_df['throughput'].max()
+    max_memory = valid_df['memory_peak'].max()
+
+    # Score: Maior throughput é melhor, menor memória é melhor
+    # Normalizar: throughput/max_throughput ; memory/max_memory
+    valid_df['norm_throughput'] = valid_df['throughput'] / max_throughput if max_throughput > 0 else 0
+    valid_df['norm_memory'] = valid_df['memory_peak'] / max_memory if max_memory > 0 else 0
+
+    # Pesos (ajustar conforme prioridade)
+    weight_throughput = 0.7
+    weight_memory = 0.3
+
+    valid_df['score'] = (weight_throughput * valid_df['norm_throughput']) + \
+                        (weight_memory * (1 - valid_df['norm_memory'])) # 1 - norm_memory pq menor é melhor
+
+    best_idx = valid_df['score'].idxmax()
+    best_run = valid_df.loc[best_idx]
+    optimal_size = int(best_run['batch_size'])
+
+    logger.info(f"Optimal batch size calculated: {optimal_size}",
+                score=best_run['score'],
+                throughput=best_run['throughput'],
+                memory=best_run['memory_peak'],
+                duration=best_run['duration'])
+    logger.info("Scores per batch size (valid runs):\n" + \
+                valid_df[['batch_size', 'score', 'throughput', 'memory_peak', 'duration']].round(3).to_string())
+
+    try:
+        update_optimal_batch_config(repository, optimal_size) 
+    except Exception as save_err:
+        logger.error("Failed to save optimal batch size configuration", error=str(save_err), exc_info=True)
+
+    return optimal_size
+
+
+@flow(
+    name="Batch Size Experiment Flow - Enhanced",
+    log_prints=True,
+    timeout_seconds=10800
+)
+def batch_size_experiment_flow(
+    batch_sizes: List[int] = [300, 500, 750, 1000, 1500, 2000],
+    test_data_size: int = 10000
+):
+    """Testa tamanhos de batch, calcula e salva o ótimo na config."""
+    setup_logging(level=logging.INFO)
+    flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_batch_experiment"
+    flow_log = flow_log.bind(flow_run_id=str(flow_run_id))
+
+    results = []
+    optimal_size = DEFAULT_OPTIMAL_BATCH_SIZE 
+
+    try:
+        # 1. Inicializar componentes 
+        client, repository, etl_service = initialize_components_no_maps()
+
+        # 2. Buscar dados reais para o teste
+        flow_log.info(f"Fetching {test_data_size} recent deals for testing...")
+        # Usar list() para materializar o gerador para o teste
+        test_data = list(client.fetch_all_deals_stream(items_limit=test_data_size))
+        if not test_data:
+            raise ValueError(f"No test data ({test_data_size} deals) could be fetched.")
+        flow_log.info(f"Fetched {len(test_data)} deals for experiment.")
+
+
+        # 3. Executar experimentos em loop
+        for size in batch_sizes:
+            flow_log.info(f"Starting experiment with batch size: {size}")
+            run_result = {}
+            validation_result = {"data_quality_issues": -1} 
+
+            try:
+                run_result = etl_service.run_etl_with_data(
+                    data=test_data,
+                    batch_size=size,
+                    flow_type="experiment"
+                )
+
+                if run_result.get("status") == "success":
+                     validation_result = {"data_quality_issues": 0} 
+
+            except Exception as exp_err:
+                 flow_log.error(f"Experiment failed for batch size {size}", error=str(exp_err), exc_info=True)
+                 run_result = {"status": "error", "message": str(exp_err), "batch_size": size}
+
+            # Coletar métricas básicas do resultado do run_etl
+            metrics = {
+                'batch_size': size,
+                'status': run_result.get("status", "error"),
+                'duration': run_result.get("duration_seconds"),
+                'total_loaded': run_result.get("total_loaded"),
+                'total_failed': run_result.get("total_failed"),
+                'memory_peak': run_result.get("peak_memory_mb"),
+                **validation_result 
+            }
+            results.append(metrics)
+            flow_log.info(f"Experiment completed for batch size: {size}", **metrics)
+
+            # Pequena pausa entre testes
+            time.sleep(5)
+
+        # 4. Análise e Persistência do Tamanho Ótimo
+        optimal_size = calculate_and_save_optimal_batch_task(results, repository)
+
+        return {
+            "status": "completed",
+            "optimal_batch_size_calculated": optimal_size,
+            "detailed_results": results
+        }
+
+    except Exception as e:
+        flow_log.critical("Batch experiment flow failed critically", error=str(e), exc_info=True)
+        raise
+    finally:
+         push_metrics_to_gateway(job_name="batch_experiment", grouping_key={'flow_run_id': str(flow_run_id)})
+
+
