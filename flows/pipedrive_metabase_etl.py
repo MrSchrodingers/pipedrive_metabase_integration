@@ -442,7 +442,11 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
         push_metrics_to_gateway(job_name="pipedrive_backfill_job", grouping_key={'flow_run_id': str(flow_run_id)})
         
 @task(name="Calculate and Save Optimal Batch Size")
-def calculate_and_save_optimal_batch_task(results: List[Dict], repository: PipedriveRepository) -> int:
+def calculate_and_save_optimal_batch(
+    results: List[Dict],
+    repository: PipedriveRepository,
+    logger: logging.Logger
+) -> int:
     """
     Calcula o tamanho ótimo de batch com base nas métricas e salva na config do DB.
     Retorna o tamanho ótimo calculado.
@@ -490,11 +494,13 @@ def calculate_and_save_optimal_batch_task(results: List[Dict], repository: Piped
     best_run = valid_df.loc[best_idx]
     optimal_size = int(best_run['batch_size'])
 
-    logger.info(f"Optimal batch size calculated: {optimal_size}",
-                score=best_run['score'],
-                throughput=best_run['throughput'],
-                memory=best_run['memory_peak'],
-                duration=best_run['duration'])
+    logger.info(
+        f"Optimal batch size calculated: {optimal_size} "
+        f"(score={best_run['score']:.2f}, "
+        f"throughput={best_run['throughput']:.2f}, "
+        f"memory={best_run['memory_peak']}, "
+        f"duration={best_run['duration']})"
+    )
     logger.info("Scores per batch size (valid runs):\n" + \
                 valid_df[['batch_size', 'score', 'throughput', 'memory_peak', 'duration']].round(3).to_string())
 
@@ -575,7 +581,7 @@ def batch_size_experiment_flow(
             time.sleep(5)
 
         # 4. Análise e Persistência do Tamanho Ótimo
-        optimal_size = calculate_and_save_optimal_batch_task(results, repository)
+        optimal_size = calculate_and_save_optimal_batch(results, repository, flow_log)
 
         return {
             "status": "completed",
