@@ -96,7 +96,7 @@ def main_etl_flow():
     flow_run_ctx = context.get_run_context().flow_run
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_main_sync"
     flow_run_name = flow_run_ctx.name if flow_run_ctx else "MainSyncRun"
-    flow_log = flow_log.bind(flow_run_id=str(flow_run_id))
+    flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
 
     flow_log.info(f"Starting flow run '{flow_run_name}'...")
     flow_type = "sync" 
@@ -520,7 +520,7 @@ def batch_size_experiment_flow(
     flow_log = get_run_logger()
     flow_run_ctx = context.get_run_context().flow_run
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_batch_experiment"
-    flow_log = flow_log.bind(flow_run_id=str(flow_run_id))
+    flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
 
     results = []
     optimal_size = DEFAULT_OPTIMAL_BATCH_SIZE 
