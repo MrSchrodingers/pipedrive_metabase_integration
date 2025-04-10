@@ -433,7 +433,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
 
     except Exception as e:
         etl_failure_counter.labels(flow_type=flow_type).inc()
-        flow_log.critical("Backfill flow failed critically.", error=str(e), exc_info=True)
+        flow_log.critical("Backfill flow failed critically.", exc_info=True)
         final_status = "failed"
         raise
 
@@ -584,7 +584,7 @@ def batch_size_experiment_flow(
         }
 
     except Exception as e:
-        flow_log.critical("Batch experiment flow failed critically", error=str(e), exc_info=True)
+        flow_log.critical("Batch experiment flow failed critically", exc_info=True)
         raise
     finally:
          push_metrics_to_gateway(job_name="batch_experiment", grouping_key={'flow_run_id': str(flow_run_id)})

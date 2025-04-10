@@ -193,7 +193,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             raise
         except requests.exceptions.RequestException as e:
             error_type = "request_exception"
-            request_log.error("API request failed (RequestException)", error=str(e), exc_info=True)
+            request_log.error("API request failed (RequestException)", exc_info=True)
 
         # Caso de exceção
         current_status_code = status_code
@@ -235,7 +235,7 @@ class PipedriveAPIClient(PipedriveClientPort):
                     if next_start is not None: start = next_start
                     else: page_log.warning("API indicates more items but no 'next_start'. Stopping.", pagination=pagination_info); break
                 else: page_log.debug("API indicates no more items in collection."); break
-            except Exception as e: page_log.error("Error during V1 fetching page", error=str(e), exc_info=True); break 
+            except Exception as e: page_log.error("Error during V1 fetching page", exc_info=True); break 
         self.log.info(f"V1 Paginated fetch complete.", endpoint=endpoint_name, total_items=len(all_data), total_pages=page_num)
         return all_data
 
@@ -261,7 +261,7 @@ class PipedriveAPIClient(PipedriveClientPort):
                 all_data.extend(current_data); page_log.debug(f"Fetched {len(current_data)} V2 items for this page.")
                 additional_data = json_response.get("additional_data", {}); next_cursor = additional_data.get("next_cursor") 
                 if not next_cursor: page_log.debug("No 'next_cursor' found. Ending pagination."); break
-            except Exception as e: page_log.error("Error during V2 fetching page", error=str(e), exc_info=True); break 
+            except Exception as e: page_log.error("Error during V2 fetching page", exc_info=True); break 
         self.log.info(f"V2 Paginated fetch complete.", endpoint=normalized_endpoint_label, total_items=len(all_data), total_pages=page_num)
         return all_data
 
@@ -279,7 +279,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             if user_map: self.cache.set(cache_key, user_map, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS); self.log.info("Users map fetched and cached.", map_size=len(user_map))
             else: self.log.warning("Fetched user list was empty or malformed.")
             return user_map
-        except Exception as e: self.log.error("Failed to fetch/process users map", error=str(e), exc_info=True); return {}
+        except Exception as e: self.log.error("Failed to fetch/process users map", exc_info=True); return {}
 
     def fetch_all_stages_map(self) -> Dict[int, str]:
         cache_key = "pipedrive:all_stages_map"
@@ -294,7 +294,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             if stage_map: self.cache.set(cache_key, stage_map, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS); self.log.info("Stages map fetched and cached.", map_size=len(stage_map))
             else: self.log.warning("Fetched stage list was empty or malformed.")
             return stage_map
-        except Exception as e: self.log.error("Failed to fetch/process stages map", error=str(e), exc_info=True); return {}
+        except Exception as e: self.log.error("Failed to fetch/process stages map", exc_info=True); return {}
 
     def fetch_all_pipelines_map(self) -> Dict[int, str]:
         cache_key = "pipedrive:all_pipelines_map"
@@ -309,7 +309,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             if pipeline_map: self.cache.set(cache_key, pipeline_map, ex_seconds=self.DEFAULT_MAP_CACHE_TTL_SECONDS); self.log.info("Pipelines map fetched and cached.", map_size=len(pipeline_map))
             else: self.log.warning("Fetched pipeline list was empty or malformed.")
             return pipeline_map
-        except Exception as e: self.log.error("Failed to fetch/process pipelines map", error=str(e), exc_info=True); return {}
+        except Exception as e: self.log.error("Failed to fetch/process pipelines map", exc_info=True); return {}
 
     def fetch_all_persons_map(self) -> Dict[int, str]:
         """
@@ -348,7 +348,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             return person_map
 
         except Exception as e:
-            self.log.error("Failed to fetch/process persons map via stream", error=str(e), exc_info=True)
+            self.log.error("Failed to fetch/process persons map via stream", exc_info=True)
             return {}
         
     def fetch_all_stages_details(self) -> List[Dict]:
@@ -370,7 +370,7 @@ class PipedriveAPIClient(PipedriveClientPort):
                 self.log.warning("Fetched stage list was empty.")
             return all_stages
         except Exception as e:
-            self.log.error("Failed to fetch/process stage details", error=str(e), exc_info=True)
+            self.log.error("Failed to fetch/process stage details", exc_info=True)
             return []
         
     def fetch_deal_fields_mapping(self) -> Dict[str, str]:
@@ -419,7 +419,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             self.cache.set(cache_key, mapping, ex_seconds=cache_ttl_seconds)
             self.log.info("Deal fields mapping fetched and cached.", total_fields_api=len(all_fields_data), custom_mapping_count=len(mapping))
             return mapping
-        except Exception as e: self.log.error("Failed to fetch and process deal fields mapping", error=str(e), exc_info=True); return {}
+        except Exception as e: self.log.error("Failed to fetch and process deal fields mapping", exc_info=True); return {}
 
     def get_last_timestamp(self) -> str | None:
         cache_key = "pipedrive:last_update_timestamp"
@@ -462,7 +462,7 @@ class PipedriveAPIClient(PipedriveClientPort):
 
                 additional_data = json_response.get("additional_data", {}); next_cursor = additional_data.get("next_cursor")
                 if not next_cursor: page_log.info("No 'next_cursor' found. Ending pagination stream."); break
-            except Exception as e: page_log.error("Error during V2 stream fetching page, stopping stream.", error=str(e), exc_info=True); break
+            except Exception as e: page_log.error("Error during V2 stream fetching page, stopping stream.", exc_info=True); break
 
         self.log.info(f"V2 Stream fetch complete.", endpoint=endpoint_name, total_items_yielded=items_yielded, total_pages=page_num)
         
@@ -516,7 +516,7 @@ class PipedriveAPIClient(PipedriveClientPort):
                     break
 
             except Exception as e:
-                page_log.error("Error during V1 stream pagination", error=str(e), exc_info=True)
+                page_log.error("Error during V1 stream pagination", exc_info=True)
                 break
 
         self.log.info("V1 stream fetch completed.", endpoint=endpoint_name, items_yielded=items_yielded, total_pages=page_num)
@@ -542,7 +542,7 @@ class PipedriveAPIClient(PipedriveClientPort):
         """Armazena o último timestamp processado no cache."""
         cache_key = "pipedrive:last_update_timestamp"; cache_ttl_seconds = 2592000 # 30 dias
         try: self.cache.set(cache_key, new_timestamp, ex_seconds=cache_ttl_seconds); self.log.info("Updated last update timestamp in cache", timestamp=new_timestamp)
-        except Exception as e: self.log.error("Failed to store last update timestamp in cache", timestamp=new_timestamp, error=str(e), exc_info=True)
+        except Exception as e: self.log.error("Failed to store last update timestamp in cache", timestamp=new_timestamp, exc_info=True)
         
     def fetch_deal_changelog(self, deal_id: int) -> List[Dict]:
             """Busca o changelog para um deal específico (V1)."""

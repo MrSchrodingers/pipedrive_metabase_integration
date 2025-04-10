@@ -138,7 +138,7 @@ def update_optimal_batch_config(repository: PipedriveRepository, optimal_size: i
         repository.save_configuration(key=config_key, value=config_value)
         logger.info("Optimal batch size configuration updated in DB.")
     except Exception as e:
-        logger.error("Failed to update optimal batch size config in DB", error=str(e), exc_info=True)
+        logger.error("Failed to update optimal batch size config in DB", exc_info=True)
         
 def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 1000) -> int:
     """Busca o tamanho ótimo de batch da configuração do banco de dados."""

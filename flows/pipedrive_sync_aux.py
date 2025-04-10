@@ -12,7 +12,7 @@ from infrastructure.monitoring.metrics import (
 log = structlog.get_logger(__name__)
 
 # --- Tasks Genéricas de Sincronização ---
-@task(name="Sync Pipedrive Entity Task", retries=2, retry_delay_seconds=60)
+@task(name="Sync Pipedrive Entity Task", retries=2, retry_delay_seconds=60, cache_policy=None)
 def sync_entity_task(
     entity_type: str,
     client: PipedriveClientPort,
@@ -77,7 +77,7 @@ def sync_entity_task(
         return total_synced
 
     except Exception as e:
-        logger.error(f"Sync task failed for {entity_type}", error=str(e), exc_info=True)
+        logger.error(f"Sync task failed for {entity_type}", exc_info=True)
         sync_failure_counter.labels(entity_type=entity_type).inc()
         raise e
 
@@ -108,7 +108,7 @@ def sync_pipedrive_persons_orgs_flow():
         sync_entity_task(entity_type="organizations", client=client, repository=repository)
         logger.info("Pipedrive Persons & Orgs sync flow finished successfully.")
     except Exception as e:
-         logger.critical("Pipedrive Persons & Orgs sync flow failed.", error=str(e), exc_info=True)
+         logger.critical("Pipedrive Persons & Orgs sync flow failed.", exc_info=True)
     finally:
         push_metrics_to_gateway(job_name="pipedrive_sync_persons_orgs", grouping_key={'flow_run_id': str(flow_run_id)})
 
@@ -124,6 +124,6 @@ def sync_pipedrive_stages_pipelines_flow():
         sync_entity_task(entity_type="pipelines", client=client, repository=repository)
         logger.info("Pipedrive Stages & Pipelines sync flow finished successfully.")
     except Exception as e:
-         logger.critical("Pipedrive Stages & Pipelines sync flow failed.", error=str(e), exc_info=True)
+         logger.critical("Pipedrive Stages & Pipelines sync flow failed.", exc_info=True)
     finally:
         push_metrics_to_gateway(job_name="pipedrive_sync_stages_pipelines", grouping_key={'flow_run_id': str(flow_run_id)})

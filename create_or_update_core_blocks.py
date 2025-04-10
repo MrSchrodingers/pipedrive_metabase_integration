@@ -148,7 +148,7 @@ try:
     default_k8s_job_block.save(name=default_k8s_job_block_name, overwrite=True)
     print(f"-> Bloco KubernetesJob '{default_k8s_job_block_name}' salvo com sucesso.")
 except Exception as e:
-    log.error(f"Erro ao salvar Bloco KubernetesJob '{default_k8s_job_block_name}'", error=str(e), exc_info=True)
+    log.error(f"Erro ao salvar Bloco KubernetesJob '{default_k8s_job_block_name}'", exc_info=True)
 
 
 # 2. Bloco para Infraestrutura K8s do Experimento
@@ -169,7 +169,7 @@ try:
     experiment_k8s_job_block.save(name=experiment_k8s_job_block_name, overwrite=True)
     print(f"-> Bloco KubernetesJob '{experiment_k8s_job_block_name}' salvo com sucesso.")
 except Exception as e:
-    log.error(f"Erro ao salvar Bloco KubernetesJob '{experiment_k8s_job_block_name}'", error=str(e), exc_info=True)
+    log.error(f"Erro ao salvar Bloco KubernetesJob '{experiment_k8s_job_block_name}'", exc_info=True)
 
 
 # 3. Bloco para Syncs Leves
@@ -190,7 +190,7 @@ try:
     light_sync_k8s_job_block.save(name=light_sync_k8s_job_block_name, overwrite=True)
     print(f"-> Bloco KubernetesJob '{light_sync_k8s_job_block_name}' salvo com sucesso.")
 except Exception as e:
-    log.error(f"Erro ao salvar Bloco KubernetesJob '{light_sync_k8s_job_block_name}'", error=str(e), exc_info=True)
+    log.error(f"Erro ao salvar Bloco KubernetesJob '{light_sync_k8s_job_block_name}'", exc_info=True)
 
 
 print("--- Criação/Atualização de Blocos Prefect Concluída ---")
