@@ -73,7 +73,7 @@ def sync_entity_task(
             total_synced += upserted
             records_synced_counter.labels(entity_type=entity_type).inc(upserted)
 
-        logger.info(f"Sync task completed for {entity_type}", records_processed=processed_count, records_upserted=total_synced)
+        logger.info(f"Sync task completed for {entity_type}")
         return total_synced
 
     except Exception as e:
