@@ -115,7 +115,7 @@ def sync_pipedrive_users_flow():
         sync_entity_task(entity_type="users", client=client, repository=repository)
         logger.info("Pipedrive Users sync flow finished successfully.")
     except Exception as e:
-         logger.critical("Pipedrive Users sync flow failed.", error=str(e), exc_info=True)
+         logger.critical(f"Pipedrive Users sync flow failed. Error: {e}", exc_info=True)
     finally:
         push_metrics_to_gateway(job_name="pipedrive_sync_users", grouping_key={'flow_run_id': str(flow_run_id)})
 

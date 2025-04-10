@@ -351,10 +351,11 @@ class PipedriveRepository(DataRepositoryPort):
         expected_columns_map: Dict[str, str] = {}
         for col_def_sql in column_defs_sql:
              parts = col_def_sql.seq
-             if len(parts) >= 2 and isinstance(parts[0], sql.Identifier) and isinstance(parts[1], sql.SQL):
-                 col_name = parts[0].strings[0]
-                 col_type_str = parts[1].strings[0].split()[0].split('(')[0]
-                 expected_columns_map[col_name] = col_type_str
+             if len(parts) >= 3 and isinstance(parts[0], sql.Identifier) and isinstance(parts[2], sql.SQL):
+                col_name = parts[0].string if hasattr(parts[0], "string") else parts[0].get_name()
+                col_type_str = next(p.string for p in parts if isinstance(p, sql.SQL) and p.string.strip()) \
+                    .split()[0].split('(')[0]
+                expected_columns_map[col_name] = col_type_str
              else:
                   log_ctx.error("Could not parse column definition SQL", definition=col_def_sql.as_string(cur))
 
