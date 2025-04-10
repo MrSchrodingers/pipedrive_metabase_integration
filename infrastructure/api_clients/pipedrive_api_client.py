@@ -429,11 +429,6 @@ class PipedriveAPIClient(PipedriveClientPort):
              return timestamp
         self.log.info("No last update timestamp found in cache."); return None 
 
-    def update_last_timestamp(self, new_timestamp: str):
-        cache_key = "pipedrive:last_update_timestamp"; cache_ttl_seconds = 2592000 # 30 dias
-        try: self.cache.set(cache_key, new_timestamp, ex_seconds=cache_ttl_seconds); self.log.info("Updated last update timestamp in cache", timestamp=new_timestamp)
-        except Exception as e: self.log.error("Failed to store last update timestamp in cache", timestamp=new_timestamp, error=str(e), exc_info=True)
-
     def _fetch_paginated_v2_stream(self, url: str, params: Optional[Dict[str, Any]] = None) -> Generator[Dict, None, None]:
         """Helper generator para buscar itens V2 um por um via cursor."""
         next_cursor: Optional[str] = None
@@ -470,7 +465,61 @@ class PipedriveAPIClient(PipedriveClientPort):
             except Exception as e: page_log.error("Error during V2 stream fetching page, stopping stream.", error=str(e), exc_info=True); break
 
         self.log.info(f"V2 Stream fetch complete.", endpoint=endpoint_name, total_items_yielded=items_yielded, total_pages=page_num)
+        
+    def _fetch_paginated_v1_stream_adapter(self, url: str, params: Optional[Dict[str, Any]] = None) -> Generator[Dict, None, None]:
+        """
+        Gera itens de endpoints V1 paginados usando start/limit.
+        Útil para consumir dados sem carregar tudo na memória.
+        """
+        start = 0
+        base_params = params.copy() if params else {}
+        base_params["limit"] = self.MAX_V1_PAGINATION_LIMIT
+        endpoint_name = url.split(self.BASE_URL_V1)[-1] if self.BASE_URL_V1 in url else url
+        page_num = 0
+        items_yielded = 0
 
+        while True:
+            page_num += 1
+            current_params = base_params.copy()
+            current_params["start"] = start
+
+            page_log = self.log.bind(endpoint=endpoint_name, page=page_num, start=start, limit=current_params["limit"])
+
+            try:
+                response = self._get(url, params=current_params)
+                json_response = response.json()
+
+                if not json_response or not json_response.get("success"):
+                    page_log.warning("V1 stream response indicates failure or empty data", response_preview=str(json_response)[:200])
+                    break
+
+                current_data = json_response.get("data", [])
+                if not current_data:
+                    page_log.info("No more V1 stream data found.")
+                    break
+
+                for item in current_data:
+                    items_yielded += 1
+                    yield item
+
+                pagination_info = json_response.get("additional_data", {}).get("pagination", {})
+                more_items = pagination_info.get("more_items_in_collection", False)
+                if more_items:
+                    next_start = pagination_info.get("next_start")
+                    if next_start is not None:
+                        start = next_start
+                    else:
+                        page_log.warning("Missing 'next_start' despite 'more_items_in_collection' being true.")
+                        break
+                else:
+                    page_log.info("Pagination completed via stream.")
+                    break
+
+            except Exception as e:
+                page_log.error("Error during V1 stream pagination", error=str(e), exc_info=True)
+                break
+
+        self.log.info("V1 stream fetch completed.", endpoint=endpoint_name, items_yielded=items_yielded, total_pages=page_num)
 
     def fetch_all_deals_stream(self, updated_since: str = None, items_limit: int = None) -> Generator[Dict, None, None]:
         """Busca deals (V2) com limite opcional usando paginação por cursor."""

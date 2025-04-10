@@ -40,34 +40,11 @@ def sync_entity_task(
         stream = client._fetch_paginated_v2_stream(f"{client.BASE_URL_V2}/persons")
         upsert_method = repository.upsert_persons
     elif entity_type == "stages":
-        try:
-             all_data = client._fetch_paginated_v2(f"{client.BASE_URL_V2}/stages")
-             if all_data and hasattr(repository, 'upsert_stages'):
-                  total_synced = repository.upsert_stages(all_data)
-                  records_synced_counter.labels(entity_type=entity_type).inc(total_synced)
-                  logger.info(f"Synced {entity_type} in one go", count=total_synced)
-             return total_synced
-        except Exception as e:
-             logger.error(f"Failed to sync {entity_type} in one go", error=str(e), exc_info=True)
-             sync_failure_counter.labels(entity_type=entity_type).inc()
-             raise e
-        # stream = client._fetch_paginated_v2_stream(f"{client.BASE_URL_V2}/stages") # Se usar stream
-        # upsert_method = repository.upsert_stages # Se usar stream
+        stream = client._fetch_paginated_v2_stream(f"{client.BASE_URL_V2}/stages")
+        upsert_method = repository.upsert_stages
     elif entity_type == "pipelines":
-        # Similar a stages, buscar todos de uma vez
-        try:
-             all_data = client._fetch_paginated_v2(f"{client.BASE_URL_V2}/pipelines")
-             if all_data and hasattr(repository, 'upsert_pipelines'):
-                  total_synced = repository.upsert_pipelines(all_data)
-                  records_synced_counter.labels(entity_type=entity_type).inc(total_synced)
-                  logger.info(f"Synced {entity_type} in one go", count=total_synced)
-             return total_synced
-        except Exception as e:
-             logger.error(f"Failed to sync {entity_type} in one go", error=str(e), exc_info=True)
-             sync_failure_counter.labels(entity_type=entity_type).inc()
-             raise e
-        # stream = client._fetch_paginated_v2_stream(f"{client.BASE_URL_V2}/pipelines") # Se usar stream
-        # upsert_method = repository.upsert_pipelines # Se usar stream
+        stream = client._fetch_paginated_v2_stream(f"{client.BASE_URL_V2}/pipelines") 
+        upsert_method = repository.upsert_pipelines
     elif entity_type == "organizations":
         stream = client._fetch_paginated_v2_stream(f"{client.BASE_URL_V2}/organizations") 
         upsert_method = repository.upsert_organizations
@@ -96,7 +73,7 @@ def sync_entity_task(
             total_synced += upserted
             records_synced_counter.labels(entity_type=entity_type).inc(upserted)
 
-        logger.info(f"Sync task completed for {entity_type}", total_processed=processed_count, total_upserted=total_synced)
+        logger.info(f"Sync task completed for {entity_type}", records_processed=processed_count, records_upserted=total_synced)
         return total_synced
 
     except Exception as e:
@@ -109,7 +86,7 @@ def sync_entity_task(
 def sync_pipedrive_users_flow():
     logger = get_run_logger()
     logger.info("Starting Pipedrive Users sync flow...")
-    flow_run_id = get_run_logger().extra.get("flow_run_id", "local_sync_users")
+    flow_run_id = getattr(logger, "extra", {}).get("flow_run_id", "local_sync_users")
     try:
         client, repository, _ = initialize_components_no_maps()
         sync_entity_task(entity_type="users", client=client, repository=repository)
