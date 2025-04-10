@@ -50,7 +50,7 @@ def normalize_address(address: Optional[str]) -> Optional[Dict[str, Any]]:
         log.error("Geocoding service error", address=address, error=str(e))
         return None
     except Exception as e:
-        log.error("Unexpected error during geocoding", address=address, error=str(e), exc_info=True)
+        log.error("Unexpected error during geocoding", address=address, exc_info=True)
         return None
 
 
@@ -100,5 +100,5 @@ def anonymize_text(text: Optional[str], language: str = 'pt') -> Optional[str]:
         return anonymized_result.text
 
     except Exception as e:
-        log.error("Error during text anonymization", error=str(e), exc_info=True)
+        log.error("Error during text anonymization", exc_info=True)
         return text

@@ -18,10 +18,10 @@ def start_metrics_server(port: int = DEFAULT_PORT):
         while True:
             time.sleep(60)
     except OSError as e:
-        log.error(f"Failed to start metrics server on port {actual_port}. Port likely in use.", error=str(e), exc_info=True)
+        log.error(f"Failed to start metrics server on port {actual_port}. Port likely in use.", exc_info=True)
         raise
     except Exception as e:
-        log.error("Metrics server encountered an unexpected error", error=str(e), exc_info=True)
+        log.error("Metrics server encountered an unexpected error", exc_info=True)
         raise
 
 

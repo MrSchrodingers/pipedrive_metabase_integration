@@ -323,7 +323,7 @@ class PipedriveRepository(DataRepositoryPort):
         except Exception as e:
             if conn:
                 conn.rollback()
-            self.log.critical("Failed to ensure database schema", error=str(e), exc_info=True)
+            self.log.critical("Failed to ensure database schema", exc_info=True)
             raise
         finally:
             if conn:
@@ -656,7 +656,7 @@ class PipedriveRepository(DataRepositoryPort):
             return results
 
         except Exception as e:
-            self.log.error("Failed to get lookup maps for batch", error=str(e), exc_info=True)
+            self.log.error("Failed to get lookup maps for batch", exc_info=True)
             return {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
         finally:
             if conn:
@@ -886,7 +886,7 @@ class PipedriveRepository(DataRepositoryPort):
                 self.log.info("Fetched deal IDs needing history backfill", count=len(deal_ids), limit=limit)
                 return deal_ids
         except Exception as e:
-            self.log.error("Failed to get deals for history backfill", error=str(e), exc_info=True)
+            self.log.error("Failed to get deals for history backfill", exc_info=True)
             return []
         finally:
             if conn:
@@ -1005,7 +1005,7 @@ class PipedriveRepository(DataRepositoryPort):
                 self.log.info("Counted deals needing history backfill", count=count)
                 return count if count is not None else 0
         except Exception as e:
-            self.log.error("Failed to count deals for history backfill", error=str(e), exc_info=True)
+            self.log.error("Failed to count deals for history backfill", exc_info=True)
             return -1 
         finally:
             if conn:
@@ -1034,7 +1034,7 @@ class PipedriveRepository(DataRepositoryPort):
             return new_records
 
         except Exception as e:
-            self.log.error("Failed to filter existing records by ID", error=str(e), exc_info=True)
+            self.log.error("Failed to filter existing records by ID", exc_info=True)
             return data
         finally:
             if conn:
@@ -1055,7 +1055,7 @@ class PipedriveRepository(DataRepositoryPort):
                 row = cur.fetchone()
                 return dict(row) if row else None
         except Exception as e:
-             self.log.error("Failed to get record by ID", record_id=record_id_str, error=str(e), exc_info=True)
+             self.log.error("Failed to get record by ID", record_id=record_id_str, exc_info=True)
              return None
         finally:
             if conn:
@@ -1091,7 +1091,7 @@ class PipedriveRepository(DataRepositoryPort):
                 self.log.info("Configuration saved successfully", config_key=key)
         except Exception as e:
             if conn: conn.rollback()
-            self.log.error("Failed to save configuration", config_key=key, error=str(e), exc_info=True)
+            self.log.error("Failed to save configuration", config_key=key, exc_info=True)
         finally:
             if conn:
                 self.db_pool.release_connection(conn)

@@ -121,7 +121,7 @@ class ETLService:
                 transform_log.warning("Pydantic validation failed", record_id=record_id, errors=errors_summary)
             except Exception as e:
                 pydantic_failed_count += 1
-                transform_log.error("Unexpected error during Pydantic validation", record_id=record_id, error=str(e), exc_info=True)
+                transform_log.error("Unexpected error during Pydantic validation", record_id=record_id, exc_info=True)
 
         pydantic_valid_count = len(valid_input_for_df)
         transform_log = transform_log.bind(pydantic_valid_count=pydantic_valid_count, pydantic_failed_count=pydantic_failed_count)
@@ -292,7 +292,7 @@ class ETLService:
             raise ke
         except Exception as e:
             transform_failed_count = pydantic_valid_count
-            transform_log.error("Pandas transformation/enrichment failed", error=str(e), exc_info=True)
+            transform_log.error("Pandas transformation/enrichment failed", exc_info=True)
             raise e 
 
         duration = time.monotonic() - start_time
@@ -491,7 +491,7 @@ class ETLService:
         except Exception as e:
             if result.get("status") != "error": 
                  etl_failure_counter.labels(flow_type=flow_type).inc()
-            run_log.critical("Critical ETL failure during run_etl", error=str(e), exc_info=True)
+            run_log.critical("Critical ETL failure during run_etl", exc_info=True)
             result["status"] = "error"
             if result["message"] == "ETL process did not complete.":
                 result["message"] = f"Critical ETL failure: {str(e)}"
@@ -615,7 +615,7 @@ class ETLService:
                 run_log.error("Invalid deal_id format, skipping", deal_id_str=deal_id_str)
             except Exception as e:
                 processing_errors += 1
-                run_log.error("Error processing changelog for deal", deal_id=deal_id_str, error=str(e), exc_info=True)
+                run_log.error("Error processing changelog for deal", deal_id=deal_id_str, exc_info=True)
 
         if updates_to_apply:
             run_log.info(f"Applying {len(updates_to_apply)} stage history updates.")
