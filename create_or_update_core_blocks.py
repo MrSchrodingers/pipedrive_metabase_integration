@@ -90,30 +90,31 @@ default_job_watch_timeout = 120
 
 # Função helper para criar o dicionário do Job Template
 def create_job_spec_dict(image: str, resources: dict, pod_labels: Optional[dict] = None) -> dict:
-    """Cria a estrutura dict completa do Job K8s."""
+    """Cria manualmente a estrutura do Job Kubernetes."""
     labels = {"app.kubernetes.io/created-by": "prefect"}
     if pod_labels:
         labels.update(pod_labels)
-    # Usar a função estática para gerar o dict corretamente estruturado
-    return KubernetesJob.job_template(
-        metadata={"labels": labels},
-        spec={
+
+    job_spec = {
+        "metadata": {"labels": labels},
+        "spec": {
             "template": {
                 "spec": {
                     "initContainers": default_init_containers,
                     "containers": [
                         {
                             "name": "prefect-job",
-                            "image": image, # A imagem vai aqui dentro
+                            "image": image,
                             "resources": resources,
                             "envFrom": default_env_from,
-                            "env": default_env,
+                            "env": [{"name": k, "value": v} for k, v in default_env.items()],
                         }
                     ],
                 }
             }
         }
-    )
+    }
+    return job_spec
 
 # 1. Bloco para Infraestrutura K8s Padrão
 default_k8s_job_block_name = "default-k8s-job"
@@ -127,12 +128,10 @@ try:
     default_job_dict = create_job_spec_dict(image=default_image, resources=default_resources)
 
     # Instanciar o Bloco passando o dicionário para o parâmetro 'job'
-    # O __init__ do Bloco deve mapear isso internamente para o campo 'v1_job' esperado pelo schema
     default_k8s_job_block = KubernetesJob(
         namespace=default_namespace,
-        job=default_job_dict, # Passar o dict completo aqui
+        job=default_job_dict,  
         job_watch_timeout_seconds=default_job_watch_timeout
-        # Não passar image aqui, pois já está dentro do job dict
     )
     default_k8s_job_block.save(name=default_k8s_job_block_name, overwrite=True)
     print(f"-> Bloco KubernetesJob '{default_k8s_job_block_name}' salvo com sucesso.")
