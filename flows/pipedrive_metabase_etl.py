@@ -7,7 +7,7 @@ from prefect.blocks.system import JSON
 import logging
 
 from application.services.etl_service import ETLService
-from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, update_dynamic_batch_config, validate_loaded_data, update_optimal_batch_config
+from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
@@ -301,7 +301,7 @@ def batch_size_experiment_flow(
         df.to_csv('batch_metrics.csv', index=False)
         
         # 5. Atualizar configuração dinâmica
-        update_dynamic_batch_config(repository, optimal_size)
+        update_optimal_batch_config(repository, optimal_size)
         
         return {
             "status": "completed",
