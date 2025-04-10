@@ -1,11 +1,21 @@
 import os
 from datetime import timedelta
 from prefect.deployments import Deployment
-from prefect.server.schemas.schedules import IntervalSchedule 
+from prefect.server.schemas.schedules import IntervalSchedule, CronSchedule
 from prefect_kubernetes.jobs import KubernetesJob
 
-
-from flows.pipedrive_metabase_etl import main_etl_flow, backfill_stage_history_flow, batch_size_experiment_flow
+# Importar TODOS os fluxos
+from flows.pipedrive_metabase_etl import (
+    main_etl_flow,
+    backfill_stage_history_flow,
+    batch_size_experiment_flow
+)
+# Importar novos fluxos de sync
+from flows.pipedrive_sync_aux import (
+    sync_pipedrive_users_flow,
+    sync_pipedrive_persons_orgs_flow,
+    sync_pipedrive_stages_pipelines_flow
+)
 
 # --- Configuração Comum da Infraestrutura K8s Job ---
 K8S_IMAGE_NAME = "pipedrive_metabase_integration-etl:latest"
@@ -78,22 +88,16 @@ k8s_job_infra = KubernetesJob(
 
 # --- Deployment para Main Sync ---
 main_sync_deployment = Deployment.build_from_flow(
-    flow=main_etl_flow,
-    name="Pipedrive Sync", 
-    description="Sincroniza dados recentes do Pipedrive com o banco de dados.",
-    version="1.2", 
-    tags=["pipedrive", "sync", "etl"],
-    # Schedule para rodar a cada 30 minutos
-    schedule=IntervalSchedule(interval=timedelta(minutes=30)),
-    # Parâmetros padrão para este deployment
-    parameters={
-        "run_batch_size": 1500,
-        "enable_dynamic_batch": True
-    },
-    # Usar a infraestrutura K8s Job definida acima
+    flow=main_etl_flow, 
+    name="Pipedrive Sync",
+    description="Sincroniza deals recentes do Pipedrive com o banco de dados, usando lookups no DB.",
+    version="2.0", 
+    tags=["pipedrive", "sync", "etl", "main"],
+    schedule=IntervalSchedule(interval=timedelta(minutes=30)), 
+    parameters={}, 
     infrastructure=k8s_job_infra,
-    # Especificar a fila que o agente escuta
     work_queue_name=WORK_QUEUE_NAME,
+    concurrency_limit=1
 )
 
 # --- Deployment para Backfill ---
@@ -111,20 +115,62 @@ backfill_deployment = Deployment.build_from_flow(
     work_queue_name=WORK_QUEUE_NAME,
 )
 
-# --- Deployment para Recents (Exemplo Futuro) ---
-# Supondo que exista um fluxo recent_updates_flow
-# from flows.pipedrive_recents import recent_updates_flow # Exemplo
-# recent_updates_deployment = Deployment.build_from_flow(
-#     flow=recent_updates_flow,
-#     name="Pipedrive Recents",
-#     version="1.0",
-#     tags=["pipedrive", "recents", "etl"],
-#     schedule=IntervalSchedule(interval=timedelta(minutes=15)),
-#     is_schedule_active=False, # Começa desativado, ativado pela Automação 3
-#     parameters={},
-#     infrastructure=k8s_job_infra,
-#     work_queue_name=WORK_QUEUE_NAME,
-# )
+# Sync Users
+users_sync_deployment = Deployment.build_from_flow(
+    flow=sync_pipedrive_users_flow,
+    name="Sync Pipedrive Users",
+    description="Sincroniza a tabela pipedrive_users com a API.",
+    version="1.0",
+    tags=["pipedrive", "sync", "aux", "users"],
+    schedule=CronSchedule(cron="0 3 * * *", timezone="America/Sao_Paulo"), 
+    parameters={},
+    infrastructure=k8s_job_infra.duplicate(update={ 
+         "job": KubernetesJob.job_template(
+             spec={ "template": { "spec": {
+                 "initContainers": DEFAULT_INIT_CONTAINERS,
+                 "containers": [{
+                     "name": "prefect-job",
+                     "resources": {
+                         "requests": {"memory": "512Mi", "cpu": "250m"},
+                         "limits": {"memory": "1Gi", "cpu": "500m"}
+                     },
+                     "envFrom": DEFAULT_ENV_FROM, "env": [ {"name": k, "value": v} for k, v in DEFAULT_ENV.items() ]
+                 }]
+             }}}
+         )
+    }),
+    work_queue_name=WORK_QUEUE_NAME,
+    concurrency_limit=1
+)
+
+# Sync Persons & Orgs
+persons_orgs_sync_deployment = Deployment.build_from_flow(
+    flow=sync_pipedrive_persons_orgs_flow,
+    name="Sync Pipedrive Persons & Orgs",
+    description="Sincroniza as tabelas pipedrive_persons e pipedrive_organizations.",
+    version="1.0",
+    tags=["pipedrive", "sync", "aux", "persons", "orgs"],
+    schedule=IntervalSchedule(interval=timedelta(hours=4)),
+    parameters={},
+    infrastructure=k8s_job_infra, 
+    work_queue_name=WORK_QUEUE_NAME,
+    concurrency_limit=1
+)
+
+# Sync Stages & Pipelines
+stages_pipelines_sync_deployment = Deployment.build_from_flow(
+    flow=sync_pipedrive_stages_pipelines_flow,
+    name="Sync Pipedrive Stages & Pipelines",
+    description="Sincroniza as tabelas pipedrive_stages e pipedrive_pipelines.",
+    version="1.0",
+    tags=["pipedrive", "sync", "aux", "stages", "pipelines"],
+     schedule=CronSchedule(cron="0 4 * * *", timezone="America/Sao_Paulo"),
+    parameters={},
+    infrastructure=users_sync_deployment.infrastructure,
+    work_queue_name=WORK_QUEUE_NAME,
+    concurrency_limit=1
+)
+
 
 batch_experiment_deployment = Deployment.build_from_flow(
     flow=batch_size_experiment_flow,
@@ -168,19 +214,24 @@ batch_experiment_deployment = Deployment.build_from_flow(
 )
 
 # Bloco para aplicar os deployments
-# Este script deve ser executado DEPOIS que o Prefect Orion estiver no ar
 if __name__ == "__main__":
-    print(f"Aplicando deployment para '{main_sync_deployment.name}'...")
+    print("Applying Pipedrive Sync deployment...")
     main_sync_deployment.apply()
 
-    print(f"Aplicando deployment para '{backfill_deployment.name}'...")
+    print("Applying Backfill deployment...")
     backfill_deployment.apply()
 
-    # print(f"Aplicando deployment para '{recent_updates_deployment.name}' (schedule inativo)...")
-    # recent_updates_deployment.apply()
-    
-    print(f"Aplicando deployment para '{batch_experiment_deployment.name}'...")
-    batch_experiment_deployment.apply()  
+    print("Applying Batch Experiment deployment...")
+    batch_experiment_deployment.apply()
+
+    print("Applying Users Sync deployment...")
+    users_sync_deployment.apply()
+
+    print("Applying Persons & Orgs Sync deployment...")
+    persons_orgs_sync_deployment.apply()
+
+    print("Applying Stages & Pipelines Sync deployment...")
+    stages_pipelines_sync_deployment.apply()
 
     print("\nDeployments aplicados com sucesso!")
     print(f"Garanta que um agente Prefect esteja rodando e escutando a fila '{WORK_QUEUE_NAME}'.")

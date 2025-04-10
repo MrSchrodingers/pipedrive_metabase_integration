@@ -7,8 +7,10 @@ import structlog
 
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
 
+log = structlog.get_logger(__name__)
+
 def validate_loaded_data(
-    repository: PipedriveRepository, 
+    repository: PipedriveRepository,
     source_data: List[Dict],
     batch_size: int
 ) -> Dict[str, Any]:
@@ -126,19 +128,31 @@ def calculate_optimal_batch_size(results: List[Dict]) -> int:
 
     return optimal_size
 
-def update_dynamic_batch_config(repository: PipedriveRepository, optimal_size: int):
-    """Atualiza a configuração dinâmica no banco de dados."""
+def update_optimal_batch_config(repository: PipedriveRepository, optimal_size: int):
+    """Atualiza a configuração do tamanho ótimo de batch no banco de dados."""
+    config_key = "optimal_batch_size"
+    logger = log.bind(config_key=config_key, optimal_size=optimal_size)
     try:
-        now_iso = datetime.now(timezone.utc).isoformat() 
-        repository.save_configuration(
-            key='optimal_batch_size',
-            value={'value': optimal_size, 'updated_at': now_iso } 
-        )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        config_value = {'value': optimal_size, 'updated_at': now_iso }
+        repository.save_configuration(key=config_key, value=config_value)
+        logger.info("Optimal batch size configuration updated in DB.")
     except Exception as e:
-        structlog.get_logger().error("Failed to update batch config", error=str(e))
+        logger.error("Failed to update optimal batch size config in DB", error=str(e), exc_info=True)
         
-def get_optimal_batch_size(repository: PipedriveRepository) -> int:
-    config = repository.get_configuration("optimal_batch_size")
-    if config and "value" in config:
-        return int(config["value"])
-    return 1000
+def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 1000) -> int:
+    """Busca o tamanho ótimo de batch da configuração do banco de dados."""
+    config_key = "optimal_batch_size"
+    logger = log.bind(config_key=config_key)
+    try:
+        config = repository.get_configuration(config_key)
+        if config and isinstance(config.get("value"), int) and config["value"] > 0:
+             size = int(config["value"])
+             logger.info(f"Retrieved optimal batch size from config: {size}")
+             return size
+        else:
+             logger.warning(f"Optimal batch size not found or invalid in config. Using default: {default_size}", config_value=config)
+             return default_size
+    except Exception as e:
+        logger.error("Failed to get optimal batch size from config. Using default.", error=str(e), default_size=default_size, exc_info=True)
+        return default_size

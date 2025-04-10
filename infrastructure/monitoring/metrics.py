@@ -121,6 +121,22 @@ batch_experiment_metrics = Gauge(
     ['batch_size', 'metric']
 )
 
+sync_counter = Counter(
+    'pipedrive_aux_sync_runs_total',
+    'Total auxiliary sync executions initiated',
+    ['entity_type']
+)
+sync_failure_counter = Counter(
+    'pipedrive_aux_sync_failures_total',
+    'Total auxiliary sync executions that failed',
+    ['entity_type']
+)
+records_synced_counter = Counter(
+    'pipedrive_aux_sync_records_synced_total',
+    'Total records upserted during auxiliary sync',
+     ['entity_type']
+)
+
 # --- Função para enviar métricas ao Pushgateway ---
 PUSHGATEWAY_ADDRESS = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
 push_log = structlog.get_logger("push_metrics")
