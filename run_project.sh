@@ -139,12 +139,18 @@ deploy_prefect_flows() {
     log "debug" "Verificando acesso à API Prefect via IP (${prefect_api_url_ip}) antes de criar blocos..."
     sleep 5
     local health_check_url="${prefect_api_url_ip%/api}/health"
-    if curl --fail -s "${health_check_url}" > /dev/null; then
-         log "debug" "Teste de conexão com ${health_check_url} bem-sucedido."
-    else
-         log "error" "Falha no teste de conexão com ${health_check_url}."
-         fail "Não foi possível conectar ao Prefect API via ${prefect_api_url_ip}. Impossível continuar."
-    fi
+    local attempt=0
+    local max_attempts=5
+    while ! curl --fail --max-time 5 -s "${health_check_url}" > /dev/null; do
+         attempt=$((attempt + 1))
+         if [[ $attempt -ge $max_attempts ]]; then
+              log "error" "Falha no teste de conexão com ${health_check_url} após ${max_attempts} tentativas."
+              fail "Não foi possível conectar ao Prefect API via ${prefect_api_url_ip}. Impossível continuar."
+         fi
+         log "debug" "Tentativa ${attempt}/${max_attempts}: Falha ao conectar a ${health_check_url}. Aguardando 5s..."
+         sleep 5
+    done
+     log "debug" "Teste de conexão com ${health_check_url} bem-sucedido."
 
     # --- Verificação das Variáveis de Ambiente para Blocos ---
     log "info" "Verificando variáveis de ambiente para criação dos blocos..."
@@ -162,15 +168,16 @@ deploy_prefect_flows() {
         log "info" "Variáveis de ambiente para blocos parecem estar definidas."
     fi
 
-    # --- Criação/Atualização dos Blocos Core via Script Python ---
-    log "info" "Executando script para criar/atualizar Blocos Prefect (${secret_block_name}, ${db_block_name}, ${redis_block_name})..."
+    # --- Criação/Atualização dos Blocos Core E INFRA via Script Python ---
+    log "info" "Executando script para criar/atualizar Blocos Prefect (${secret_block_name}, ${db_block_name}, ${redis_block_name}, k8s-jobs)..." 
     export PREFECT_API_URL="${prefect_api_url_ip}"
     log "debug" "PREFECT_API_URL configurada como ${PREFECT_API_URL} para script Python e CLI."
 
+    # Executa o script que agora também cria os blocos K8sJob
     if ! python create_or_update_core_blocks.py; then
          fail "Falha ao executar create_or_update_core_blocks.py. Verifique os logs do script Python acima."
     fi
-    log "info" "Blocos Prefect principais criados/atualizados com sucesso."
+    log "info" "Blocos Prefect (incluindo K8sJob) criados/atualizados com sucesso."
 
     # --- Criação do Work Pool ---
     log "info" "Verificando/Criando Work Pool Prefect: ${work_pool_name}..."
@@ -187,17 +194,11 @@ deploy_prefect_flows() {
     fi
 
     # --- Aplicação dos Deployments ---
-    log "info" "Aplicando/Atualizando Deployments Prefect via script Python..."
-    local deployment_script_path="infrastructure/deployments/pipedrive_deployments.py"
-
-    if [[ ! -f "${deployment_script_path}" ]]; then
-        fail "Script de deployment Python não encontrado em: ${deployment_script_path}"
-    fi
-
-    if python "${deployment_script_path}"; then 
-        log "success" "Deployments Prefect aplicados com sucesso via script Python."
+    log "info" "Aplicando/Atualizando Deployments Prefect a partir do ${PREFECT_YAML_FILE}..."
+    if prefect deploy --all; then 
+        log "success" "Deployments Prefect aplicados com sucesso via CLI."
     else
-        fail "Falha ao aplicar deployments Prefect via script Python. Verifique os logs do script acima."
+        fail "Falha ao aplicar deployments Prefect via CLI. Verifique os logs do comando."
     fi
 }
 

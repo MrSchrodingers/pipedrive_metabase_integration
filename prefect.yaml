@@ -1,12 +1,12 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/PrefectHQ/prefect/main/src/prefect/server/schemas/core/deployment.json
-prefect-version: 3.3.2 
+prefect-version: 3.3.2
 
 name: pipedrive-etl
 
 deployments:
 # --- Main ETL Flow ---
 - name: Pipedrive Sync
-  version: '2.0' 
+  version: '2.0'
   tags:
   - pipedrive
   - sync
@@ -14,14 +14,17 @@ deployments:
   - main
   description: Sincroniza deals recentes do Pipedrive com o banco de dados, usando lookups no DB.
   entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
-  parameters: {} 
+  parameters: {}
   work_pool:
     name: kubernetes-pool
-    work_queue_name: kubernetes 
-    job_variables: {} 
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/default-k8s-job # <--- REFERÊNCIA AO BLOCO
   concurrency_limit: 1
   schedules:
-  - interval: 1800.0 # 30 minutos
+  - interval: 1800.0
     anchor_date: '2025-04-10T12:00:00+00:00'
     timezone: America/Sao_Paulo
     active: true
@@ -47,13 +50,16 @@ deployments:
     name: kubernetes-pool
     work_queue_name: kubernetes
     job_variables: {}
-  schedules: [] 
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/default-k8s-job # <--- REFERÊNCIA AO BLOCO
+  schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit: 1 
+  concurrency_limit: 1
 
 # --- Batch Size Experiment Flow ---
 - name: Batch Size Experiment
@@ -61,8 +67,8 @@ deployments:
   tags:
   - experiment
   - batch-size
-  - optimization 
-  description: Testa diferentes tamanhos de batch, calcula e salva o ótimo na config. # Descrição atualizada
+  - optimization
+  description: Testa diferentes tamanhos de batch, calcula e salva o ótimo na config.
   entrypoint: flows/pipedrive_metabase_etl.py:batch_size_experiment_flow
   parameters:
     batch_sizes:
@@ -75,15 +81,11 @@ deployments:
   work_pool:
     name: kubernetes-pool
     work_queue_name: kubernetes
-    job_variables:
-      resources:
-        requests:
-          memory: 2Gi
-          cpu: '1'
-        limits:
-          memory: 8Gi 
-          cpu: '2'
-  schedules: [] 
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/experiment-k8s-job # <--- REFERÊNCIA AO BLOCO DO EXPERIMENTO
+  schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
@@ -105,16 +107,12 @@ deployments:
   work_pool:
     name: kubernetes-pool
     work_queue_name: kubernetes
-    job_variables:
-       resources:
-         requests:
-            memory: "512Mi"
-            cpu: "250m"
-         limits:
-            memory: "1Gi"
-            cpu: "500m"
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/light-sync-k8s-job # <--- REFERÊNCIA AO BLOCO LEVE
   schedules:
-  - cron: "0 3 * * *" # Diariamente às 03:00
+  - cron: "0 3 * * *"
     timezone: America/Sao_Paulo
     active: true
   pull:
@@ -138,10 +136,13 @@ deployments:
   work_pool:
     name: kubernetes-pool
     work_queue_name: kubernetes
-    job_variables: {} # Usa infra default definida no script python
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/default-k8s-job # <--- REFERÊNCIA AO BLOCO PADRÃO
   schedules:
-  - interval: 14400.0 # 4 horas (4 * 60 * 60)
-    anchor_date: '2025-04-10T12:00:00+00:00' # Ajustar data de início
+  - interval: 14400.0
+    anchor_date: '2025-04-10T12:00:00+00:00'
     timezone: America/Sao_Paulo
     active: true
   pull:
@@ -165,16 +166,12 @@ deployments:
   work_pool:
     name: kubernetes-pool
     work_queue_name: kubernetes
-    job_variables:
-       resources:
-         requests:
-            memory: "512Mi"
-            cpu: "250m"
-         limits:
-            memory: "1Gi"
-            cpu: "500m"
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/light-sync-k8s-job # <--- REFERÊNCIA AO BLOCO LEVE
   schedules:
-  - cron: "0 4 * * *" # Diariamente às 04:00
+  - cron: "0 4 * * *"
     timezone: America/Sao_Paulo
     active: true
   pull:
