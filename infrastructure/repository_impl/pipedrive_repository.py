@@ -16,9 +16,35 @@ from infrastructure.db_pool import DBConnectionPool
 
 log = structlog.get_logger(__name__)
 
-# Constantes do domínio
-BASE_COLUMNS = [ ... ]  # mesmo conteúdo que você já tem
-COLUMN_TYPES = { ... }
+# Colunas da tabela principal de deals
+BASE_COLUMNS = [
+    "id", "titulo", "creator_user_id", "creator_user_name", "person_id",
+    "person_name", "stage_id", "stage_name", "pipeline_id", "pipeline_name",
+    "owner_id", "owner_name", "status", "value", "currency",
+    "add_time", "update_time",
+    "org_id", "org_name", "lost_reason", "visible_to", "close_time", "won_time", "lost_time",
+    "first_won_time", "expected_close_date", "probability", "label"
+]
+
+NAME_COLUMNS_TO_PRESERVE = {
+    "creator_user_name", "person_name", "stage_name", "pipeline_name",
+    "owner_name", "org_name"
+}
+
+COLUMN_TYPES = {
+    "id": "TEXT PRIMARY KEY", "titulo": "TEXT", "creator_user_id": "INTEGER",
+    "creator_user_name": "TEXT", "person_id": "INTEGER", "person_name": "TEXT",
+    "stage_id": "INTEGER", "stage_name": "TEXT", "pipeline_id": "INTEGER",
+    "pipeline_name": "TEXT", "owner_id": "INTEGER", "owner_name": "TEXT",
+    "status": "TEXT", "value": "NUMERIC(18, 2)", "currency": "VARCHAR(10)",
+    "add_time": "TIMESTAMPTZ", "update_time": "TIMESTAMPTZ",
+    "org_id": "INTEGER", "org_name": "TEXT", "lost_reason": "TEXT", "visible_to": "TEXT", 
+    "close_time": "TIMESTAMPTZ", "won_time": "TIMESTAMPTZ", "lost_time": "TIMESTAMPTZ",
+    "first_won_time": "TIMESTAMPTZ", "expected_close_date": "DATE", "probability": "NUMERIC(5,2)",
+    "label": "TEXT",
+}
+
+# Nomes das tabelas de lookup persistentes
 LOOKUP_TABLE_USERS = "pipedrive_users"
 LOOKUP_TABLE_PERSONS = "pipedrive_persons"
 LOOKUP_TABLE_STAGES = "pipedrive_stages"
