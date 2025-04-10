@@ -225,7 +225,7 @@ class ETLService:
             )
             transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
-            transformed_df["label"] = df["label"].fillna("").astype(str)
+            transformed_df["label"] = df.get("label", "").fillna("").astype(str)
 
             # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping

@@ -1061,7 +1061,14 @@ class PipedriveRepository(DataRepositoryPort):
             if conn:
                 self.db_pool.release_connection(conn)
 
-
+    def get_configuration(self, config_key: str) -> Any:
+        query = sql.SQL("SELECT value FROM configuration WHERE key = %s LIMIT 1;")
+        with self._connection.cursor() as cursor:
+            cursor.execute(query, (config_key,))
+            result = cursor.fetchone()
+            if result:
+                return result[0]
+            raise KeyError(f"Configuration key '{config_key}' not found")
 
     def save_configuration(self, key: str, value: Dict):
         """Salva configurações dinâmicas (formato JSONB) no banco."""
