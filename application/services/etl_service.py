@@ -10,7 +10,7 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.column_utils import flatten_custom_fields, normalize_column_name, robust_address_parsing
+from application.utils.column_utils import apply_address_normalization_to_columns, flatten_custom_fields, normalize_column_name, robust_address_parsing
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
@@ -247,11 +247,17 @@ class ETLService:
                 transformed_df = pd.concat([transformed_df, custom_fields_flattened_df], axis=1)
 
 
-            transformed_df = robust_address_parsing(
-                df=transformed_df,
-                address_col="endereco_completo_combinado_de_local_do_acidente",
-                prefix="local_do_acidente"
-            )
+            address_cols = [
+                "endereco_completo_combinado_de_local_do_acidente",
+                "endereco_completo_combinado_de_proposta_endereco"
+            ]
+
+            prefix_map = {
+                "endereco_completo_combinado_de_local_do_acidente": "local_do_acidente",
+                "endereco_completo_combinado_de_proposta_endereco": "proposta_endereco"
+            }
+
+            transformed_df = apply_address_normalization_to_columns(transformed_df, address_cols, prefix_map)
             
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
@@ -279,12 +285,25 @@ class ETLService:
 
             # Selecionar apenas as colunas finais na ordem definida
             transformed_df = transformed_df[ordered_final_columns]
+            
+            # Identificar colunas com todos os valores nulos (sem excluir as base obrigatórias)
+            nullable_cols = transformed_df.columns[
+                transformed_df.isnull().all()
+                & ~transformed_df.columns.isin(REPO_BASE_COLUMNS) 
+            ]
+
+            if len(nullable_cols) > 0:
+                transform_log.warning("Removing columns with all null values", dropped_columns=nullable_cols.tolist())
+
+            transformed_df.drop(columns=nullable_cols, inplace=True)
 
             # --- Limpeza Final ---
             transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
             validated_records = transformed_df.to_dict('records')
             transform_succeeded_count = len(validated_records)
             transform_failed_count = pydantic_valid_count - transform_succeeded_count 
+            
+            
 
         except AttributeError as ae: 
             transform_failed_count = pydantic_valid_count
