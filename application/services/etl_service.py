@@ -257,10 +257,15 @@ class ETLService:
                 )
             else:
                 transform_log.warning("Coluna 'local_do_acidente' ausente no batch, pulando campo derivado endereco_formatado_de_local_do_acidente.")
-            df["pipeline_stage"] = df.apply(
-                lambda row: f"{row['pipeline_name']} - {row['stage_name']}" if pd.notna(row["pipeline_name"]) and pd.notna(row["stage_name"]) else None,
-                axis=1
-            )
+            if "pipeline_name" in transformed_df.columns and "stage_name" in transformed_df.columns:
+                transformed_df["pipeline_stage"] = transformed_df.apply(
+                    lambda row: f"{row['pipeline_name']} - {row['stage_name']}"
+                    if pd.notna(row["pipeline_name"]) and pd.notna(row["stage_name"])
+                    else None,
+                    axis=1,
+                )
+            else:
+                transform_log.warning("Colunas 'pipeline_name' ou 'stage_name' ausentes, pulando derivação de 'pipeline_stage'.")
             repo_custom_mapping = self.repository.custom_field_mapping
             if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
