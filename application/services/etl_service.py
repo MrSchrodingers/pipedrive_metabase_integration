@@ -11,8 +11,8 @@ from pydantic import ValidationError
 from tenacity import RetryError
 
 from application.utils.column_utils import (
-    safe_explode_address_field,
-    safe_explode_currency_field,
+    force_explode_address_field,
+    force_explode_currency_field,
     normalize_column_name
 )
 from infrastructure.monitoring.metrics import (
@@ -144,21 +144,21 @@ class ETLService:
             
             # --- Explodir campos de endereço via "safe" (fallback)
             if "local_do_acidente" in df.columns:
-                df = safe_explode_address_field(
+                df = force_explode_address_field(
                     df, source_column="local_do_acidente", prefix="local_do_acidente"
                 )
             else:
                 transform_log.warning(
-                    "Coluna 'local_do_acidente' ausente no batch, pulando safe_explode_address_field."
+                    "Coluna 'local_do_acidente' ausente no batch, pulando force_explode_address_field."
                 )
 
             if "proposta_endereco" in df.columns:
-                df = safe_explode_address_field(
+                df = force_explode_address_field(
                     df, source_column="proposta_endereco", prefix="proposta_endereco"
                 )
             else:
                 transform_log.warning(
-                    "Coluna 'proposta_endereco' ausente no batch, pulando safe_explode_address_field."
+                    "Coluna 'proposta_endereco' ausente no batch, pulando force_explode_address_field."
                 )
 
             # --- Explodir campos de moeda via "safe" (fallback)
@@ -171,14 +171,14 @@ class ETLService:
                 ("fipe_veiculo_3o", "fipe_veiculo_3o", "moeda_de_fipe_veiculo_3o"),
             ]:
                 if col in df.columns:
-                    df = safe_explode_currency_field(
+                    df = force_explode_currency_field(
                         df, source_column=col,
                         value_col=value_col,
                         currency_col=currency_col
                     )
                 else:
                     transform_log.warning(
-                        f"Coluna '{col}' ausente no batch, pulando safe_explode_currency_field."
+                        f"Coluna '{col}' ausente no batch, pulando force_explode_currency_field."
                     )
 
             # --- Coletar IDs para Lookup no DB ---

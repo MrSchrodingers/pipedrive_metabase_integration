@@ -128,3 +128,78 @@ def safe_explode_currency_field(
     df.drop(columns=["temp_parsed"], inplace=True)
 
     return df
+
+def force_explode_address_field(
+    df: pd.DataFrame,
+    source_column: str,
+    prefix: str
+) -> pd.DataFrame:
+    """
+    Explode os campos de endereço a partir do JSON na coluna `source_column`,
+    sobrescrevendo sempre os valores das colunas de destino
+    (i.e. não mantém valores preexistentes).
+    """
+
+    if source_column not in df.columns:
+        return df
+
+    def parse_json_safe(val):
+        try:
+            return json.loads(val) if isinstance(val, str) else (val if isinstance(val, dict) else {})
+        except Exception:
+            return {}
+
+    parsed = df[source_column].apply(parse_json_safe)
+
+    field_map = {
+        "formatted_address": f"endereco_completo_combinado_de_{prefix}",
+        "admin_area_level_2": f"cidade_municipio_vila_localidade_de_{prefix}",
+        "admin_area_level_1": f"estado_de_{prefix}",
+        "country": f"pais_de_{prefix}",
+        "postal_code": f"cep_codigo_postal_de_{prefix}",
+        "route": f"nome_da_rua_de_{prefix}",
+        "sublocality": f"distrito_sub_localidade_de_{prefix}",
+        "street_number": f"numero_da_casa_de_{prefix}",
+        "latitude": f"latitude_de_{prefix}",
+        "longitude": f"longitude_de_{prefix}",
+    }
+
+    for json_key, target_col in field_map.items():
+        if target_col not in df.columns:
+            df[target_col] = None
+
+        df[target_col] = parsed.apply(lambda x: x.get(json_key))
+
+    return df
+
+def force_explode_currency_field(
+    df: pd.DataFrame,
+    source_column: str,
+    value_col: str,
+    currency_col: str
+) -> pd.DataFrame:
+    """
+    Explode campos de moeda a partir de um JSON contido em `source_column`,
+    sobrescrevendo sempre os valores das colunas de destino.
+    """
+    if source_column not in df.columns:
+        return df
+
+    def parse_currency(val):
+        try:
+            parsed = json.loads(val) if isinstance(val, str) else val
+            return parsed.get("value"), parsed.get("currency")
+        except Exception:
+            return (None, None)
+
+    exploded = df[source_column].apply(parse_currency)
+
+    if value_col not in df.columns:
+        df[value_col] = None
+    if currency_col not in df.columns:
+        df[currency_col] = None
+
+    df[value_col] = exploded.apply(lambda x: x[0])
+    df[currency_col] = exploded.apply(lambda x: x[1])
+
+    return df
