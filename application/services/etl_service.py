@@ -251,7 +251,12 @@ class ETLService:
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
 
             # --- Campos Customizados ---
-            df["endereco_formatado_de_local_do_acidente"] = df["local_do_acidente"].apply(lambda x: x.get("formatted_address") if isinstance(x, dict) else None)
+            if "local_do_acidente" in df.columns:
+                df["endereco_formatado_de_local_do_acidente"] = df["local_do_acidente"].apply(
+                    lambda x: x.get("formatted_address") if isinstance(x, dict) else None
+                )
+            else:
+                transform_log.warning("Coluna 'local_do_acidente' ausente no batch, pulando campo derivado endereco_formatado_de_local_do_acidente.")
             df["pipeline_stage"] = df.apply(
                 lambda row: f"{row['pipeline_name']} - {row['stage_name']}" if pd.notna(row["pipeline_name"]) and pd.notna(row["stage_name"]) else None,
                 axis=1
