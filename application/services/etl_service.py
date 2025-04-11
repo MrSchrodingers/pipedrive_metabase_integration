@@ -149,12 +149,18 @@ class ETLService:
             else:
                 transform_log.warning("Coluna 'proposta_endereco' ausente no batch, pulando explode_address_field.")
 
-            df = explode_currency_field(df, source_column="acv", value_col="acv", currency_col="moeda_de_acv")
-            df = explode_currency_field(df, source_column="arr", value_col="arr", currency_col="moeda_de_arr")
-            df = explode_currency_field(df, source_column="valor_atualizado", value_col="valor_atualizado", currency_col="moeda_de_valor_atualizado")
-            df = explode_currency_field(df, source_column="valor_original", value_col="valor_original", currency_col="moeda_de_valor_original")
-            df = explode_currency_field(df, source_column="mrr", value_col="mrr", currency_col="moeda_de_mrr")
-            df = explode_currency_field(df, source_column="fipe_veiculo_3o", value_col="fipe_veiculo_3o", currency_col="moeda_de_fipe_veiculo_3o")
+            for col, value_col, currency_col in [
+                ("acv", "acv", "moeda_de_acv"),
+                ("arr", "arr", "moeda_de_arr"),
+                ("valor_atualizado", "valor_atualizado", "moeda_de_valor_atualizado"),
+                ("valor_original", "valor_original", "moeda_de_valor_original"),
+                ("mrr", "mrr", "moeda_de_mrr"),
+                ("fipe_veiculo_3o", "fipe_veiculo_3o", "moeda_de_fipe_veiculo_3o"),
+            ]:
+                if col in df.columns:
+                    df = explode_currency_field(df, source_column=col, value_col=value_col, currency_col=currency_col)
+                else:
+                    transform_log.warning(f"Coluna '{col}' ausente no batch, pulando explode_currency_field.")
 
             # --- Coletar IDs para Lookup no DB ---
             user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
