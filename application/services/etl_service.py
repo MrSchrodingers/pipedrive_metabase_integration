@@ -10,7 +10,7 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.column_utils import normalize_column_name
+from application.utils.column_utils import explode_address_field, explode_currency_field, normalize_column_name
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
@@ -137,6 +137,17 @@ class ETLService:
         
         try:
             df = pd.DataFrame(valid_input_for_df)
+            
+            # --- Explodir campos de endereço e moeda para colunas separadas ---
+            df = explode_address_field(df, source_column="local_do_acidente", prefix="local_do_acidente")
+            df = explode_address_field(df, source_column="proposta_endereco", prefix="proposta_endereco")
+
+            df = explode_currency_field(df, source_column="acv", value_col="acv", currency_col="moeda_de_acv")
+            df = explode_currency_field(df, source_column="arr", value_col="arr", currency_col="moeda_de_arr")
+            df = explode_currency_field(df, source_column="valor_atualizado", value_col="valor_atualizado", currency_col="moeda_de_valor_atualizado")
+            df = explode_currency_field(df, source_column="valor_original", value_col="valor_original", currency_col="moeda_de_valor_original")
+            df = explode_currency_field(df, source_column="mrr", value_col="mrr", currency_col="moeda_de_mrr")
+            df = explode_currency_field(df, source_column="fipe_veiculo_3o", value_col="fipe_veiculo_3o", currency_col="moeda_de_fipe_veiculo_3o")
 
             # --- Coletar IDs para Lookup no DB ---
             user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
@@ -227,6 +238,11 @@ class ETLService:
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
 
             # --- Campos Customizados ---
+            df["endereco_formatado_de_local_do_acidente"] = df["local_do_acidente"].apply(lambda x: x.get("formatted_address") if isinstance(x, dict) else None)
+            df["pipeline_stage"] = df.apply(
+                lambda row: f"{row['pipeline_name']} - {row['stage_name']}" if pd.notna(row["pipeline_name"]) and pd.notna(row["stage_name"]) else None,
+                axis=1
+            )
             repo_custom_mapping = self.repository.custom_field_mapping
             if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
