@@ -10,7 +10,7 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.column_utils import apply_address_normalization_to_columns, flatten_custom_fields, normalize_column_name
+from application.utils.column_utils import flatten_custom_fields, normalize_column_name
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
@@ -228,36 +228,22 @@ class ETLService:
 
             # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping
-            if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
+            if repo_custom_mapping and 'custom_fields' in df.columns:
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
                     lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
                 )
 
-                # Aplicar flatten de maneira robusta
                 custom_fields_flattened_df = pd.json_normalize(
                     df['custom_fields_parsed'].apply(
                         lambda x: flatten_custom_fields(x, repo_custom_mapping)
                     ).tolist()
                 )
 
-                # Garantir alinhamento dos índices
+                # Garantir alinhamento
                 custom_fields_flattened_df.index = df.index
 
-                # Juntar com o DataFrame transformado
+                # Concat com df principal
                 transformed_df = pd.concat([transformed_df, custom_fields_flattened_df], axis=1)
-
-
-            address_cols = [
-                "endereco_completo_combinado_de_local_do_acidente",
-                "endereco_completo_combinado_de_proposta_endereco"
-            ]
-
-            prefix_map = {
-                "endereco_completo_combinado_de_local_do_acidente": "local_do_acidente",
-                "endereco_completo_combinado_de_proposta_endereco": "proposta_endereco"
-            }
-
-            transformed_df = apply_address_normalization_to_columns(transformed_df, address_cols, prefix_map)
             
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
