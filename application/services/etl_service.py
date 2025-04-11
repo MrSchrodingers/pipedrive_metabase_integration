@@ -254,6 +254,18 @@ class ETLService:
 
                 # Concat com df principal
                 transformed_df = pd.concat([transformed_df, custom_fields_flattened_df], axis=1)
+                
+                address_columns = [col for col in transformed_df.columns if "endereco" in col.lower() or "local" in col.lower()]
+
+                # Aplicar explode_address_field em cada uma
+                for col in address_columns:
+                    try:
+                        exploded = explode_address_field(transformed_df[col])
+                        for new_col in exploded.columns:
+                            new_col_name = f"{col}_{new_col}"
+                            transformed_df[new_col_name] = exploded[new_col]
+                    except Exception as e:
+                        transform_log.warning("Failed to explode address field", column=col, error=str(e))
             
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
