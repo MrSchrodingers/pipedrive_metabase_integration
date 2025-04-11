@@ -10,7 +10,7 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.column_utils import normalize_column_name
+from application.utils.column_utils import flatten_custom_fields, normalize_column_name
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
@@ -233,32 +233,18 @@ class ETLService:
                     lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
                 )
 
-                def extract_custom(row):
-                    custom_data = {}
+                # Aplicar flatten de maneira robusta
+                custom_fields_flattened_df = pd.json_normalize(
+                    df['custom_fields_parsed'].apply(
+                        lambda x: flatten_custom_fields(x, repo_custom_mapping)
+                    ).tolist()
+                )
 
-                    if isinstance(row, dict):
-                        for api_key, normalized_name in repo_custom_mapping.items():
-                            field_data = row.get(api_key)
+                # Garantir alinhamento dos índices
+                custom_fields_flattened_df.index = df.index
 
-                            if field_data is None:
-                                custom_data[normalized_name] = None
-                                continue
-
-                            if isinstance(field_data, dict):
-                                for sub_key, sub_val in field_data.items():
-                                    new_col_name = f"{normalized_name}_{sub_key}"
-                                    custom_data[new_col_name] = sub_val
-                            else:
-                                custom_data[normalized_name] = field_data
-
-                    return pd.Series(custom_data)
-
-                # Aplicar em 'custom_fields_parsed' que não são nulos
-                custom_df = df.loc[df['custom_fields_parsed'].notna(), 'custom_fields_parsed'].apply(extract_custom)
-
-                # Concatenar com segurança, evitando duplicatas de índice se houver
-                if not custom_df.empty:
-                     transformed_df = pd.concat([transformed_df, custom_df.reindex(transformed_df.index)], axis=1)
+                # Juntar com o DataFrame transformado
+                transformed_df = pd.concat([transformed_df, custom_fields_flattened_df], axis=1)
 
 
             # --- Selecionar e Ordenar Colunas Finais ---
