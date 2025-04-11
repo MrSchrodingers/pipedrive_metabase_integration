@@ -283,17 +283,6 @@ class ETLService:
             # Selecionar apenas as colunas finais na ordem definida
             transformed_df = transformed_df[ordered_final_columns]
             
-            # Identificar colunas com todos os valores nulos (sem excluir as base obrigatórias)
-            nullable_cols = transformed_df.columns[
-                transformed_df.isnull().all()
-                & ~transformed_df.columns.isin(REPO_BASE_COLUMNS) 
-            ]
-
-            if len(nullable_cols) > 0:
-                transform_log.warning("Removing columns with all null values", dropped_columns=nullable_cols.tolist())
-
-            transformed_df.drop(columns=nullable_cols, inplace=True)
-
             # --- Limpeza Final ---
             transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
             validated_records = transformed_df.to_dict('records')
