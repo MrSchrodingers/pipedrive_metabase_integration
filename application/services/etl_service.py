@@ -138,7 +138,7 @@ class ETLService:
         try:
             df = pd.DataFrame(valid_input_for_df)
             
-            transform_log.debug("DataFrame",
+            transform_log.warning("DataFrame",
                                 shape=df.shape,
                                 columns=list(df.columns),
                                 dtypes=dict(df.dtypes),
