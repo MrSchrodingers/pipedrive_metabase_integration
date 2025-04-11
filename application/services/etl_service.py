@@ -10,7 +10,7 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.column_utils import flatten_custom_fields, normalize_column_name
+from application.utils.column_utils import flatten_custom_fields, normalize_column_name, robust_address_parsing
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
@@ -247,6 +247,12 @@ class ETLService:
                 transformed_df = pd.concat([transformed_df, custom_fields_flattened_df], axis=1)
 
 
+            transformed_df = robust_address_parsing(
+                df=transformed_df,
+                address_col="endereco_completo_combinado_de_local_do_acidente",
+                prefix="local_do_acidente"
+            )
+            
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
             existing_cols_in_df = list(transformed_df.columns)
@@ -264,6 +270,7 @@ class ETLService:
             extra_cols = [col for col in existing_cols_in_df if col not in ordered_final_columns and col not in missing_final_cols]
             if extra_cols:
                 transform_log.warning("Columns created during transform but not in final repository schema (will be dropped)", extra_columns=extra_cols)
+                
 
             # Selecionar apenas as colunas finais na ordem definida
             transformed_df = transformed_df[ordered_final_columns]
