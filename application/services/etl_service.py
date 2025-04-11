@@ -399,7 +399,7 @@ class ETLService:
                             load_start = time.monotonic()
                             try:
                                 with db_operation_duration_hist.labels(operation='upsert').time():
-                                    batch_log.debug("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
+                                    batch_log.warning("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
                                     self.repository.save_data_upsert(validated_batch)
                                 current_loaded_count = len(validated_batch)
                                 total_loaded += current_loaded_count
@@ -446,7 +446,7 @@ class ETLService:
                         load_start = time.monotonic()
                         try:
                             with db_operation_duration_hist.labels(operation='upsert').time():
-                                batch_log.debug("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
+                                batch_log.warning("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
                                 self.repository.save_data_upsert(validated_batch)
                             current_loaded_count = len(validated_batch)
                             total_loaded += current_loaded_count
