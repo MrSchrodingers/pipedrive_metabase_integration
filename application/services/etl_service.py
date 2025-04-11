@@ -225,6 +225,14 @@ class ETLService:
             )
             transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
+            
+            for i, record in enumerate(valid_input_for_df[:3]):  # só uns 3 para exemplo
+                    endereço_obj = record.get('custom_fields', {}).get('f4f3fac909ab6066662a9ceb9b40d3149172d319')
+                    transform_log.warning(
+                        "DEBUG: Conteúdo real no custom field 'local_do_acidente'",
+                        record_id=record.get('id'),
+                        conteudo=endereço_obj
+                    )
 
             # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping
