@@ -281,8 +281,24 @@ class ETLService:
                 transform_log.error("Failed to update schema with new columns", error=str(schema_err), exc_info=True)        
 
             # Selecionar apenas as colunas finais na ordem definida
-            transformed_df = transformed_df[ordered_final_columns]
-            
+            # Remover colunas extras que não estão no schema atual
+            transformed_df = transformed_df[[col for col in ordered_final_columns if col in transformed_df.columns]]
+
+            # Verifica se há colunas extras após concatenação com campos customizados
+            current_cols = set(transformed_df.columns)
+            defined_cols = set(final_columns)
+            extra_cols = current_cols - defined_cols
+
+            if extra_cols:
+                transform_log.warning("Detected extra columns not present in schema. Will add dynamically.", extra_columns=list(extra_cols))
+                try:
+                    self.repository.add_columns_to_main_table(list(extra_cols), inferred_from_df=transformed_df)
+                    # Recarregar o schema após adicionar
+                    final_columns = self.repository._get_all_columns()
+                    ordered_final_columns = [col for col in final_columns if col in transformed_df.columns]
+                except Exception as schema_err:
+                    transform_log.error("Failed to dynamically update schema with extra columns", error=str(schema_err), exc_info=True)
+
             # --- Limpeza Final ---
             transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
             validated_records = transformed_df.to_dict('records')
