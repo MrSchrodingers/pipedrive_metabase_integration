@@ -39,9 +39,20 @@ def flatten_custom_fields(custom_fields: Dict[str, Any], repo_custom_mapping: Di
             continue
 
         if isinstance(field_data, dict):
-            flattened_subfields = pd.json_normalize(field_data, sep='_').to_dict(orient='records')[0]
-            for sub_key, sub_val in flattened_subfields.items():
-                flat_dict[f"{normalized_name}_{sub_key}"] = sub_val
+            if 'formatted_address' in field_data:
+                flat_dict[normalized_name] = field_data.get('formatted_address')
+                flat_dict[f"{normalized_name}_street_number"] = field_data.get('street_number')
+                flat_dict[f"{normalized_name}_route"] = field_data.get('route')
+                flat_dict[f"{normalized_name}_sublocality"] = field_data.get('sublocality')
+                flat_dict[f"{normalized_name}_locality"] = field_data.get('locality')
+                flat_dict[f"{normalized_name}_admin_area_level_1"] = field_data.get('admin_area_level_1')
+                flat_dict[f"{normalized_name}_admin_area_level_2"] = field_data.get('admin_area_level_2')
+                flat_dict[f"{normalized_name}_country"] = field_data.get('country')
+                flat_dict[f"{normalized_name}_postal_code"] = field_data.get('postal_code')
+            else:
+                flattened_subfields = pd.json_normalize(field_data, sep='_').to_dict(orient='records')[0]
+                for sub_key, sub_val in flattened_subfields.items():
+                    flat_dict[f"{normalized_name}_{sub_key}"] = sub_val
         else:
             flat_dict[normalized_name] = field_data
 
