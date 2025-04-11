@@ -229,9 +229,11 @@ class ETLService:
             # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping
             if repo_custom_mapping and 'custom_fields' in df.columns:
+                transform_log.warning("Flatten Custom Fields", custom_fields_after_flatten=repo_custom_mapping)
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
                     lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
                 )
+                transform_log.warning("Flatten Custom Fields", custom_fields_before_flatten=repo_custom_mapping)
 
                 custom_fields_flattened_df = pd.json_normalize(
                     df['custom_fields_parsed'].apply(
