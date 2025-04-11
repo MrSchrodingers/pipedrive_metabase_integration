@@ -270,7 +270,12 @@ class ETLService:
             extra_cols = [col for col in existing_cols_in_df if col not in ordered_final_columns and col not in missing_final_cols]
             if extra_cols:
                 transform_log.warning("Columns created during transform but not in final repository schema (will be dropped)", extra_columns=extra_cols)
-                
+            try:
+                if extra_cols:
+                    transform_log.info("Attempting to update schema dynamically for extra columns detected.", columns=extra_cols)
+                    self.repository.add_columns_to_main_table(extra_cols, inferred_from_df=transformed_df)
+            except Exception as schema_err:
+                transform_log.error("Failed to update schema with new columns", error=str(schema_err), exc_info=True)        
 
             # Selecionar apenas as colunas finais na ordem definida
             transformed_df = transformed_df[ordered_final_columns]

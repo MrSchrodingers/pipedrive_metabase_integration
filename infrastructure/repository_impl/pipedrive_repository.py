@@ -1060,6 +1060,42 @@ class PipedriveRepository(DataRepositoryPort):
         finally:
             if conn:
                 self.db_pool.release_connection(conn)
+                
+    def add_columns_to_main_table(self, new_columns: List[str], inferred_from_df: pd.DataFrame) -> None:
+        """Tenta adicionar dinamicamente colunas novas no schema da tabela principal, inferindo o tipo via DataFrame."""
+        conn = None
+        added_columns = []
+        try:
+            conn = self.db_pool.get_connection()
+            with conn.cursor() as cur:
+                for col in new_columns:
+                    sample_value = inferred_from_df[col].dropna().iloc[0] if not inferred_from_df[col].dropna().empty else None
+
+                    inferred_type = "TEXT"
+                    if isinstance(sample_value, (int, float, np.integer, np.floating)):
+                        inferred_type = "NUMERIC(18, 4)"
+                    elif isinstance(sample_value, (datetime, pd.Timestamp)):
+                        inferred_type = "TIMESTAMPTZ"
+                    elif isinstance(sample_value, bool):
+                        inferred_type = "BOOLEAN"
+
+                    alter_sql = sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ctype}").format(
+                        table=sql.Identifier(self.TABLE_NAME),
+                        col=sql.Identifier(col),
+                        ctype=sql.SQL(inferred_type)
+                    )
+                    cur.execute(alter_sql)
+                    added_columns.append((col, inferred_type))
+                conn.commit()
+                self.log.info("Added new columns to main table dynamically.", columns=added_columns)
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            self.log.error("Failed to add columns dynamically", error=str(e), columns=new_columns, exc_info=True)
+            raise
+        finally:
+            if conn:
+                self.db_pool.release_connection(conn)
 
     def get_configuration(self, config_key: str) -> Any:
         query = sql.SQL("SELECT value FROM configuration WHERE key = %s LIMIT 1;")
