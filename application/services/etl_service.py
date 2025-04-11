@@ -52,7 +52,9 @@ class ETLService:
              self._stage_id_to_normalized_name_map = {}
         
     def run_etl_with_data(self, data: List[Dict], batch_size: int, flow_type: str) -> Dict:
-        self.log.warning("Running ETL with provided data for test/experiment.", data_size=len(data), batch_size=batch_size)
+        self.log.warning("Running ETL with provided data for test/experiment.",
+                         data_size=len(data),
+                         batch_size=batch_size)
         original_fetch = self.client.fetch_all_deals_stream
         original_process_batch_size = self.process_batch_size
 
@@ -60,10 +62,14 @@ class ETLService:
             self.log.debug("Using mocked deal stream for test run.")
             yield from data
 
+        # Substituir método de busca e batch_size
         self.client.fetch_all_deals_stream = mock_stream
         self.process_batch_size = batch_size
+
+        # Executar ETL
         result = self.run_etl(flow_type=flow_type)
 
+        # Restaurar estado original
         self.client.fetch_all_deals_stream = original_fetch
         self.process_batch_size = original_process_batch_size
         self.log.info("Restored original deal stream and batch size after test run.")
@@ -103,7 +109,13 @@ class ETLService:
         batch: List[Dict],
         flow_type: str
     ) -> Tuple[List[Dict], int]:
-        """Valida, transforma e enriquece um batch de deals usando lookups no DB."""
+        """
+        Valida, transforma e enriquece um batch de deals usando lookups no DB.
+        Retorna:
+        - Lista de registros validados/transformados
+        - Contagem total de falhas no batch
+        """
+
         start_time = time.monotonic()
         pydantic_failed_count = 0
         original_count = len(batch)
@@ -112,45 +124,71 @@ class ETLService:
         if not batch:
             return [], 0
 
-        # 1. Validação com Pydantic
+        # ----------------------------------------------------------------------
+        # 1) Validar via Pydantic (DealSchema)
+        # ----------------------------------------------------------------------
         valid_input_for_df = []
         for i, record in enumerate(batch):
             record_id = record.get("id", f"no-id-index-{i}")
             try:
-                DealSchema.model_validate(record)
+                DealSchema.model_validate(record)  # Validação Pydantic
                 valid_input_for_df.append(record)
             except ValidationError as e:
                 pydantic_failed_count += 1
                 errors_summary = [f"{err['loc']}: {err['msg']}" for err in e.errors()]
-                transform_log.warning("Pydantic validation failed", record_id=record_id, errors=errors_summary)
+                transform_log.warning(
+                    "Pydantic validation failed",
+                    record_id=record_id,
+                    errors=errors_summary
+                )
             except Exception as e:
                 pydantic_failed_count += 1
-                transform_log.error("Unexpected error during Pydantic validation", record_id=record_id, exc_info=True)
+                transform_log.error(
+                    "Unexpected error during Pydantic validation",
+                    record_id=record_id,
+                    exc_info=True
+                )
 
         pydantic_valid_count = len(valid_input_for_df)
-        transform_log = transform_log.bind(pydantic_valid_count=pydantic_valid_count, pydantic_failed_count=pydantic_failed_count)
+        transform_log = transform_log.bind(
+            pydantic_valid_count=pydantic_valid_count,
+            pydantic_failed_count=pydantic_failed_count
+        )
 
         if not valid_input_for_df:
             transform_log.warning("No records passed Pydantic validation in the batch.")
             return [], pydantic_failed_count
 
-        # 2. DataFrame e transformação
+        # ----------------------------------------------------------------------
+        # 2) Transformação via DataFrame
+        # ----------------------------------------------------------------------
         validated_records: List[Dict] = []
         transform_failed_count = 0
         db_lookup_maps = {}
-        
+
         try:
+            # Cria DF a partir dos registros já validados
             df = pd.DataFrame(valid_input_for_df)
-            initial_columns = list(df.columns) # Guardar colunas originais se precisar
 
-            # --- PASSO DE EXPLOSÃO JSON ---
+            # ------------------------------------------------------------------
+            # a) Explodir JSON de endereço (top-level) caso exista
+            #    Se o endereço estiver dentro de custom_fields, tratar mais abaixo
+            # ------------------------------------------------------------------
             df = force_explode_address_field_optimized(
-                df, source_column="local_do_acidente", prefix="local_do_acidente"
+                df,
+                source_column="local_do_acidente",
+                prefix="local_do_acidente"
             )
             df = force_explode_address_field_optimized(
-                df, source_column="proposta_endereco", prefix="proposta_endereco"
+                df,
+                source_column="proposta_endereco",
+                prefix="proposta_endereco"
             )
 
+            # ------------------------------------------------------------------
+            # b) Explodir JSON de moeda (top-level) caso exista
+            #    Se a moeda estiver dentro de custom_fields, tratar mais abaixo
+            # ------------------------------------------------------------------
             currency_fields_to_explode = [
                 ("value", "value", "currency"),
                 ("acv", "acv", "moeda_de_acv"),
@@ -161,29 +199,79 @@ class ETLService:
                 ("fipe_veiculo_3o", "fipe_veiculo_3o", "moeda_de_fipe_veiculo_3o"),
             ]
             for source_col, value_dest_col, currency_dest_col in currency_fields_to_explode:
-                if source_col in df.columns and source_col != value_dest_col:
-                     df = force_explode_currency_field_optimized(
-                         df, source_column=source_col,
-                         value_col=value_dest_col,
-                         currency_col=currency_dest_col
-                     )
-                elif source_col == value_dest_col and source_col in df.columns:
-                     if value_dest_col not in df.columns: df[value_dest_col] = np.nan
-                     if currency_dest_col not in df.columns: df[currency_dest_col] = None
-                     if not pd.api.types.is_numeric_dtype(df[value_dest_col]):
-                         df[value_dest_col] = pd.to_numeric(df[value_dest_col], errors='coerce')
-                     df[currency_dest_col] = df[currency_dest_col].fillna("BRL")
+                if source_col in df.columns:
+                    df = force_explode_currency_field_optimized(
+                        df,
+                        source_column=source_col,
+                        value_col=value_dest_col,
+                        currency_col=currency_dest_col
+                    )
 
-            # --- Coletar IDs para Lookup no DB (Usar 'df' já com colunas explodidas) ---
+            # ------------------------------------------------------------------
+            # c) Campos customizados (JSON)
+            #    Caso address/currency venham dentro de custom_fields, precisamos
+            #    tratar dentro de 'extract_custom' ou após extrair as colunas.
+            # ------------------------------------------------------------------
+            repo_custom_mapping = self.repository.custom_field_mapping
+            if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
+                df['custom_fields_parsed'] = df['custom_fields'].apply(
+                    lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
+                )
+
+                def extract_custom(row):
+                    custom_data = {}
+                    if isinstance(row, dict):
+                        for api_key, normalized_name in repo_custom_mapping.items():
+                            field_data = row.get(api_key)
+                            custom_data[normalized_name] = (
+                                field_data if field_data is not None else None
+                            )
+
+                    # Garante que todos os campos mapeados existam, mesmo se faltarem
+                    for normalized_name in repo_custom_mapping.values():
+                        if normalized_name not in custom_data:
+                            custom_data[normalized_name] = None
+
+                    return pd.Series(custom_data)
+
+                custom_df = df.loc[df['custom_fields_parsed'].notna(), 'custom_fields_parsed'].apply(extract_custom)
+
+                for col in custom_df.columns:
+                    sample_values = custom_df[col].dropna().head(10)
+                    if sample_values.apply(lambda x: isinstance(x, dict) and 'currency' in x and 'value' in x).any():
+                        custom_df = force_explode_currency_field_optimized(
+                            custom_df,
+                            source_column=col,
+                            value_col=col,
+                            currency_col=f"moeda_de_{col}"
+                        )
+                    elif sample_values.apply(lambda x: isinstance(x, dict) and 'formatted_address' in x).any():
+                        custom_df = force_explode_address_field_optimized(
+                            custom_df,
+                            source_column=col,
+                            prefix=col
+                        )
+
+                if not custom_df.empty:
+                    df = pd.concat([df, custom_df.reindex(df.index)], axis=1)
+
+            # ------------------------------------------------------------------
+            # d) Coletar IDs para Lookup no DB
+            # ------------------------------------------------------------------
             user_ids_needed = set(df['creator_user_id'].dropna().unique())
-            df["owner_id_parsed"] = df["owner_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
+            df["owner_id_parsed"] = df["owner_id"].apply(
+                lambda x: x.get("id") if isinstance(x, dict) else x
+            ).astype('Int64')
             owner_ids_needed = set(df['owner_id_parsed'].dropna().unique())
-            user_ids_needed.update(owner_ids_needed) 
+            user_ids_needed.update(owner_ids_needed)
 
             person_ids_needed = set(df['person_id'].dropna().unique())
             stage_ids_needed = set(df['stage_id'].dropna().unique())
             pipeline_ids_needed = set(df['pipeline_id'].dropna().unique())
-            df["org_id_parsed"] = df["org_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
+
+            df["org_id_parsed"] = df["org_id"].apply(
+                lambda x: x.get("id") if isinstance(x, dict) else x
+            ).astype('Int64')
             org_ids_needed = set(df['org_id_parsed'].dropna().unique())
 
             transform_log.debug(
@@ -195,7 +283,9 @@ class ETLService:
                 orgs=len(org_ids_needed)
             )
 
-            # --- Buscar Mapas do DB para o Batch ---
+            # ------------------------------------------------------------------
+            # e) Buscar Mapas do DB
+            # ------------------------------------------------------------------
             lookup_start_time = time.monotonic()
             try:
                 db_lookup_maps = self.repository.get_lookup_maps_for_batch(
@@ -218,142 +308,143 @@ class ETLService:
             except Exception as lookup_err:
                 transform_log.error(
                     "Failed to fetch lookups from DB for batch",
-                    error=str(lookup_err), exc_info=True
+                    error=str(lookup_err),
+                    exc_info=True
                 )
-                db_lookup_maps = {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
+                db_lookup_maps = {
+                    'users': {},
+                    'persons': {},
+                    'stages': {},
+                    'pipelines': {},
+                    'orgs': {}
+                }
 
-            # --- Transformações usando os mapas buscados do DB ---
+            # ------------------------------------------------------------------
+            # f) Montar DataFrame final transformado (transformed_df)
+            # ------------------------------------------------------------------
             transformed_df = pd.DataFrame()
+
             transformed_df["id"] = df["id"].astype(str)
             transformed_df["titulo"] = df["title"].fillna("").astype(str)
-            status_map = {"won": "Ganho", "lost": "Perdido", "open": "Em aberto", "deleted": "Deletado"}
-            transformed_df["status"] = df["status"].fillna("").astype(str).map(status_map).fillna(df["status"])
+
+            status_map = {
+                "won": "Ganho",
+                "lost": "Perdido",
+                "open": "Em aberto",
+                "deleted": "Deletado"
+            }
+            transformed_df["status"] = (
+                df["status"]
+                .fillna("")
+                .astype(str)
+                .map(status_map)
+                .fillna(df["status"])
+            )
             transformed_df["currency"] = df["currency"].fillna("USD").astype(str)
             transformed_df["value"] = pd.to_numeric(df["value"], errors='coerce').fillna(0.0)
             transformed_df["add_time"] = pd.to_datetime(df["add_time"], errors='coerce', utc=True)
             transformed_df["update_time"] = pd.to_datetime(df["update_time"], errors='coerce', utc=True)
 
-            # Mapeamentos usando db_lookup_maps
+            # Mapeamentos via db_lookup_maps
             batch_user_map = db_lookup_maps.get('users', {})
             batch_person_map = db_lookup_maps.get('persons', {})
             batch_stage_map = db_lookup_maps.get('stages', {})
             batch_pipeline_map = db_lookup_maps.get('pipelines', {})
             batch_org_map = db_lookup_maps.get('orgs', {})
 
-            transformed_df["creator_user_id"] = pd.to_numeric(df["creator_user_id"], errors='coerce').astype('Int64')
-            transformed_df['creator_user_name'] = transformed_df['creator_user_id'].map(batch_user_map).fillna(UNKNOWN_NAME)
+            transformed_df["creator_user_id"] = pd.to_numeric(
+                df["creator_user_id"],
+                errors='coerce'
+            ).astype('Int64')
+            transformed_df["creator_user_name"] = transformed_df["creator_user_id"].map(batch_user_map).fillna(UNKNOWN_NAME)
 
             transformed_df["stage_id"] = pd.to_numeric(df["stage_id"], errors='coerce').astype('Int64')
-            transformed_df['stage_name'] = transformed_df['stage_id'].map(batch_stage_map).fillna(UNKNOWN_NAME)
+            transformed_df["stage_name"] = transformed_df["stage_id"].map(batch_stage_map).fillna(UNKNOWN_NAME)
 
             transformed_df["pipeline_id"] = pd.to_numeric(df["pipeline_id"], errors='coerce').astype('Int64')
-            transformed_df['pipeline_name'] = transformed_df['pipeline_id'].map(batch_pipeline_map).fillna(UNKNOWN_NAME)
+            transformed_df["pipeline_name"] = transformed_df["pipeline_id"].map(batch_pipeline_map).fillna(UNKNOWN_NAME)
 
             transformed_df["person_id"] = pd.to_numeric(df["person_id"], errors='coerce').astype('Int64')
-            transformed_df['person_name'] = transformed_df['person_id'].map(batch_person_map).fillna(UNKNOWN_NAME)
+            transformed_df["person_name"] = transformed_df["person_id"].map(batch_person_map).fillna(UNKNOWN_NAME)
 
-            # Usar owner_id_parsed que já foi calculado
-            transformed_df["owner_id"] = df["owner_id_parsed"] 
+            # Owner e Org
+            transformed_df["owner_id"] = df["owner_id_parsed"]
             transformed_df["owner_name"] = transformed_df["owner_id"].map(batch_user_map).fillna(UNKNOWN_NAME)
 
-            # Usar org_id_parsed que já foi calculado
             transformed_df["org_id"] = df["org_id_parsed"]
-            transformed_df['org_name'] = transformed_df['org_id'].map(batch_org_map).fillna(UNKNOWN_NAME)
+            transformed_df["org_name"] = transformed_df["org_id"].map(batch_org_map).fillna(UNKNOWN_NAME)
 
-            # --- Outros campos base ---
+            # Outros campos base
             transformed_df["lost_reason"] = df["lost_reason"].fillna("").astype(str)
             transformed_df["visible_to"] = df["visible_to"].fillna("").astype(str)
             transformed_df["close_time"] = pd.to_datetime(df["close_time"], errors='coerce', utc=True)
             transformed_df["won_time"] = pd.to_datetime(df["won_time"], errors='coerce', utc=True)
             transformed_df["lost_time"] = pd.to_datetime(df["lost_time"], errors='coerce', utc=True)
             transformed_df["first_won_time"] = pd.to_datetime(
-                df.get("first_won_time", pd.NaT), errors='coerce', utc=True
+                df.get("first_won_time", pd.NaT),
+                errors='coerce',
+                utc=True
             )
-            transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
+            transformed_df["expected_close_date"] = pd.to_datetime(
+                df["expected_close_date"],
+                errors='coerce'
+            ).dt.date
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
 
-            # --- Campos Customizados ---
-            if "local_do_acidente" in df.columns:
-                df["endereco_formatado_de_local_do_acidente"] = df["local_do_acidente"].apply(
-                    lambda x: x.get("formatted_address") if isinstance(x, dict) else None
-                )
-            else:
-                transform_log.warning(
-                    "Coluna 'local_do_acidente' ausente no batch, pulando campo derivado endereco_formatado_de_local_do_acidente."
-                )
-
+            # Exemplo de pipeline_stage
             if "pipeline_name" in transformed_df.columns and "stage_name" in transformed_df.columns:
                 transformed_df["pipeline_stage"] = transformed_df.apply(
                     lambda row: f"{row['pipeline_name']} - {row['stage_name']}"
                     if pd.notna(row["pipeline_name"]) and pd.notna(row["stage_name"])
                     else None,
-                    axis=1,
+                    axis=1
                 )
             else:
                 transform_log.warning(
-                    "Colunas 'pipeline_name' ou 'stage_name' ausentes, pulando derivação de 'pipeline_stage'."
+                    "Colunas 'pipeline_name' ou 'stage_name' ausentes, pulando 'pipeline_stage'."
                 )
-
-            repo_custom_mapping = self.repository.custom_field_mapping
-            if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
-                df['custom_fields_parsed'] = df['custom_fields'].apply(
-                    lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
-                )
-
-                def extract_custom(row):
-                    custom_data = {}
-                    if isinstance(row, dict):
-                        for api_key, normalized_name in repo_custom_mapping.items():
-                            field_data = row.get(api_key)
-                            if field_data is not None:
-                                custom_data[normalized_name] = field_data
-                            else:
-                                custom_data[normalized_name] = None
-                    for normalized_name in repo_custom_mapping.values():
-                        if normalized_name not in custom_data:
-                            custom_data[normalized_name] = None
-                    return pd.Series(custom_data)
-
-                custom_df = df.loc[df['custom_fields_parsed'].notna(), 'custom_fields_parsed'].apply(extract_custom)
-
-                if not custom_df.empty:
-                    transformed_df = pd.concat(
-                        [transformed_df, custom_df.reindex(transformed_df.index)],
-                        axis=1
-                    )
-
 
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
             existing_cols_in_df = list(transformed_df.columns)
             ordered_final_columns = [col for col in final_columns if col in existing_cols_in_df]
 
-            # Adicionar colunas que faltam no DataFrame com None
+            # Adicionar colunas que faltam com None
             missing_final_cols = [col for col in final_columns if col not in existing_cols_in_df]
             if missing_final_cols:
-                transform_log.debug("Columns defined in repository are missing in transformed DataFrame, adding as None.", missing_columns=missing_final_cols)
+                transform_log.debug(
+                    "Columns defined in repository are missing in transformed DataFrame, adding as None.",
+                    missing_columns=missing_final_cols
+                )
                 for col in missing_final_cols:
-                    transformed_df[col] = None 
+                    transformed_df[col] = None
                 ordered_final_columns.extend(missing_final_cols)
 
             # Verificar colunas extras
-            extra_cols = [col for col in existing_cols_in_df if col not in ordered_final_columns and col not in missing_final_cols]
+            extra_cols = [
+                col
+                for col in existing_cols_in_df
+                if col not in ordered_final_columns and col not in missing_final_cols
+            ]
             if extra_cols:
-                transform_log.warning("Columns created during transform but not in final repository schema (will be dropped)", extra_columns=extra_cols)
+                transform_log.warning(
+                    "Columns created during transform but not in final repository schema (will be dropped)",
+                    extra_columns=extra_cols
+                )
 
-            # Selecionar apenas as colunas finais na ordem definida
+            # Somente as colunas finais na ordem
             transformed_df = transformed_df[ordered_final_columns]
 
-            # --- Limpeza Final ---
+            # Limpeza final
             transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
             validated_records = transformed_df.to_dict('records')
             transform_succeeded_count = len(validated_records)
-            transform_failed_count = pydantic_valid_count - transform_succeeded_count 
+            transform_failed_count = pydantic_valid_count - transform_succeeded_count
 
-        except AttributeError as ae: 
+        except AttributeError as ae:
             transform_failed_count = pydantic_valid_count
             transform_log.error("Pandas transformation failed due to AttributeError", error=str(ae), exc_info=True)
-            raise ae 
+            raise ae
         except KeyError as ke:
             transform_failed_count = pydantic_valid_count
             transform_log.error("Pandas transformation failed due to KeyError", error=str(ke), exc_info=True)
@@ -361,11 +452,13 @@ class ETLService:
         except Exception as e:
             transform_failed_count = pydantic_valid_count
             transform_log.error("Pandas transformation/enrichment failed", exc_info=True)
-            raise e 
+            raise e
 
+        # Métricas e logging de finalização do batch
         duration = time.monotonic() - start_time
         transform_duration_summary.labels(flow_type=flow_type).observe(duration)
         total_failed_in_batch = pydantic_failed_count + transform_failed_count
+
         transform_log.info(
             "Batch transformation completed",
             validated_count=len(validated_records),
@@ -373,6 +466,7 @@ class ETLService:
             total_failed_in_batch=total_failed_in_batch,
             duration_sec=f"{duration:.3f}s"
         )
+
         return validated_records, total_failed_in_batch
 
     def _track_resources(self, flow_type: str) -> float:
