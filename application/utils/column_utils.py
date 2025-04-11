@@ -83,19 +83,21 @@ def robust_address_parsing(df: pd.DataFrame, address_col: str, prefix: str) -> p
     df[f"{prefix}_latitude"] = parsed_addresses.apply(lambda x: x.get('latitude') if x else None)
     df[f"{prefix}_longitude"] = parsed_addresses.apply(lambda x: x.get('longitude') if x else None)
     df[f"{prefix}_completo"] = parsed_addresses.apply(lambda x: x.get('full_address') if x else None)
-    
-    def extract_component(components, comp_type):
-        if not components or 'address' not in components:
+
+    def extract_component_safe(x, comp_type):
+        if not x or 'components' not in x:
             return None
-        return components['address'].get(comp_type)
-    
-    df[f"{prefix}_cidade"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'city') or extract_component(x['components'], 'town'))
-    df[f"{prefix}_bairro"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'suburb'))
-    df[f"{prefix}_estado"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'state'))
-    df[f"{prefix}_pais"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'country'))
-    df[f"{prefix}_cep"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'postcode'))
-    df[f"{prefix}_rua"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'road'))
-    df[f"{prefix}_numero"] = parsed_addresses.apply(lambda x: extract_component(x['components'], 'house_number'))
+        return x['components']['address'].get(comp_type) if x['components'].get('address') else None
+
+    df[f"{prefix}_cidade"] = parsed_addresses.apply(
+        lambda x: extract_component_safe(x, 'city') or extract_component_safe(x, 'town')
+    )
+    df[f"{prefix}_bairro"] = parsed_addresses.apply(lambda x: extract_component_safe(x, 'suburb'))
+    df[f"{prefix}_estado"] = parsed_addresses.apply(lambda x: extract_component_safe(x, 'state'))
+    df[f"{prefix}_pais"] = parsed_addresses.apply(lambda x: extract_component_safe(x, 'country'))
+    df[f"{prefix}_cep"] = parsed_addresses.apply(lambda x: extract_component_safe(x, 'postcode'))
+    df[f"{prefix}_rua"] = parsed_addresses.apply(lambda x: extract_component_safe(x, 'road'))
+    df[f"{prefix}_numero"] = parsed_addresses.apply(lambda x: extract_component_safe(x, 'house_number'))
 
     return df
 
