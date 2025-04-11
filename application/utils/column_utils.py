@@ -42,18 +42,9 @@ def flatten_custom_fields(custom_fields: Dict[str, Any], repo_custom_mapping: Di
             continue
 
         if isinstance(field_data, dict):
-            if 'formatted_address' in field_data:
-                # <--- É aqui que “estouramos” cada pedacinho do endereço
-                flat_dict[normalized_name] = field_data.get('formatted_address')
-                for address_key, address_suffix in ADDRESS_FIELDS.items():
-                    column_name = f"{normalized_name}_{address_suffix}" if address_suffix else normalized_name
-                    flat_dict[column_name] = field_data.get(address_key)
-            else:
-                # caso seja outro tipo de dict, não propriamente um endereço
-                flattened_subfields = pd.json_normalize(field_data, sep='_').to_dict(orient='records')[0]
-                for sub_key, sub_val in flattened_subfields.items():
-                    flat_dict[f"{normalized_name}_{sub_key}"] = sub_val
-        else:
-            flat_dict[normalized_name] = field_data
+            flat_dict[normalized_name] = field_data.get('formatted_address') or field_data.get('value')
+            for address_key, address_suffix in ADDRESS_FIELDS.items():
+                column_name = f"{normalized_name}_{address_suffix}"
+                flat_dict[column_name] = field_data.get(address_key)
 
     return flat_dict
