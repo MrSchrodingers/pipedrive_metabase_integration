@@ -10,7 +10,11 @@ import json
 from pydantic import ValidationError
 from tenacity import RetryError
 
-from application.utils.column_utils import explode_address_field, explode_currency_field, normalize_column_name
+from application.utils.column_utils import (
+    safe_explode_address_field,
+    safe_explode_currency_field,
+    normalize_column_name
+)
 from infrastructure.monitoring.metrics import (
     etl_counter, etl_failure_counter, etl_duration_hist,
     records_processed_counter, memory_usage_gauge, batch_size_gauge,
@@ -138,17 +142,26 @@ class ETLService:
         try:
             df = pd.DataFrame(valid_input_for_df)
             
-            # --- Explodir campos de endereço e moeda para colunas separadas ---
+            # --- Explodir campos de endereço via "safe" (fallback)
             if "local_do_acidente" in df.columns:
-                df = explode_address_field(df, source_column="local_do_acidente", prefix="local_do_acidente")
+                df = safe_explode_address_field(
+                    df, source_column="local_do_acidente", prefix="local_do_acidente"
+                )
             else:
-                transform_log.warning("Coluna 'local_do_acidente' ausente no batch, pulando explode_address_field.")
+                transform_log.warning(
+                    "Coluna 'local_do_acidente' ausente no batch, pulando safe_explode_address_field."
+                )
 
             if "proposta_endereco" in df.columns:
-                df = explode_address_field(df, source_column="proposta_endereco", prefix="proposta_endereco")
+                df = safe_explode_address_field(
+                    df, source_column="proposta_endereco", prefix="proposta_endereco"
+                )
             else:
-                transform_log.warning("Coluna 'proposta_endereco' ausente no batch, pulando explode_address_field.")
+                transform_log.warning(
+                    "Coluna 'proposta_endereco' ausente no batch, pulando safe_explode_address_field."
+                )
 
+            # --- Explodir campos de moeda via "safe" (fallback)
             for col, value_col, currency_col in [
                 ("acv", "acv", "moeda_de_acv"),
                 ("arr", "arr", "moeda_de_arr"),
@@ -158,9 +171,15 @@ class ETLService:
                 ("fipe_veiculo_3o", "fipe_veiculo_3o", "moeda_de_fipe_veiculo_3o"),
             ]:
                 if col in df.columns:
-                    df = explode_currency_field(df, source_column=col, value_col=value_col, currency_col=currency_col)
+                    df = safe_explode_currency_field(
+                        df, source_column=col,
+                        value_col=value_col,
+                        currency_col=currency_col
+                    )
                 else:
-                    transform_log.warning(f"Coluna '{col}' ausente no batch, pulando explode_currency_field.")
+                    transform_log.warning(
+                        f"Coluna '{col}' ausente no batch, pulando safe_explode_currency_field."
+                    )
 
             # --- Coletar IDs para Lookup no DB ---
             user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
@@ -174,37 +193,47 @@ class ETLService:
             df["org_id_parsed"] = df["org_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
             org_ids_needed = set(df['org_id_parsed'].dropna().unique())
 
-
-            transform_log.debug("IDs collected for DB lookup",
-                                users=len(user_ids_needed), persons=len(person_ids_needed),
-                                stages=len(stage_ids_needed), pipelines=len(pipeline_ids_needed),
-                                orgs=len(org_ids_needed))
+            transform_log.debug(
+                "IDs collected for DB lookup",
+                users=len(user_ids_needed),
+                persons=len(person_ids_needed),
+                stages=len(stage_ids_needed),
+                pipelines=len(pipeline_ids_needed),
+                orgs=len(org_ids_needed)
+            )
 
             # --- Buscar Mapas do DB para o Batch ---
             lookup_start_time = time.monotonic()
             try:
                 db_lookup_maps = self.repository.get_lookup_maps_for_batch(
-                    user_ids={int(uid) for uid in user_ids_needed if pd.notna(uid)}, 
+                    user_ids={int(uid) for uid in user_ids_needed if pd.notna(uid)},
                     person_ids={int(pid) for pid in person_ids_needed if pd.notna(pid)},
                     stage_ids={int(sid) for sid in stage_ids_needed if pd.notna(sid)},
                     pipeline_ids={int(plid) for plid in pipeline_ids_needed if pd.notna(plid)},
                     org_ids={int(oid) for oid in org_ids_needed if pd.notna(oid)}
                 )
                 lookup_duration = time.monotonic() - lookup_start_time
-                transform_log.info("Fetched batch lookups from DB", duration_sec=f"{lookup_duration:.3f}s",
-                                   users=len(db_lookup_maps.get('users', {})), persons=len(db_lookup_maps.get('persons', {})),
-                                   stages=len(db_lookup_maps.get('stages', {})), pipelines=len(db_lookup_maps.get('pipelines', {})),
-                                   orgs=len(db_lookup_maps.get('orgs', {})))
+                transform_log.info(
+                    "Fetched batch lookups from DB",
+                    duration_sec=f"{lookup_duration:.3f}s",
+                    users=len(db_lookup_maps.get('users', {})),
+                    persons=len(db_lookup_maps.get('persons', {})),
+                    stages=len(db_lookup_maps.get('stages', {})),
+                    pipelines=len(db_lookup_maps.get('pipelines', {})),
+                    orgs=len(db_lookup_maps.get('orgs', {}))
+                )
             except Exception as lookup_err:
-                 transform_log.error("Failed to fetch lookups from DB for batch", error=str(lookup_err), exc_info=True)
-                 db_lookup_maps = {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
-
+                transform_log.error(
+                    "Failed to fetch lookups from DB for batch",
+                    error=str(lookup_err), exc_info=True
+                )
+                db_lookup_maps = {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
 
             # --- Transformações usando os mapas buscados do DB ---
             transformed_df = pd.DataFrame()
             transformed_df["id"] = df["id"].astype(str)
             transformed_df["titulo"] = df["title"].fillna("").astype(str)
-            status_map = { "won": "Ganho", "lost": "Perdido", "open": "Em aberto", "deleted": "Deletado" }
+            status_map = {"won": "Ganho", "lost": "Perdido", "open": "Em aberto", "deleted": "Deletado"}
             transformed_df["status"] = df["status"].fillna("").astype(str).map(status_map).fillna(df["status"])
             transformed_df["currency"] = df["currency"].fillna("USD").astype(str)
             transformed_df["value"] = pd.to_numeric(df["value"], errors='coerce').fillna(0.0)
@@ -214,7 +243,7 @@ class ETLService:
             # Mapeamentos usando db_lookup_maps
             batch_user_map = db_lookup_maps.get('users', {})
             batch_person_map = db_lookup_maps.get('persons', {})
-            batch_stage_map = db_lookup_maps.get('stages', {}) 
+            batch_stage_map = db_lookup_maps.get('stages', {})
             batch_pipeline_map = db_lookup_maps.get('pipelines', {})
             batch_org_map = db_lookup_maps.get('orgs', {})
 
@@ -235,7 +264,7 @@ class ETLService:
             transformed_df["owner_name"] = transformed_df["owner_id"].map(batch_user_map).fillna(UNKNOWN_NAME)
 
             # Usar org_id_parsed que já foi calculado
-            transformed_df["org_id"] = df["org_id_parsed"] 
+            transformed_df["org_id"] = df["org_id_parsed"]
             transformed_df['org_name'] = transformed_df['org_id'].map(batch_org_map).fillna(UNKNOWN_NAME)
 
             # --- Outros campos base ---
@@ -256,7 +285,10 @@ class ETLService:
                     lambda x: x.get("formatted_address") if isinstance(x, dict) else None
                 )
             else:
-                transform_log.warning("Coluna 'local_do_acidente' ausente no batch, pulando campo derivado endereco_formatado_de_local_do_acidente.")
+                transform_log.warning(
+                    "Coluna 'local_do_acidente' ausente no batch, pulando campo derivado endereco_formatado_de_local_do_acidente."
+                )
+
             if "pipeline_name" in transformed_df.columns and "stage_name" in transformed_df.columns:
                 transformed_df["pipeline_stage"] = transformed_df.apply(
                     lambda row: f"{row['pipeline_name']} - {row['stage_name']}"
@@ -265,7 +297,10 @@ class ETLService:
                     axis=1,
                 )
             else:
-                transform_log.warning("Colunas 'pipeline_name' ou 'stage_name' ausentes, pulando derivação de 'pipeline_stage'.")
+                transform_log.warning(
+                    "Colunas 'pipeline_name' ou 'stage_name' ausentes, pulando derivação de 'pipeline_stage'."
+                )
+
             repo_custom_mapping = self.repository.custom_field_mapping
             if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
@@ -281,18 +316,18 @@ class ETLService:
                                 custom_data[normalized_name] = field_data
                             else:
                                 custom_data[normalized_name] = None
-                    # Garantir todas as colunas customizadas mapeadas
                     for normalized_name in repo_custom_mapping.values():
                         if normalized_name not in custom_data:
                             custom_data[normalized_name] = None
                     return pd.Series(custom_data)
 
-                # Aplicar em 'custom_fields_parsed' que não são nulos
                 custom_df = df.loc[df['custom_fields_parsed'].notna(), 'custom_fields_parsed'].apply(extract_custom)
 
-                # Concatenar com segurança, evitando duplicatas de índice se houver
                 if not custom_df.empty:
-                     transformed_df = pd.concat([transformed_df, custom_df.reindex(transformed_df.index)], axis=1)
+                    transformed_df = pd.concat(
+                        [transformed_df, custom_df.reindex(transformed_df.index)],
+                        axis=1
+                    )
 
 
             # --- Selecionar e Ordenar Colunas Finais ---
