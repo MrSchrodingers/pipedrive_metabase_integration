@@ -139,8 +139,15 @@ class ETLService:
             df = pd.DataFrame(valid_input_for_df)
             
             # --- Explodir campos de endereço e moeda para colunas separadas ---
-            df = explode_address_field(df, source_column="local_do_acidente", prefix="local_do_acidente")
-            df = explode_address_field(df, source_column="proposta_endereco", prefix="proposta_endereco")
+            if "local_do_acidente" in df.columns:
+                df = explode_address_field(df, source_column="local_do_acidente", prefix="local_do_acidente")
+            else:
+                transform_log.warning("Coluna 'local_do_acidente' ausente no batch, pulando explode_address_field.")
+
+            if "proposta_endereco" in df.columns:
+                df = explode_address_field(df, source_column="proposta_endereco", prefix="proposta_endereco")
+            else:
+                transform_log.warning("Coluna 'proposta_endereco' ausente no batch, pulando explode_address_field.")
 
             df = explode_currency_field(df, source_column="acv", value_col="acv", currency_col="moeda_de_acv")
             df = explode_currency_field(df, source_column="arr", value_col="arr", currency_col="moeda_de_arr")
