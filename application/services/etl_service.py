@@ -27,27 +27,6 @@ log = structlog.get_logger()
 
 STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_"
 
-ADDRESS_COMPONENT_MAP = {
-    'route': 'nome_da_rua',
-    'street_number': 'numero_da_casa',
-    'locality': 'cidade_municipio_vila_localidade',
-    'admin_area_level_1': 'estado',
-    'postal_code': 'cep_codigo_postal',
-    'country': 'pais',
-    'sublocality': 'distrito_sub_localidade',
-    'formatted_address': 'endereco_completo_combinado',
-    'latitude': 'latitude',
-    'longitude': 'longitude'
-}
-
-ADDRESS_HEURISTIC_KEYS = {'locality', 'country', 'formatted_address', 'route', 'postal_code'}
-
-MONETARY_COMPONENT_MAP = {
-    'value': 'valor',
-    'currency': 'moeda'
-}
-MONETARY_HEURISTIC_KEYS = {'value', 'currency'}
-
 class ETLService:
     def __init__(
         self,
@@ -59,16 +38,7 @@ class ETLService:
         self.repository = repository
         self.process_batch_size = batch_size 
         self.log = log.bind(service="ETLService")
-        
-        try:
-            self._repo_custom_mapping_cache = self.repository.custom_field_mapping
-            if not self._repo_custom_mapping_cache:
-                 self.log.warning("Repository custom field mapping is empty or None.")
-                 self._repo_custom_mapping_cache = {}
-        except Exception as repo_map_err:
-             self.log.error("Failed to get custom field mapping from repository during init.", error=str(repo_map_err), exc_info=True)
-             self._repo_custom_mapping_cache = {} 
-        
+
         try:
              self._all_stages_details = self.client.fetch_all_stages_details()
              self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
@@ -257,89 +227,39 @@ class ETLService:
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
 
             # --- Campos Customizados ---
-            repo_custom_mapping = self._repo_custom_mapping_cache 
-
+            repo_custom_mapping = self.repository.custom_field_mapping
             if repo_custom_mapping and 'custom_fields' in df.columns and not df['custom_fields'].isnull().all():
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
                     lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
                 )
 
-                def extract_custom(row_custom_fields_dict):
+                def extract_custom(row):
                     custom_data = {}
 
-                    if isinstance(row_custom_fields_dict, dict):
-                        for api_key, field_data in row_custom_fields_dict.items():
-                            normalized_name = repo_custom_mapping.get(api_key)
-                            if not normalized_name:
+                    if isinstance(row, dict):
+                        for api_key, normalized_name in repo_custom_mapping.items():
+                            field_data = row.get(api_key)
+
+                            if field_data is None:
+                                custom_data[normalized_name] = None
                                 continue
 
                             if isinstance(field_data, dict):
-                                field_keys = set(field_data.keys())
-
-                                # 1. Heurística para Endereço: verifica se contém chaves comuns de endereço
-                                if len(field_keys.intersection(ADDRESS_HEURISTIC_KEYS)) >= 2 :
-                                    for json_key, component_role in ADDRESS_COMPONENT_MAP.items():
-                                        target_col = f"{component_role}_de_{normalized_name}"
-                                        # ----------------------------------------------------
-                                        value = field_data.get(json_key)
-                                        custom_data[target_col] = value
-
-                                # 2. Heurística para Monetário: verifica se contém APENAS value e currency (ou quase)
-                                elif field_keys == MONETARY_HEURISTIC_KEYS:
-                                    for json_key, component_role in MONETARY_COMPONENT_MAP.items():
-                                        value = field_data.get(json_key)
-                                        if component_role == 'valor':
-                                            target_col = normalized_name 
-                                        elif component_role == 'moeda':
-                                            target_col = f"moeda_de_{normalized_name}"
-                                        else:
-                                            continue
-                                        custom_data[target_col] = value
-
-                                # 3. Outros JSONs: É um dicionário, mas não bateu nas heurísticas anteriores
-                                else:
-                                    transform_log.debug("JSON field did not match known heuristics, storing as raw dict.",
-                                                        normalized_name=normalized_name, api_key=api_key)
-                                    # Opção: Armazenar o dict/JSON bruto na coluna original
-                                    custom_data[normalized_name] = field_data
-                                    # Ou tentar achatar genericamente (cria colunas extras!)
-                                    # for sub_key, sub_val in field_data.items():
-                                    #     generic_col_name = f"{normalized_name}_{sub_key}"
-                                    #     custom_data[generic_col_name] = sub_val
-
-                            # 4. Não é um dicionário: Tratar como valor simples
+                                for sub_key, sub_val in field_data.items():
+                                    new_col_name = f"{normalized_name}_{sub_key}"
+                                    custom_data[new_col_name] = sub_val
                             else:
                                 custom_data[normalized_name] = field_data
 
-                    all_possible_target_cols = set(custom_data.keys()) 
-                    for api_key, norm_name in repo_custom_mapping.items():
-                         if norm_name not in all_possible_target_cols:
-                              all_possible_target_cols.add(norm_name)
-                         for role in ADDRESS_COMPONENT_MAP.values():
-                              all_possible_target_cols.add(f"{role}_de_{norm_name}")
-                         all_possible_target_cols.add(f"moeda_de_{norm_name}")
+                    return pd.Series(custom_data)
 
-                    final_row_data = {col: custom_data.get(col) for col in all_possible_target_cols}
+                # Aplicar em 'custom_fields_parsed' que não são nulos
+                custom_df = df.loc[df['custom_fields_parsed'].notna(), 'custom_fields_parsed'].apply(extract_custom)
 
-                    return pd.Series(final_row_data) 
-
-                custom_df = df['custom_fields_parsed'].apply(extract_custom)
-
+                # Concatenar com segurança, evitando duplicatas de índice se houver
                 if not custom_df.empty:
-                     monetary_value_cols = [
-                         norm_name for norm_name in repo_custom_mapping.values()
-                         if norm_name in custom_df.columns
-                     ]
-                     lat_lon_cols = [
-                         col for col in custom_df.columns
-                         if col.startswith('latitude_de_') or col.startswith('longitude_de_')
-                     ]
-
-                     for col in monetary_value_cols + lat_lon_cols:
-                         if col in custom_df.columns: 
-                            custom_df[col] = pd.to_numeric(custom_df[col], errors='coerce')
-
                      transformed_df = pd.concat([transformed_df, custom_df.reindex(transformed_df.index)], axis=1)
+
 
             # --- Selecionar e Ordenar Colunas Finais ---
             final_columns = self.repository._get_all_columns()
