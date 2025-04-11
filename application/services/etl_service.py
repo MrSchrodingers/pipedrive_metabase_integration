@@ -138,14 +138,6 @@ class ETLService:
         try:
             df = pd.DataFrame(valid_input_for_df)
             
-            transform_log.warning("DataFrame",
-                                shape=df.shape,
-                                columns=list(df.columns),
-                                dtypes=dict(df.dtypes),
-                                head=df.head(5).to_dict(orient='records'),
-                                tail=df.tail(5).to_dict(orient='records')
-                                )
-
             # --- Coletar IDs para Lookup no DB ---
             user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
             df["owner_id_parsed"] = df["owner_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
@@ -243,17 +235,22 @@ class ETLService:
 
                 def extract_custom(row):
                     custom_data = {}
+
                     if isinstance(row, dict):
                         for api_key, normalized_name in repo_custom_mapping.items():
                             field_data = row.get(api_key)
-                            if field_data is not None:
-                                custom_data[normalized_name] = field_data
-                            else:
+
+                            if field_data is None:
                                 custom_data[normalized_name] = None
-                    # Garantir todas as colunas customizadas mapeadas
-                    for normalized_name in repo_custom_mapping.values():
-                        if normalized_name not in custom_data:
-                            custom_data[normalized_name] = None
+                                continue
+
+                            if isinstance(field_data, dict):
+                                for sub_key, sub_val in field_data.items():
+                                    new_col_name = f"{normalized_name}_{sub_key}"
+                                    custom_data[new_col_name] = sub_val
+                            else:
+                                custom_data[normalized_name] = field_data
+
                     return pd.Series(custom_data)
 
                 # Aplicar em 'custom_fields_parsed' que não são nulos
