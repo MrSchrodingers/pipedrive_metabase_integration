@@ -232,14 +232,16 @@ class ETLService:
                 df['custom_fields_parsed'] = df['custom_fields'].apply(
                     lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
                 )
+                
+                transform_log.warning("Raw Custom Fields", raw_custom_fields=df['custom_fields_parsed'])
+
 
                 def extract_custom(row):
+                    transform_log.warning("Rawsssssss", raw_custom_fields=row)
                     custom_data = {}
-
                     if isinstance(row, dict):
                         for api_key, normalized_name in repo_custom_mapping.items():
                             field_data = row.get(api_key)
-
                             if field_data is None:
                                 custom_data[normalized_name] = None
                                 continue
@@ -250,7 +252,6 @@ class ETLService:
                                     custom_data[new_col_name] = sub_val
                             else:
                                 custom_data[normalized_name] = field_data
-
                     return pd.Series(custom_data)
 
                 # Aplicar em 'custom_fields_parsed' que não são nulos
