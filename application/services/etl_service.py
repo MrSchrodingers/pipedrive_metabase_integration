@@ -11,8 +11,8 @@ from pydantic import ValidationError
 from tenacity import RetryError
 
 from application.utils.column_utils import (
-    force_explode_address_field,
-    force_explode_currency_field,
+    force_explode_address_field_optimized,
+    force_explode_currency_field_optimized,
     normalize_column_name
 )
 from infrastructure.monitoring.metrics import (
@@ -141,48 +141,41 @@ class ETLService:
         
         try:
             df = pd.DataFrame(valid_input_for_df)
-            
-            # --- Explodir campos de endereço via "safe" (fallback)
-            if "local_do_acidente" in df.columns:
-                df = force_explode_address_field(
-                    df, source_column="local_do_acidente", prefix="local_do_acidente"
-                )
-            else:
-                transform_log.warning(
-                    "Coluna 'local_do_acidente' ausente no batch, pulando force_explode_address_field."
-                )
+            initial_columns = list(df.columns) # Guardar colunas originais se precisar
 
-            if "proposta_endereco" in df.columns:
-                df = force_explode_address_field(
-                    df, source_column="proposta_endereco", prefix="proposta_endereco"
-                )
-            else:
-                transform_log.warning(
-                    "Coluna 'proposta_endereco' ausente no batch, pulando force_explode_address_field."
-                )
+            # --- PASSO DE EXPLOSÃO JSON ---
+            df = force_explode_address_field_optimized(
+                df, source_column="local_do_acidente", prefix="local_do_acidente"
+            )
+            df = force_explode_address_field_optimized(
+                df, source_column="proposta_endereco", prefix="proposta_endereco"
+            )
 
-            # --- Explodir campos de moeda via "safe" (fallback)
-            for col, value_col, currency_col in [
+            currency_fields_to_explode = [
+                ("value", "value", "currency"),
                 ("acv", "acv", "moeda_de_acv"),
                 ("arr", "arr", "moeda_de_arr"),
                 ("valor_atualizado", "valor_atualizado", "moeda_de_valor_atualizado"),
                 ("valor_original", "valor_original", "moeda_de_valor_original"),
                 ("mrr", "mrr", "moeda_de_mrr"),
                 ("fipe_veiculo_3o", "fipe_veiculo_3o", "moeda_de_fipe_veiculo_3o"),
-            ]:
-                if col in df.columns:
-                    df = force_explode_currency_field(
-                        df, source_column=col,
-                        value_col=value_col,
-                        currency_col=currency_col
-                    )
-                else:
-                    transform_log.warning(
-                        f"Coluna '{col}' ausente no batch, pulando force_explode_currency_field."
-                    )
+            ]
+            for source_col, value_dest_col, currency_dest_col in currency_fields_to_explode:
+                if source_col in df.columns and source_col != value_dest_col:
+                     df = force_explode_currency_field_optimized(
+                         df, source_column=source_col,
+                         value_col=value_dest_col,
+                         currency_col=currency_dest_col
+                     )
+                elif source_col == value_dest_col and source_col in df.columns:
+                     if value_dest_col not in df.columns: df[value_dest_col] = np.nan
+                     if currency_dest_col not in df.columns: df[currency_dest_col] = None
+                     if not pd.api.types.is_numeric_dtype(df[value_dest_col]):
+                         df[value_dest_col] = pd.to_numeric(df[value_dest_col], errors='coerce')
+                     df[currency_dest_col] = df[currency_dest_col].fillna("BRL")
 
-            # --- Coletar IDs para Lookup no DB ---
-            user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
+            # --- Coletar IDs para Lookup no DB (Usar 'df' já com colunas explodidas) ---
+            user_ids_needed = set(df['creator_user_id'].dropna().unique())
             df["owner_id_parsed"] = df["owner_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
             owner_ids_needed = set(df['owner_id_parsed'].dropna().unique())
             user_ids_needed.update(owner_ids_needed) 
