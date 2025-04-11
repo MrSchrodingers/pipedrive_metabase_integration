@@ -268,8 +268,9 @@ class ETLService:
             missing_final_cols = [col for col in final_columns if col not in existing_cols_in_df]
             if missing_final_cols:
                 transform_log.debug("Columns defined in repository are missing in transformed DataFrame, adding as None.", missing_columns=missing_final_cols)
-                for col in missing_final_cols:
-                    transformed_df[col] = None 
+                missing_df = pd.DataFrame({col: [None] * len(transformed_df) for col in missing_final_cols})
+                transformed_df = pd.concat([transformed_df, missing_df], axis=1)
+                transformed_df = transformed_df.copy()
                 ordered_final_columns.extend(missing_final_cols)
 
             # Verificar colunas extras
