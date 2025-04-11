@@ -93,7 +93,7 @@ main_sync_deployment = Deployment.build_from_flow(
     description="Sincroniza deals recentes do Pipedrive com o banco de dados, usando lookups no DB.",
     version="2.0", 
     tags=["pipedrive", "sync", "etl", "main"],
-    schedule=IntervalSchedule(interval=timedelta(minutes=30)), 
+    # schedule=IntervalSchedule(interval=timedelta(minutes=30)), 
     parameters={}, 
     infrastructure=k8s_job_infra,
     work_queue_name=WORK_QUEUE_NAME,
