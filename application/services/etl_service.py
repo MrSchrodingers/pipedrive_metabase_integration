@@ -137,6 +137,14 @@ class ETLService:
         
         try:
             df = pd.DataFrame(valid_input_for_df)
+            
+            transform_log.debug("DataFrame",
+                                shape=df.shape,
+                                columns=list(df.columns),
+                                dtypes=dict(df.dtypes),
+                                head=df.head(5).to_dict(orient='records'),
+                                tail=df.tail(5).to_dict(orient='records')
+                                )
 
             # --- Coletar IDs para Lookup no DB ---
             user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
