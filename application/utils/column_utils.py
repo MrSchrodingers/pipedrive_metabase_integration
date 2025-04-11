@@ -21,6 +21,7 @@ def normalize_column_name(name: str) -> str:
 
 def flatten_custom_fields(custom_fields: Dict[str, Any], repo_custom_mapping: Dict[str, str]) -> Dict[str, Any]:
     flat_dict = {}
+
     ADDRESS_FIELDS = {
         'formatted_address': '',
         'street_number': 'numero_da_casa',
@@ -37,14 +38,17 @@ def flatten_custom_fields(custom_fields: Dict[str, Any], repo_custom_mapping: Di
 
     for api_key, normalized_name in repo_custom_mapping.items():
         field_data = custom_fields.get(api_key)
-        if field_data is None:
-            flat_dict[normalized_name] = None
-            continue
+
+        flat_dict[normalized_name] = None
 
         if isinstance(field_data, dict):
-            flat_dict[normalized_name] = field_data.get('formatted_address') or field_data.get('value')
+            base_val = field_data.get('formatted_address') or field_data.get('value')
+            flat_dict[normalized_name] = base_val
+
             for address_key, address_suffix in ADDRESS_FIELDS.items():
-                column_name = f"{normalized_name}_{address_suffix}"
-                flat_dict[column_name] = field_data.get(address_key)
+                subcol_name = f"{normalized_name}_{address_suffix}"
+                flat_dict[subcol_name] = field_data.get(address_key)
+        else:
+            flat_dict[normalized_name] = field_data
 
     return flat_dict
