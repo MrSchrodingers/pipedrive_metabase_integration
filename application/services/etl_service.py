@@ -600,7 +600,7 @@ class ETLService:
                 stage_changes = []
                 for entry in changelog:
                     if entry.get('field_key') == 'stage_id':
-                        ts = self._parse_changelog_timestamp(entry.get('log_time') or entry.get('timestamp'))
+                        ts = self._parse_changelog_timestamp(entry.get('time'))
                         new_stage_id = entry.get('new_value')
                         if ts and new_stage_id is not None:
                             try:
@@ -646,11 +646,22 @@ class ETLService:
                 run_log.error("Error processing changelog for deal", deal_id=deal_id_str, exc_info=True)
 
         if updates_to_apply:
-            run_log.info(f"Applying {len(updates_to_apply)} stage history updates.")
+            run_log.info(
+                    "Preparando para chamar update_stage_history",
+                    total_updates=len(updates_to_apply)
+                )
             try:
                 self.repository.update_stage_history(updates_to_apply)
+                run_log.info(
+                    "update_stage_history foi chamado com sucesso",
+                    affected_deals=processed_deals_count
+                )
             except Exception as db_err:
-                run_log.error("Failed during database update for stage history", error=str(db_err), exc_info=True)
+                run_log.error(
+                    "Falha durante a atualização do histórico de stages",
+                    error=str(db_err),
+                    exc_info=True
+                )
                 return {
                     "status": "error",
                     "message": f"Database update failed: {db_err}",
@@ -660,7 +671,10 @@ class ETLService:
                     "processing_errors": processing_errors
                 }
         else:
-            run_log.info("No stage history updates to apply for this batch.")
+            run_log.info(
+                "Nenhuma mudança de stage para aplicar no backfill",
+                processed_deals=processed_deals_count
+            )
 
         duration = time.monotonic() - run_start_time
         status = "success" if api_errors == 0 and processing_errors == 0 else "partial_success"
