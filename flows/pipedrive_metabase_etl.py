@@ -9,7 +9,7 @@ import logging
 from prefect.tasks import task_input_hash
 
 from application.services.etl_service import ETLService
-from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
+from flows.utils.flows_utils import backfill_cache_key_from_deal_ids, calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
