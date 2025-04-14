@@ -327,7 +327,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
 
     flow_log = base_flow_log
-    flow_log.info(f"Starting {flow_run_ctx.flow.name} flow...")
+    flow_log.info(f"Starting {flow_run_ctx.name} flow...")
 
     flow_log.info(f"Starting stage history backfill flow. Daily limit: {daily_deal_limit}, DB batch size: {db_batch_size}")
     flow_type = "backfill"
