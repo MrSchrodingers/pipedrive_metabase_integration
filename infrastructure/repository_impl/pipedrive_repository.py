@@ -942,7 +942,6 @@ class PipedriveRepository(DataRepositoryPort):
                         UPDATE {table} AS t SET
                             {column_to_update} = v.ts
                         FROM (VALUES %s) AS v(id, ts)
-                        WHERE t.id = v.id AND t.{column_to_update} IS NULL;
                     """).format(
                         table=table_id,
                         column_to_update=column_id
