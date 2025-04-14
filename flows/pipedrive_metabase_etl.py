@@ -206,7 +206,7 @@ def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dic
     batch_size_gauge.labels(flow_type=flow_type).set(len(deal_ids))
     logger.info(f"Running backfill for {len(deal_ids)} deals.")
     result = etl_service.run_retroactive_backfill(deal_ids)
-    logger.info("Backfill batch finished.", **result)
+    logger.info("Backfill batch finished.", extra=result)
     return result
 
 @flow(
