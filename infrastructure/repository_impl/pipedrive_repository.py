@@ -25,7 +25,21 @@ BASE_COLUMNS = [
     "owner_id", "owner_name", "status", "value", "currency",
     "add_time", "update_time",
     "org_id", "org_name", "lost_reason", "visible_to", "close_time", "won_time", "lost_time",
-    "first_won_time", "expected_close_date", "probability", "label"
+    "first_won_time", "expected_close_date", "probability", "label",
+    "local_do_acidente",
+    "local_do_acidente_numero_da_casa",
+    "local_do_acidente_nome_da_rua",
+    "local_do_acidente_distrito_sub_localidade",
+    "local_do_acidente_cidade_municipio_vila_localidade",
+    "local_do_acidente_estado",
+    "local_do_acidente_regiao",
+    "local_do_acidente_pais",
+    "local_do_acidente_cep_codigo_postal",
+    "local_do_acidente_latitude",
+    "local_do_acidente_longitude",
+    "proposta_endereco",
+    "proposta_endereco_numero_da_casa",
+    "proposta_endereco_nome_da_rua",
 ]
 
 NAME_COLUMNS_TO_PRESERVE = {
@@ -43,7 +57,21 @@ COLUMN_TYPES = {
     "org_id": "INTEGER", "org_name": "TEXT", "lost_reason": "TEXT", "visible_to": "TEXT", 
     "close_time": "TIMESTAMPTZ", "won_time": "TIMESTAMPTZ", "lost_time": "TIMESTAMPTZ",
     "first_won_time": "TIMESTAMPTZ", "expected_close_date": "DATE", "probability": "NUMERIC(5,2)",
-    "label": "TEXT",
+    "label": "TEXT",  "local_do_acidente": "TEXT",
+    "local_do_acidente_numero_da_casa": "TEXT",
+    "local_do_acidente_nome_da_rua": "TEXT",
+    "local_do_acidente_distrito_sub_localidade": "TEXT",
+    "local_do_acidente_cidade_municipio_vila_localidade": "TEXT",
+    "local_do_acidente_estado": "TEXT",
+    "local_do_acidente_regiao": "TEXT",
+    "local_do_acidente_pais": "TEXT",
+    "local_do_acidente_cep_codigo_postal": "TEXT",
+    "local_do_acidente_latitude": "TEXT", # Ou NUMERIC se preferir
+    "local_do_acidente_longitude": "TEXT", # Ou NUMERIC se preferir
+     # --- Tipos para Endereço de Proposta ---
+    "proposta_endereco": "TEXT",
+    "proposta_endereco_numero_da_casa": "TEXT",
+    "proposta_endereco_nome_da_rua": "TEXT",
 }
 
 # Nomes das tabelas de lookup persistentes
