@@ -3,8 +3,7 @@ import random
 from typing import Any, Dict, List
 import pandas as pd
 import structlog
-from prefect.tasks import task_input_hash
-from prefect.context import TaskRunContext
+from prefect.utilities.hashing import hash_objects
 
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
 
@@ -158,10 +157,20 @@ def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 
         logger.error("Failed to get optimal batch size from config. Using default.", error=str(e), default_size=default_size, exc_info=True)
         return default_size
     
-def cache_key_ignore_unserializables(ctx: TaskRunContext, inputs: dict):
-    """Remove objetos não serializáveis como `repository`, `etl_service`, etc."""
-    safe_inputs = {
-        k: v for k, v in inputs.items()
-        if k not in {"etl_service", "repository"}
-    }
-    return task_input_hash(safe_inputs, context=ctx)
+def backfill_cache_key_from_deal_ids(_, arguments: Dict[str, Any]) -> str:
+    """
+    Gera uma chave de cache para a task de backfill baseada
+    apenas na lista de deal_ids.
+    """
+    deal_ids = arguments.get("deal_ids") 
+    if deal_ids is None:
+        return hash_objects("no_deal_ids")
+
+    if isinstance(deal_ids, list):
+        try:
+            sorted_deal_ids = sorted(list(deal_ids))
+            return hash_objects(sorted_deal_ids)
+        except TypeError:
+             return hash_objects(deal_ids)
+    else:
+        return hash_objects(deal_ids)
