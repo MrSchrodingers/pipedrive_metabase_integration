@@ -161,4 +161,4 @@ def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 
 def cache_key_ignore_etl_service(_, inputs):
     safe_inputs = dict(inputs)
     safe_inputs.pop("etl_service", None)
-    return task_input_hash(safe_inputs)
+    return task_input_hash(inputs=safe_inputs, arguments=safe_inputs)
