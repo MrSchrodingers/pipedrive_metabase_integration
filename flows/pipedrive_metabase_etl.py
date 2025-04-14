@@ -1,3 +1,4 @@
+from datetime import timedelta
 import time
 from typing import Any, Dict, List, Tuple
 import pandas as pd
@@ -7,7 +8,7 @@ from prefect.blocks.system import JSON
 import logging
 
 from application.services.etl_service import ETLService
-from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
+from flows.utils.flows_utils import cache_key_ignore_etl_service, calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
@@ -187,7 +188,14 @@ def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
          backfill_deals_remaining_gauge.set(-1) 
     return count
 
-@task(name="Run Backfill Batch Task", retries=DEFAULT_TASK_RETRIES, retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, log_prints=True)
+@task(
+      name="Run Backfill Batch Task", 
+      retries=DEFAULT_TASK_RETRIES, 
+      retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, 
+      log_prints=True, 
+      cache_key_fn=cache_key_ignore_etl_service, 
+      cache_expiration=timedelta(hours=1)
+      )
 def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
     """Executa o backfill para um lote de IDs."""
     logger = get_run_logger()
