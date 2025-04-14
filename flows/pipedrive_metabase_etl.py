@@ -193,7 +193,7 @@ def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
     name="Run Backfill Batch Task", 
     retries=DEFAULT_TASK_RETRIES, 
     retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, 
-    cache_key_fn=lambda _, deal_ids: task_input_hash(deal_ids),
+    cache_key_fn=backfill_cache_key_from_deal_ids,
     cache_expiration=timedelta(days=1),
     log_prints=True,
 )
