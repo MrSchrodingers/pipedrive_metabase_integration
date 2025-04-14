@@ -158,7 +158,7 @@ def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 
         logger.error("Failed to get optimal batch size from config. Using default.", error=str(e), default_size=default_size, exc_info=True)
         return default_size
     
-def cache_key_ignore_etl_service(inputs, **kwargs):
-   safe_inputs = dict(inputs)
-   safe_inputs.pop("etl_service", None)
-   return task_input_hash(safe_inputs, **kwargs)
+def cache_key_ignore_etl_service(_, inputs):
+    safe_inputs = dict(inputs)
+    safe_inputs.pop("etl_service", None)
+    return task_input_hash(safe_inputs)
