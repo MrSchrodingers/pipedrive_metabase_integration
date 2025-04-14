@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import numpy as np
 import structlog
+from prefect.tasks import task_input_hash
 
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
 
@@ -156,3 +157,8 @@ def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 
     except Exception as e:
         logger.error("Failed to get optimal batch size from config. Using default.", error=str(e), default_size=default_size, exc_info=True)
         return default_size
+    
+def cache_key_ignore_etl_service(inputs, **kwargs):
+   safe_inputs = dict(inputs)
+   safe_inputs.pop("etl_service", None)
+   return task_input_hash(safe_inputs, **kwargs)
