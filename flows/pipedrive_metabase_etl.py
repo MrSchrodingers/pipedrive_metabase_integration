@@ -6,6 +6,7 @@ import structlog
 from prefect import flow, get_run_logger, task, context
 from prefect.blocks.system import JSON
 import logging
+from prefect.tasks import task_input_hash
 
 from application.services.etl_service import ETLService
 from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
@@ -192,8 +193,9 @@ def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
     name="Run Backfill Batch Task", 
     retries=DEFAULT_TASK_RETRIES, 
     retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, 
+    cache_key_fn=lambda _, deal_ids: task_input_hash(deal_ids),
+    cache_expiration=timedelta(days=1),
     log_prints=True,
-    cache_policy=None
 )
 def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
     """Executa o backfill para um lote de IDs."""
