@@ -192,9 +192,8 @@ def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
     name="Run Backfill Batch Task", 
     retries=DEFAULT_TASK_RETRIES, 
     retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, 
-    log_prints=True, 
-    cache_key_fn=cache_key_ignore_etl_service, 
-    cache_expiration=timedelta(hours=1)
+    log_prints=True,
+    cache_policy=None
 )
 def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
     """Executa o backfill para um lote de IDs."""
