@@ -4,7 +4,8 @@ from typing import Any, Dict, List
 import pandas as pd
 import numpy as np
 import structlog
-from prefect.tasks import task_input_hash
+import hashlib
+import json
 
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
 
@@ -158,7 +159,16 @@ def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 
         logger.error("Failed to get optimal batch size from config. Using default.", error=str(e), default_size=default_size, exc_info=True)
         return default_size
     
+import hashlib
+import json
+
 def cache_key_ignore_etl_service(_, inputs):
     safe_inputs = dict(inputs)
     safe_inputs.pop("etl_service", None)
-    return task_input_hash(inputs=safe_inputs, arguments=safe_inputs)
+
+    try:
+        serialized = json.dumps(safe_inputs, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    except Exception as e:
+        raise ValueError(f"Failed to generate cache key: {e}")
+
