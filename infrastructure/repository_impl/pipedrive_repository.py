@@ -144,64 +144,35 @@ class PipedriveRepository(DataRepositoryPort):
 
     def _prepare_stage_history_columns(self, all_stages: List[Dict], existing_custom_cols: Set[str]) -> Dict[str, str]:
         """
-        Prepara as colunas de histórico de stage, garantindo que nomes duplicados
-        sejam diferenciados com sufixos (_2, _3, etc.).
+        Prepara colunas de histórico de stage, garantindo 1 coluna por stage_id.
+        Nome da coluna = moved_to_stage_<normalized_name>_<stage_id> (para garantir unicidade).
         """
         stage_history_cols = {}
-        if not all_stages:
-            self.log.warning("Nenhum detalhe de stage fornecido; não é possível criar colunas de histórico.")
-            return {}
-
         base_col_set = set(BASE_COLUMNS)
-        forbidden_column_names = base_col_set.union(existing_custom_cols)
-        normalized_name_counts: Dict[str, int] = {}
+        forbidden_names = base_col_set.union(existing_custom_cols)
 
         for stage in all_stages:
-            stage_id = stage.get('id')
-            stage_name = stage.get('name')
+            stage_id = stage.get("id")
+            stage_name = stage.get("name")
+
             if not stage_id or not stage_name:
-                self.log.warning("Entrada de stage sem id ou nome", stage_data=stage)
+                self.log.warning("Stage inválido (sem id ou nome)", stage_data=stage)
                 continue
 
-            try:
-                normalized_stage_name = normalize_column_name(stage_name)
-                if not normalized_stage_name or normalized_stage_name == "_invalid_normalized_name":
-                    self.log.warning("Falha ao normalizar stage", stage_id=stage_id, stage_name=stage_name)
-                    continue
+            normalized = normalize_column_name(stage_name)
+            if not normalized or normalized == "_invalid_normalized_name":
+                self.log.warning("Stage com nome inválido ao normalizar", stage_id=stage_id, stage_name=stage_name)
+                continue
 
-                base_column_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized_stage_name}"
-                final_column_name = base_column_name
+            final_col_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized}_{stage_id}"
 
-                count = normalized_name_counts.get(normalized_stage_name, 0)
-                if count > 0:
-                    suffix = count + 1
-                    final_column_name = f"{base_column_name}_{suffix}"
-                    self.log.warning(
-                        "Nome de stage duplicado detectado; usando sufixo.",
-                        stage_id=stage_id, stage_name=stage_name,
-                        normalized_name=normalized_stage_name,
-                        original_column=base_column_name,
-                        final_column=final_column_name
-                    )
+            if final_col_name in forbidden_names:
+                self.log.error("Nome de coluna de histórico colide com base/custom", final_col_name=final_col_name)
+                continue
 
-                normalized_name_counts[normalized_stage_name] = count + 1
+            stage_history_cols[final_col_name] = "TIMESTAMPTZ"
 
-                if final_column_name in forbidden_column_names:
-                    self.log.error(
-                        "CRÍTICO: Nome final de coluna de histórico conflita com coluna base/custom; ignorando.",
-                        stage_id=stage_id, stage_name=stage_name,
-                        normalized_name=normalized_stage_name,
-                        final_column=final_column_name
-                    )
-                    normalized_name_counts[normalized_stage_name] -= 1
-                    continue
-
-                stage_history_cols[final_column_name] = "TIMESTAMPTZ"
-
-            except Exception as e:
-                self.log.error("Erro ao processar stage para coluna de histórico", stage_data=stage, error=str(e))
-
-        self.log.info("Colunas de histórico preparadas", count=len(stage_history_cols))
+        self.log.info("Colunas de histórico geradas (sem sufixos duplicados)", count=len(stage_history_cols))
         return stage_history_cols
 
     def _get_all_columns(self) -> List[str]:
@@ -1135,6 +1106,51 @@ class PipedriveRepository(DataRepositoryPort):
             if result:
                 return result[0]
             raise KeyError(f"Configuration key '{config_key}' not found")
+        
+    def fetch_all_stages_from_db_table(self) -> List[Dict]:
+        """Busca todos os stages da tabela de lookup persistente."""
+        conn = None
+        log_ctx = self.log.bind(lookup_table=self.LOOKUP_TABLE_STAGES)
+        try:
+            conn = self.db_pool.get_connection()
+            with conn.cursor(cursor_factory=extras.DictCursor) as cur:
+                query = sql.SQL("SELECT stage_id, stage_name, normalized_name FROM {} ORDER BY stage_id").format(
+                    sql.Identifier(self.LOOKUP_TABLE_STAGES)
+                )
+                cur.execute(query)
+                stages_from_db = [dict(row) for row in cur.fetchall()]
+                log_ctx.info("Fetched stages from DB table", count=len(stages_from_db))
+
+                formatted_stages = []
+                for s in stages_from_db:
+                    formatted_stages.append({
+                        'id': s['stage_id'],        # Mapeia stage_id para 'id'
+                        'name': s['stage_name'],    # Mapeia stage_name para 'name'
+                        'normalized_name': s.get('normalized_name') # Mantém normalized_name se existir
+                    })
+                return formatted_stages
+        except Exception as e:
+            log_ctx.error("Failed to fetch stages from DB table", exc_info=True)
+            return []
+        finally:
+            if conn:
+                self.db_pool.release_connection(conn)
+                
+    def get_stage_id_to_column_map(self) -> Dict[int, str]:
+        """
+        Mapeia stage_id → nome final da coluna, com base na nova regra com stage_id no nome.
+        """
+        column_map = {}
+        for stage in self._all_stages_details:
+            stage_id = stage.get("id")
+            stage_name = stage.get("name")
+            if not stage_id or not stage_name:
+                continue
+            normalized = normalize_column_name(stage_name)
+            col_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized}_{stage_id}"
+            if col_name in self._stage_history_columns_dict:
+                column_map[stage_id] = col_name
+        return column_map
 
     def save_configuration(self, key: str, value: Dict):
         """Salva configurações dinâmicas (formato JSONB) no banco."""
