@@ -197,7 +197,7 @@ def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
     cache_expiration=timedelta(days=1),
     log_prints=True,
 )
-def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
+def run_backfill_batch_task(deal_ids: List[str]) -> Dict[str, Any]: 
     """Executa o backfill para um lote de IDs."""
     logger = get_run_logger()
     flow_type="backfill"
@@ -206,6 +206,7 @@ def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dic
         return {"status": "skipped", "processed_deals": 0}
     batch_size_gauge.labels(flow_type=flow_type).set(len(deal_ids))
     logger.info(f"Running backfill for {len(deal_ids)} deals.")
+    _, _, etl_service = initialize_components_no_maps()
     result = etl_service.run_retroactive_backfill(deal_ids)
     logger.info("Backfill batch finished.", extra=result)
     return result
@@ -372,7 +373,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
                 backfill_completed_successfully = (final_status == "completed")
                 break 
 
-            batch_result = run_backfill_batch_task(etl_service, deal_ids_batch)
+            batch_result = run_backfill_batch_task(deal_ids_batch)
             all_batch_results.append(batch_result)
 
             processed_in_batch = batch_result.get("processed_deals", 0)

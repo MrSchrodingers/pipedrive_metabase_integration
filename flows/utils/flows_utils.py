@@ -158,19 +158,5 @@ def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 
         return default_size
     
 def backfill_cache_key_from_deal_ids(_, arguments: Dict[str, Any]) -> str:
-    """
-    Gera uma chave de cache para a task de backfill baseada
-    apenas na lista de deal_ids.
-    """
-    deal_ids = arguments.get("deal_ids") 
-    if deal_ids is None:
-        return hash_objects("no_deal_ids")
-
-    if isinstance(deal_ids, list):
-        try:
-            sorted_deal_ids = sorted(list(deal_ids))
-            return hash_objects(sorted_deal_ids)
-        except TypeError:
-             return hash_objects(deal_ids)
-    else:
-        return hash_objects(deal_ids)
+    deal_ids = arguments.get("deal_ids", [])
+    return hash_objects(sorted(deal_ids))
