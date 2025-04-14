@@ -38,6 +38,7 @@ class ETLService:
         self.repository = repository
         self.process_batch_size = batch_size 
         self.log = log.bind(service="ETLService")
+        self._stage_id_to_column_name_map = self.repository.get_stage_id_to_column_map()
 
         try:
              self._all_stages_details = self.client.fetch_all_stages_details()
@@ -578,8 +579,8 @@ class ETLService:
         api_errors = 0
         processing_errors = 0
 
-        stage_id_map = self._stage_id_to_normalized_name_map
-        if not stage_id_map:
+        stage_column_map = self._stage_id_to_column_name_map
+        if not stage_column_map:
             run_log.error("Stage ID to normalized name map is empty. Cannot perform backfill.")
             return {"status": "error", "message": "Stage ID map is empty."}
 
@@ -621,7 +622,7 @@ class ETLService:
                         first_entry_times[stage_id] = timestamp
 
                 for stage_id, first_timestamp in first_entry_times.items():
-                    normalized_name = stage_id_map.get(stage_id)
+                    normalized_name = stage_column_map.get(stage_id)
                     if normalized_name:
                         column_name = f"{STAGE_HISTORY_COLUMN_PREFIX}{normalized_name}"
                         updates_to_apply.append({
