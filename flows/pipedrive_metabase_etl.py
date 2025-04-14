@@ -167,19 +167,21 @@ def main_etl_flow():
 
     
 @task(name="Get Deals for Backfill Task", retries=1)
-def get_deals_for_backfill_task(repository: PipedriveRepository, limit: int) -> List[str]:
+def get_deals_for_backfill_task(limit: int) -> List[str]:
     """Busca IDs de deals que precisam de backfill."""
     logger = get_run_logger()
     logger.info(f"Fetching up to {limit} deal IDs for history backfill.")
+    _, repository, _ = initialize_components_no_maps()
     ids = repository.get_deals_needing_history_backfill(limit=limit)
     logger.info(f"Found {len(ids)} deals for this backfill batch.")
     return ids
 
 @task(name="Get Backfill Remaining Count Task", retries=1)
-def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
+def get_initial_backfill_count_task() -> int:
     """Busca a contagem inicial de deals que precisam de backfill."""
     logger = get_run_logger()
     logger.info("Counting total deals needing history backfill.")
+    _, repository, _ = initialize_components_no_maps()
     count = repository.count_deals_needing_backfill()
     if count >= 0:
          logger.info(f"Estimated {count} deals remaining for backfill.")
@@ -193,8 +195,6 @@ def get_initial_backfill_count_task(repository: PipedriveRepository) -> int:
     name="Run Backfill Batch Task", 
     retries=DEFAULT_TASK_RETRIES, 
     retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY, 
-    cache_key_fn=backfill_cache_key_from_deal_ids,
-    cache_expiration=timedelta(days=1),
     log_prints=True,
 )
 def run_backfill_batch_task(deal_ids: List[str]) -> Dict[str, Any]: 
@@ -354,8 +354,8 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     result_payload = {}
 
     try:
-        _, repository, etl_service = initialize_components_no_maps()
-        initial_count = get_initial_backfill_count_task(repository)
+        _, repository, _ = initialize_components_no_maps()
+        initial_count = get_initial_backfill_count_task()
 
         while total_processed_today < daily_deal_limit:
             remaining_limit = daily_deal_limit - total_processed_today
@@ -365,7 +365,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
                  break
 
             flow_log.info(f"Attempting to fetch next batch of deals (limit: {current_batch_limit}).")
-            deal_ids_batch = get_deals_for_backfill_task(repository, limit=current_batch_limit)
+            deal_ids_batch = get_deals_for_backfill_task(limit=current_batch_limit)
 
             if not deal_ids_batch:
                 flow_log.info("No more deals found needing backfill.")
