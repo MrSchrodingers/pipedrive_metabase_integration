@@ -1,814 +1,307 @@
-import json
-import csv
+import time
 import random
-import time as py_time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+import csv
+import json
 from io import StringIO
+from typing import List, Dict, Any, Optional, Set, Tuple
+from datetime import datetime, timezone, date, time as time_obj 
+from decimal import Decimal
 
+from psycopg2 import sql, pool, extras
+import pandas as pd 
 import numpy as np
-import pandas as pd
-from psycopg2 import sql, extras
-from psycopg2.extensions import cursor as DbCursor
 import structlog
 
 from application.ports.data_repository_port import DataRepositoryPort
-from application.utils.column_utils import normalize_column_name
-from infrastructure.db_pool import DBConnectionPool
+from infrastructure.db.schema_manager import SchemaManager
+from application.utils.column_utils import normalize_column_name 
 
 log = structlog.get_logger(__name__)
 
-# Colunas da tabela principal de deals
-BASE_COLUMNS = [
-    "id", "titulo", "creator_user_id", "creator_user_name", "person_id",
-    "person_name", "stage_id", "stage_name", "pipeline_id", "pipeline_name",
-    "owner_id", "owner_name", "status", "value", "currency",
-    "add_time", "update_time",
-    "org_id", "org_name", "lost_reason", "visible_to", "close_time", "won_time", "lost_time",
-    "first_won_time", "expected_close_date", "probability", "label",
-    "local_do_acidente",
-    "local_do_acidente_numero_da_casa",
-    "local_do_acidente_nome_da_rua",
-    "local_do_acidente_distrito_sub_localidade",
-    "local_do_acidente_cidade_municipio_vila_localidade",
-    "local_do_acidente_estado",
-    "local_do_acidente_regiao",
-    "local_do_acidente_pais",
-    "local_do_acidente_cep_codigo_postal",
-    "local_do_acidente_latitude",
-    "local_do_acidente_longitude",
-    "proposta_endereco",
-    "proposta_endereco_numero_da_casa",
-    "proposta_endereco_nome_da_rua",
-]
-
-NAME_COLUMNS_TO_PRESERVE = {
-    "creator_user_name", "person_name", "stage_name", "pipeline_name",
-    "owner_name", "org_name"
-}
-
-COLUMN_TYPES = {
+BASE_COLUMNS_DEFS = {
     "id": "TEXT PRIMARY KEY", "titulo": "TEXT", "creator_user_id": "INTEGER",
     "creator_user_name": "TEXT", "person_id": "INTEGER", "person_name": "TEXT",
     "stage_id": "INTEGER", "stage_name": "TEXT", "pipeline_id": "INTEGER",
     "pipeline_name": "TEXT", "owner_id": "INTEGER", "owner_name": "TEXT",
     "status": "TEXT", "value": "NUMERIC(18, 2)", "currency": "VARCHAR(10)",
     "add_time": "TIMESTAMPTZ", "update_time": "TIMESTAMPTZ",
-    "org_id": "INTEGER", "org_name": "TEXT", "lost_reason": "TEXT", "visible_to": "TEXT", 
+    "org_id": "INTEGER", "org_name": "TEXT", "lost_reason": "TEXT", "visible_to": "TEXT",
     "close_time": "TIMESTAMPTZ", "won_time": "TIMESTAMPTZ", "lost_time": "TIMESTAMPTZ",
     "first_won_time": "TIMESTAMPTZ", "expected_close_date": "DATE", "probability": "NUMERIC(5,2)",
-    "label": "TEXT",  "local_do_acidente": "TEXT",
-    "local_do_acidente_numero_da_casa": "TEXT",
-    "local_do_acidente_nome_da_rua": "TEXT",
-    "local_do_acidente_distrito_sub_localidade": "TEXT",
-    "local_do_acidente_cidade_municipio_vila_localidade": "TEXT",
-    "local_do_acidente_estado": "TEXT",
-    "local_do_acidente_regiao": "TEXT",
-    "local_do_acidente_pais": "TEXT",
-    "local_do_acidente_cep_codigo_postal": "TEXT",
-    "local_do_acidente_latitude": "TEXT", # Ou NUMERIC se preferir
-    "local_do_acidente_longitude": "TEXT", # Ou NUMERIC se preferir
-     # --- Tipos para Endereço de Proposta ---
-    "proposta_endereco": "TEXT",
-    "proposta_endereco_numero_da_casa": "TEXT",
-    "proposta_endereco_nome_da_rua": "TEXT",
+    "label": "TEXT"
 }
 
-# Nomes das tabelas de lookup persistentes
-LOOKUP_TABLE_USERS = "pipedrive_users"
-LOOKUP_TABLE_PERSONS = "pipedrive_persons"
-LOOKUP_TABLE_STAGES = "pipedrive_stages"
-LOOKUP_TABLE_PIPELINES = "pipedrive_pipelines"
-LOOKUP_TABLE_ORGANIZATIONS = "pipedrive_organizations"
-UNKNOWN_NAME = "Desconhecido"
+# Define main table indexes
+MAIN_TABLE_INDEXES = {
+    "idx_pipedrive_data_update_time": "update_time DESC",
+    "idx_pipedrive_data_stage_id": "stage_id",
+    "idx_pipedrive_data_pipeline_id": "pipeline_id",
+    "idx_pipedrive_data_person_id": "person_id",
+    "idx_pipedrive_data_org_id": "org_id",
+    "idx_pipedrive_data_owner_id": "owner_id",
+    "idx_pipedrive_data_creator_user_id": "creator_user_id",
+    "idx_pipedrive_data_status": "status",
+    "idx_pipedrive_data_add_time": "add_time DESC",
+    "idx_pipedrive_data_active_deals_update": "(update_time DESC) WHERE status NOT IN ('Ganho', 'Perdido', 'Deletado')"
+}
 
-class PipedriveRepository(DataRepositoryPort):
+class PipedriveDataRepository(DataRepositoryPort):
+    """
+    Repository implementation focused solely on the main 'pipedrive_data' table.
+    Handles dynamic schema updates for custom fields and uses staging tables
+    with COPY for efficient upserts. Leverages SchemaManager for DDL operations.
+    """
     TABLE_NAME = "pipedrive_data"
-    CONFIG_TABLE_NAME = "config"
     STAGING_TABLE_PREFIX = "staging_pipedrive_"
-    STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_"
-    SCHEMA_LOCK_ID = 47835
+    STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_" 
 
     def __init__(
         self,
-        db_pool: DBConnectionPool,
-        custom_field_api_mapping: Dict[str, str],
+        db_pool: pool.SimpleConnectionPool,
+        schema_manager: SchemaManager,
         all_stages_details: List[Dict]
     ):
         self.db_pool = db_pool
-        self.log = log.bind(repository="PipedriveRepository")
-        self._raw_custom_field_mapping = custom_field_api_mapping
+        self.schema_manager = schema_manager
+        self.log = log.bind(repository=self.__class__.__name__)
         self._all_stages_details = all_stages_details
+        self._stage_history_columns_dict = self._prepare_stage_history_columns()
+        self._stage_id_to_column_name_map = self._build_stage_id_to_col_map()
+        self._cached_target_column_types: Optional[Dict[str, str]] = None
+        
+    def _refresh_column_type_cache(self) -> bool:
+         """Fetches and updates the cached column types for the target table."""
+         self.log.debug("Refreshing target column type cache", table_name=self.TABLE_NAME)
+         try:
+              types = self.schema_manager._get_table_column_types(self.TABLE_NAME)
+              if not types:
+                   self.log.error("Failed to fetch column types, cache not updated.")
+                   self._cached_target_column_types = None 
+                   return False
+              self._cached_target_column_types = types
+              self.log.info("Target column type cache refreshed", count=len(types))
+              return True
+         except Exception as e:
+              self.log.error("Error refreshing column type cache", error=str(e), exc_info=True)
+              self._cached_target_column_types = None
+              return False
 
-        # Preparar colunas dinâmicas
-        self._custom_columns_dict = self._prepare_custom_columns(custom_field_api_mapping)
-        self._stage_history_columns_dict = self._prepare_stage_history_columns(
-            all_stages_details,
-            existing_custom_cols=set(self._custom_columns_dict.keys())
-        )
+    def _build_stage_id_to_col_map(self) -> Dict[int, str]:
+        """Builds the map of Stage ID -> Stage History Column Name."""
+        id_map = {}
+        for col_name in self._stage_history_columns_dict.keys():
+             try:
+                 parts = col_name.split('_')
+                 if len(parts) > 1 and parts[-1].isdigit():
+                      stage_id = int(parts[-1])
+                      id_map[stage_id] = col_name
+             except (ValueError, IndexError):
+                 self.log.warning("Could not parse stage_id from history column name", column_name=col_name)
+        return id_map
 
-        self.ensure_schema_exists()
-
-    @property
-    def custom_field_mapping(self) -> Dict[str, str]:
-        """Retorna o mapeamento de custom fields."""
-        return self._raw_custom_field_mapping
-
-    # --- Métodos Auxiliares de Preparação de Colunas ---
-
-    def _prepare_custom_columns(self, api_mapping: Dict[str, str]) -> Dict[str, str]:
-        """Prepara os nomes e tipos de colunas customizadas, ignorando duplicatas ou nomes inválidos."""
-        custom_cols = {}
-        base_col_set = set(BASE_COLUMNS)
-        reserved_prefixes = (self.STAGE_HISTORY_COLUMN_PREFIX,)
-
-        for api_key, normalized_name in api_mapping.items():
-            if not normalized_name or normalized_name == "_invalid_normalized_name":
-                self.log.warning("Campo customizado com nome normalizado inválido; ignorando.",
-                                 api_key=api_key, normalized_name=normalized_name)
-                continue
-
-            if normalized_name in base_col_set:
-                self.log.warning("Nome normalizado do custom field conflita com coluna base; ignorando.",
-                                 api_key=api_key, normalized_name=normalized_name)
-                continue
-
-            if any(normalized_name.startswith(prefix) for prefix in reserved_prefixes):
-                self.log.warning("Nome normalizado do custom field usa prefixo reservado; ignorando.",
-                                 api_key=api_key, normalized_name=normalized_name)
-                continue
-
-            custom_cols[normalized_name] = "TEXT"
-        self.log.info("Custom columns preparadas", count=len(custom_cols))
-        return custom_cols
-
-    def _prepare_stage_history_columns(self, all_stages: List[Dict], existing_custom_cols: Set[str]) -> Dict[str, str]:
-        """
-        Prepara colunas de histórico de stage, garantindo 1 coluna por stage_id.
-        Nome da coluna = moved_to_stage_<normalized_name>_<stage_id> (para garantir unicidade).
-        """
+    def _prepare_stage_history_columns(self) -> Dict[str, str]:
+        """Generates the dictionary {history_column_name: "TIMESTAMPTZ"}."""
         stage_history_cols = {}
-        base_col_set = set(BASE_COLUMNS)
-        forbidden_names = base_col_set.union(existing_custom_cols)
+        base_col_set = set(BASE_COLUMNS_DEFS.keys())
+        processed_normalized_ids = set() 
 
-        for stage in all_stages:
+        for stage in self._all_stages_details:
             stage_id = stage.get("id")
             stage_name = stage.get("name")
-
-            if not stage_id or not stage_name:
-                self.log.warning("Stage inválido (sem id ou nome)", stage_data=stage)
-                continue
+            if not stage_id or not stage_name: continue
 
             normalized = normalize_column_name(stage_name)
-            if not normalized or normalized == "_invalid_normalized_name":
-                self.log.warning("Stage com nome inválido ao normalizar", stage_id=stage_id, stage_name=stage_name)
-                continue
+            if not normalized or normalized == "_invalid_normalized_name": continue
 
             final_col_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized}_{stage_id}"
+            lookup_key = f"{normalized}_{stage_id}"
 
-            if final_col_name in forbidden_names:
-                self.log.error("Nome de coluna de histórico colide com base/custom", final_col_name=final_col_name)
-                continue
+            if final_col_name not in base_col_set and lookup_key not in processed_normalized_ids:
+                 stage_history_cols[final_col_name] = "TIMESTAMPTZ"
+                 processed_normalized_ids.add(lookup_key)
+            elif final_col_name in base_col_set:
+                 self.log.error("Stage history column name conflicts with base column", col_name=final_col_name)
 
-            stage_history_cols[final_col_name] = "TIMESTAMPTZ"
-
-        self.log.info("Colunas de histórico geradas (sem sufixos duplicados)", count=len(stage_history_cols))
         return stage_history_cols
 
-    def _get_all_columns(self) -> List[str]:
-        """Retorna a lista completa de colunas (base + custom + histórico)."""
-        return BASE_COLUMNS + sorted(list(self._custom_columns_dict.keys())) + sorted(list(self._stage_history_columns_dict.keys()))
-
-    # --- Métodos de Definição de Schema ---
-    # Agora cada método de definição retorna uma tupla: (lista de SQL, dicionário esperado)
-
-    def _get_main_table_column_definitions(self) -> Tuple[List[sql.SQL], Dict[str, str]]:
-        """Gera definições SQL para a tabela principal."""
-        defs = []
-        expected = {}
-        all_column_types = {**COLUMN_TYPES, **self._custom_columns_dict, **self._stage_history_columns_dict}
-        ordered_cols = self._get_all_columns()
-
-        for col in ordered_cols:
-            col_type = all_column_types.get(col, "TEXT")
-            defs.append(sql.SQL("{} {}").format(sql.Identifier(col), sql.SQL(col_type)))
-            expected[col] = col_type
-
-        return defs, expected
-
-    def _get_config_column_definitions(self) -> Tuple[List[sql.SQL], Dict[str, str]]:
-        """Gera definições para a tabela de configuração."""
-        defs = [
-            sql.SQL("key TEXT PRIMARY KEY"),
-            sql.SQL("value JSONB"),
-            sql.SQL("updated_at TIMESTAMPTZ DEFAULT NOW()")
-        ]
-        expected = {
-            "key": "TEXT PRIMARY KEY",
-            "value": "JSONB",
-            "updated_at": "TIMESTAMPTZ DEFAULT NOW()"
-        }
-        return defs, expected
-
-    def _get_lookup_table_definitions(self, table_name: str) -> Tuple[List[sql.SQL], Dict[str, str]]:
-        """Gera definições SQL para tabelas de lookup."""
-        if table_name == LOOKUP_TABLE_USERS:
-            defs = [
-                sql.SQL("user_id INTEGER PRIMARY KEY"),
-                sql.SQL("user_name TEXT"),
-                sql.SQL("is_active BOOLEAN"),
-                sql.SQL("last_synced_at TIMESTAMPTZ DEFAULT NOW()")
-            ]
-            expected = {
-                "user_id": "INTEGER PRIMARY KEY",
-                "user_name": "TEXT",
-                "is_active": "BOOLEAN",
-                "last_synced_at": "TIMESTAMPTZ DEFAULT NOW()"
-            }
-            return defs, expected
-        elif table_name == LOOKUP_TABLE_PERSONS:
-            defs = [
-                sql.SQL("person_id INTEGER PRIMARY KEY"),
-                sql.SQL("person_name TEXT"),
-                sql.SQL("org_id INTEGER"),
-                sql.SQL("last_synced_at TIMESTAMPTZ DEFAULT NOW()")
-            ]
-            expected = {
-                "person_id": "INTEGER PRIMARY KEY",
-                "person_name": "TEXT",
-                "org_id": "INTEGER",
-                "last_synced_at": "TIMESTAMPTZ DEFAULT NOW()"
-            }
-            return defs, expected
-        elif table_name == LOOKUP_TABLE_STAGES:
-            defs = [
-                sql.SQL("stage_id INTEGER PRIMARY KEY"),
-                sql.SQL("stage_name TEXT"),
-                sql.SQL("normalized_name TEXT"),
-                sql.SQL("pipeline_id INTEGER"), 
-                sql.SQL("order_nr INTEGER"),
-                sql.SQL("is_active BOOLEAN"),
-                sql.SQL("last_synced_at TIMESTAMPTZ DEFAULT NOW()")
-            ]
-            expected = {
-                "stage_id": "INTEGER PRIMARY KEY",
-                "stage_name": "TEXT",
-                "normalized_name": "TEXT",
-                "pipeline_id": "INTEGER",
-                "order_nr": "INTEGER",
-                "is_active": "BOOLEAN",
-                "last_synced_at": "TIMESTAMPTZ DEFAULT NOW()"
-            }
-            return defs, expected
-        elif table_name == LOOKUP_TABLE_PIPELINES:
-            defs = [
-                sql.SQL("pipeline_id INTEGER PRIMARY KEY"),
-                sql.SQL("pipeline_name TEXT"),
-                sql.SQL("is_active BOOLEAN"),
-                sql.SQL("last_synced_at TIMESTAMPTZ DEFAULT NOW()")
-            ]
-            expected = {
-                "pipeline_id": "INTEGER PRIMARY KEY",
-                "pipeline_name": "TEXT",
-                "is_active": "BOOLEAN",
-                "last_synced_at": "TIMESTAMPTZ DEFAULT NOW()"
-            }
-            return defs, expected
-        elif table_name == LOOKUP_TABLE_ORGANIZATIONS:
-            defs = [
-                sql.SQL("org_id INTEGER PRIMARY KEY"),
-                sql.SQL("org_name TEXT"),
-                sql.SQL("last_synced_at TIMESTAMPTZ DEFAULT NOW()")
-            ]
-            expected = {
-                "org_id": "INTEGER PRIMARY KEY",
-                "org_name": "TEXT",
-                "last_synced_at": "TIMESTAMPTZ DEFAULT NOW()"
-            }
-            return defs, expected
-        else:
-            raise ValueError(f"Unknown lookup table name: {table_name}")
-
-    def ensure_schema_exists(self):
-        """Garante que as tabelas (principal, config e lookups) e índices existam."""
-        conn = None
-        locked = False
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                # 1. Adquire lock para modificação do schema
-                cur.execute("SELECT pg_advisory_lock(%s)", (self.SCHEMA_LOCK_ID,))
-                locked = True
-                self.log.info("Acquired schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
-
-                # 2. Criar/Alterar tabela principal
-                self._create_or_alter_table(cur, self.TABLE_NAME, self._get_main_table_column_definitions)
-
-                # 3. Criar/Alterar tabela de configuração
-                self._create_or_alter_table(cur, self.CONFIG_TABLE_NAME, self._get_config_column_definitions)
-
-                # 4. Criar/Alterar tabelas de lookup
-                lookup_tables = [
-                    LOOKUP_TABLE_USERS, LOOKUP_TABLE_PERSONS, LOOKUP_TABLE_STAGES,
-                    LOOKUP_TABLE_PIPELINES, LOOKUP_TABLE_ORGANIZATIONS
-                ]
-                for table in lookup_tables:
-                    self._create_or_alter_table(cur, table, lambda t=table: self._get_lookup_table_definitions(t))
-
-                # 5. Criar índices
-                self._create_indexes(cur)
-
-                conn.commit()
-                self.log.info("Schema check/modification committed for all tables.")
-
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            self.log.critical("Failed to ensure database schema", exc_info=True)
-            raise
-        finally:
-            if conn:
-                if locked:
-                    try:
-                        with conn.cursor() as unlock_cur:
-                            unlock_cur.execute("SELECT pg_advisory_unlock(%s)", (self.SCHEMA_LOCK_ID,))
-                        conn.commit()
-                        self.log.info("Released schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
-                    except Exception as unlock_err:
-                        self.log.error("Failed to release schema lock", error=str(unlock_err))
-                self.db_pool.release_connection(conn)
-
-    def _create_or_alter_table(self, cur: DbCursor, table_name: str, get_col_defs_func: callable):
-        """
-        Função genérica para criar uma tabela ou adicionar colunas faltantes.
-        Utiliza o dicionário 'expected_columns_map' retornado pela função de definição de colunas.
-        """
-        table_id = sql.Identifier(table_name)
-        log_ctx = self.log.bind(table_name=table_name)
-        log_ctx.debug("Starting schema check/update for table.")
-
-        # Verifica se a tabela existe
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
-            );
-        """, (table_name,))
-        table_exists = cur.fetchone()[0]
-
-        # Obtém as definições de colunas e o mapeamento esperado
-        col_defs_result = get_col_defs_func()
-        if isinstance(col_defs_result, tuple) and len(col_defs_result) == 2:
-            column_defs_sql, expected_columns_map = col_defs_result
-        else:
-            column_defs_sql = col_defs_result
-            expected_columns_map = {}
-            for col_def in column_defs_sql:
-                col_def_str = col_def.as_string(cur)
-                tokens = col_def_str.split()
-                if tokens:
-                    col_name = tokens[0].strip('"')
-                    expected_columns_map[col_name] = " ".join(tokens[1:])
-
-        if not table_exists:
-            log_ctx.info("Table does not exist, creating.")
-            if not column_defs_sql:
-                raise RuntimeError(f"Cannot create table '{table_name}' with no column definitions.")
-            create_sql = sql.SQL("CREATE TABLE {table} ({columns})").format(
-                table=table_id,
-                columns=sql.SQL(',\n    ').join(column_defs_sql)
-            )
-            log_ctx.debug("Executing CREATE TABLE", sql_query=create_sql.as_string(cur))
-            cur.execute(create_sql)
-            log_ctx.info("Table created successfully.")
-        else:
-            log_ctx.debug("Table exists, checking for missing columns.")
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = %s;
-            """, (table_name,))
-            existing_columns = {row[0] for row in cur.fetchall()}
-            missing_columns = set(expected_columns_map.keys()) - existing_columns
-
-            if missing_columns:
-                log_ctx.info("Adding missing columns to table.", missing=sorted(list(missing_columns)))
-                alter_statements = []
-                for col in sorted(missing_columns):
-                    col_type = expected_columns_map[col]
-                    alter_statements.append(
-                        sql.SQL("ADD COLUMN IF NOT EXISTS {} {}").format(
-                            sql.Identifier(col),
-                            sql.SQL(col_type)
-                        )
-                    )
-                if alter_statements:
-                    alter_sql = sql.SQL("ALTER TABLE {table} ").format(table=table_id) + sql.SQL(', ').join(alter_statements)
-                    try:
-                        log_ctx.debug("Executing ALTER TABLE ADD COLUMN(s)", columns=sorted(list(missing_columns)))
-                        cur.execute(alter_sql)
-                    except Exception as alter_err:
-                        log_ctx.warning("Bulk ALTER TABLE failed, attempting one by one.", error=str(alter_err))
-                        conn = cur.connection
-                        if conn:
-                            conn.rollback()
-                        for stmt in alter_statements:
-                            single_alter_sql = sql.SQL("ALTER TABLE {table} ").format(table=table_id) + stmt
-                            try:
-                                log_ctx.debug("Executing ALTER TABLE ADD COLUMN (single)", statement=stmt.as_string(cur))
-                                cur.execute(single_alter_sql)
-                            except Exception as single_alter_err:
-                                log_ctx.error("Failed to add column individually", column=col, error=str(single_alter_err))
-                        if conn:
-                            conn.commit()
-                log_ctx.info("Missing columns check/addition process completed.", count=len(missing_columns))
-            else:
-                log_ctx.debug("No missing columns found.")
-
-    def _create_indexes(self, cur: DbCursor):
-        """Cria os índices padrão para a tabela principal e as tabelas de lookup."""
-        self.log.debug("Starting index creation process.")
-
-        main_table_indexes = {
-            f"idx_{self.TABLE_NAME}_update_time": sql.SQL("(update_time DESC)"),
-            f"idx_{self.TABLE_NAME}_stage_id": sql.SQL("(stage_id)"),
-            f"idx_{self.TABLE_NAME}_pipeline_id": sql.SQL("(pipeline_id)"),
-            f"idx_{self.TABLE_NAME}_person_id": sql.SQL("(person_id)"),
-            f"idx_{self.TABLE_NAME}_org_id": sql.SQL("(org_id)"),
-            f"idx_{self.TABLE_NAME}_owner_id": sql.SQL("(owner_id)"),
-            f"idx_{self.TABLE_NAME}_creator_user_id": sql.SQL("(creator_user_id)"),
-            f"idx_{self.TABLE_NAME}_status": sql.SQL("(status)"),
-            f"idx_{self.TABLE_NAME}_add_time": sql.SQL("(add_time DESC)"),
-            f"idx_{self.TABLE_NAME}_active_deals_update": sql.SQL("(update_time DESC) WHERE status NOT IN ('Ganho', 'Perdido', 'Deletado')")
-        }
-        self._apply_indexes(cur, self.TABLE_NAME, main_table_indexes)
-
-        lookup_tables_indexes = {
-            LOOKUP_TABLE_USERS: { f"idx_{LOOKUP_TABLE_USERS}_name": sql.SQL("(user_name text_pattern_ops)") },
-            LOOKUP_TABLE_PERSONS: { f"idx_{LOOKUP_TABLE_PERSONS}_name": sql.SQL("(person_name text_pattern_ops)") },
-            LOOKUP_TABLE_STAGES: { f"idx_{LOOKUP_TABLE_STAGES}_norm_name": sql.SQL("(normalized_name)") },
-            LOOKUP_TABLE_PIPELINES: {},
-            LOOKUP_TABLE_ORGANIZATIONS: { f"idx_{LOOKUP_TABLE_ORGANIZATIONS}_name": sql.SQL("(org_name text_pattern_ops)") },
-        }
-        for table_name, indexes in lookup_tables_indexes.items():
-            self._apply_indexes(cur, table_name, indexes)
-
-        self.log.debug("Index creation process completed.")
-
-    def _apply_indexes(self, cur: DbCursor, table_name: str, indexes_to_create: Dict[str, sql.SQL]):
-        """Helper para criação de índices em uma tabela específica."""
-        table_id = sql.Identifier(table_name)
-        log_ctx = self.log.bind(table_name=table_name)
-        for idx_name, idx_definition in indexes_to_create.items():
-            cur.execute("""
-                SELECT EXISTS (
-                    SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE c.relname = %s AND c.relkind = 'i' AND n.nspname = 'public'
-                );
-            """, (idx_name,))
-            index_exists = cur.fetchone()[0]
-
-            if not index_exists:
-                create_idx_sql = sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} {}").format(
-                    sql.Identifier(idx_name),
-                    table_id,
-                    idx_definition
-                )
-                try:
-                    log_ctx.debug("Creating index.", index_name=idx_name)
-                    cur.execute(create_idx_sql)
-                except Exception as idx_err:
-                    log_ctx.warning("Failed to create index", index_name=idx_name, error=str(idx_err))
-            else:
-                log_ctx.debug("Index already exists.", index_name=idx_name)
-
-    # --- Métodos de Upsert para Tabelas de Lookup ---
-    def _upsert_lookup_data(self, table_name: str, data: List[Dict], id_column: str, columns: List[str]):
-        """Função genérica para fazer upsert em tabelas de lookup."""
-        if not data:
-            self.log.debug("No data provided for lookup upsert", table_name=table_name)
-            return 0
-
-        conn = None
-        start_time = py_time.monotonic()
-        rows_affected = 0
-        table_id = sql.Identifier(table_name)
-        col_ids = sql.SQL(', ').join(map(sql.Identifier, columns))
-        update_cols = sql.SQL(', ').join(
-            sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col))
-            for col in columns if col != id_column # Não atualiza o ID
+    def initialize_schema(self) -> None:
+        """Initializes schema and populates the column type cache."""
+        all_columns_with_types = {**BASE_COLUMNS_DEFS, **self._stage_history_columns_dict}
+        self.schema_manager.ensure_table_exists(
+            table_name=self.TABLE_NAME,
+            column_definitions=list(all_columns_with_types.items()),
+            primary_key="id",
+            indexes=MAIN_TABLE_INDEXES
         )
-        # Adicionar atualização de last_synced_at
-        update_cols += sql.SQL(", last_synced_at = NOW()")
+        self._refresh_column_type_cache() 
+        self.log.info("Schema initialized", table_name=self.TABLE_NAME)
 
-        upsert_sql_template = sql.SQL("""
-            INSERT INTO {table} ({insert_cols})
-            VALUES %s
-            ON CONFLICT ({pk_col}) DO UPDATE SET {update_assignments}
-        """).format(
-            table=table_id,
-            insert_cols=col_ids,
-            pk_col=sql.Identifier(id_column),
-            update_assignments=update_cols
-        )
+    def _format_value_for_csv(self, value: Any) -> str:
+         """Formats a Python value into a string suitable for COPY FROM STDIN."""
+         if value is None or value is pd.NaT or (isinstance(value, float) and np.isnan(value)):
+             return '\\N'
+         elif isinstance(value, bool):
+             return 't' if value else 'f'
+         elif isinstance(value, datetime):
+             if value.tzinfo is None:
+                 dt_aware = value.replace(tzinfo=timezone.utc)
+             else:
+                 dt_aware = value.astimezone(timezone.utc)
+             return dt_aware.isoformat(timespec='microseconds')
+         elif isinstance(value, (date, time_obj, Decimal)):
+             return str(value)
+         elif isinstance(value, (dict, list, set, tuple)):
+              try:
+                 json_str = json.dumps(value)
+                 return json_str.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r')
+              except TypeError:
+                  self.log.warning("Could not JSON serialize value for CSV, using str()", value_type=type(value))
+                  str_value = str(value)
+         else:
+             str_value = str(value)
 
-        # Preparar dados como tuplas na ordem das colunas
-        values_tuples = []
-        for record in data:
-            row = []
-            for col in columns:
-                val = record.get(col)
-                # Tratamento básico de tipos para SQL
-                if isinstance(val, datetime):
-                    val = val.isoformat()
-                elif val is None:
-                    val = None # psycopg2 lida com None -> NULL
-                # TODO: Adicionar mais tratamentos se necessário (booleanos, etc.)
-                row.append(val)
-            values_tuples.append(tuple(row))
-
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                # Usar execute_values para eficiência
-                extras.execute_values(cur, upsert_sql_template.as_string(cur), values_tuples, page_size=500)
-                rows_affected = cur.rowcount
-                conn.commit()
-                duration = py_time.monotonic() - start_time
-                self.log.info("Upsert successful for lookup table", table_name=table_name,
-                records_processed=len(data), rows_affected=rows_affected, duration_sec=f"{duration:.3f}s")
-                return rows_affected
-        except Exception as e:
-            if conn: conn.rollback()
-            self.log.error("Upsert failed for lookup table", table_name=table_name, error=str(e), record_count=len(data), exc_info=True)
-            raise
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-
-    # Métodos específicos por tabela de lookup
-    def upsert_users(self, data: List[Dict]):
-        """Faz upsert na tabela pipedrive_users."""
-        cols = ['user_id', 'user_name', 'is_active'] # Colunas esperadas no dict `data`
-        # Mapear 'id' da API para 'user_id', 'name' para 'user_name', 'active_flag' para 'is_active'
-        mapped_data = [
-            {'user_id': r['id'], 'user_name': r.get('name', UNKNOWN_NAME), 'is_active': r.get('active_flag', True)}
-            for r in data if 'id' in r
-        ]
-        return self._upsert_lookup_data(LOOKUP_TABLE_USERS, mapped_data, 'user_id', cols)
-
-    def upsert_persons(self, data: List[Dict]):
-        """Faz upsert na tabela pipedrive_persons."""
-        cols = ['person_id', 'person_name', 'org_id'] # Ajustar se sincronizar mais campos
-        mapped_data = [
-            {
-                'person_id': r['id'],
-                'person_name': r.get('name', UNKNOWN_NAME),
-                # Pega o ID da org se for um dict, senão None
-                'org_id': r.get('org_id', {}).get('value') if isinstance(r.get('org_id'), dict) else r.get('org_id')
-            }
-            for r in data if 'id' in r
-        ]
-        return self._upsert_lookup_data(LOOKUP_TABLE_PERSONS, mapped_data, 'person_id', cols)
-
-    def upsert_stages(self, data: List[Dict]):
-        """Faz upsert na tabela pipedrive_stages."""
-        cols = ['stage_id', 'stage_name', 'normalized_name', 'pipeline_id', 'order_nr', 'is_active']
-        mapped_data = []
-        for r in data:
-            if 'id' in r:
-                original_name = r.get('name', UNKNOWN_NAME) or UNKNOWN_NAME
-                prefix = self.STAGE_HISTORY_COLUMN_PREFIX
-                if original_name.startswith(prefix):
-                    original_name = original_name[len(prefix):]
-
-                normalized = normalize_column_name(original_name) if original_name != UNKNOWN_NAME else None
-
-                mapped_data.append({
-                    'stage_id': r['id'],
-                    'stage_name': original_name,     
-                    'normalized_name': normalized,    
-                    'pipeline_id': r.get('pipeline_id'),
-                    'order_nr': r.get('order_nr'),
-                    'is_active': r.get('active_flag', True)
-                })
-        return self._upsert_lookup_data(LOOKUP_TABLE_STAGES, mapped_data, 'stage_id', cols)
-
-    def upsert_pipelines(self, data: List[Dict]):
-        """Faz upsert na tabela pipedrive_pipelines."""
-        cols = ['pipeline_id', 'pipeline_name', 'is_active']
-        mapped_data = [
-            {
-                'pipeline_id': r['id'],
-                'pipeline_name': r.get('name', UNKNOWN_NAME),
-                'is_active': r.get('active_flag', True) # Verificar nome correto do campo na API
-            }
-             for r in data if 'id' in r
-        ]
-        return self._upsert_lookup_data(LOOKUP_TABLE_PIPELINES, mapped_data, 'pipeline_id', cols)
-
-    def upsert_organizations(self, data: List[Dict]):
-        """Faz upsert na tabela pipedrive_organizations."""
-        cols = ['org_id', 'org_name'] # Ajustar se sincronizar mais campos
-        mapped_data = [
-            {'org_id': r['id'], 'org_name': r.get('name', UNKNOWN_NAME)}
-            for r in data if 'id' in r
-        ]
-        return self._upsert_lookup_data(LOOKUP_TABLE_ORGANIZATIONS, mapped_data, 'org_id', cols)
-    
-    # --- Método de Consulta para o ETL Principal ---
-    def get_lookup_maps_for_batch(
-        self,
-        user_ids: Optional[Set[int]] = None,
-        person_ids: Optional[Set[int]] = None,
-        stage_ids: Optional[Set[int]] = None,
-        pipeline_ids: Optional[Set[int]] = None,
-        org_ids: Optional[Set[int]] = None
-        ) -> Dict[str, Dict[int, str]]:
-        """
-        Busca nomes das tabelas de lookup persistentes para os IDs fornecidos.
-        Retorna um dicionário onde as chaves são 'users', 'persons', etc.,
-        e os valores são dicionários {id: name}.
-        """
-        results = {
-            'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}
-        }
-        if not any([user_ids, person_ids, stage_ids, pipeline_ids, org_ids]):
-            return results 
-
-        conn = None
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                if user_ids:
-                    cur.execute(sql.SQL("SELECT user_id, user_name FROM {} WHERE user_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_USERS)), (list(user_ids),))
-                    results['users'] = {row[0]: row[1] for row in cur.fetchall()}
-                if person_ids:
-                    cur.execute(sql.SQL("SELECT person_id, person_name FROM {} WHERE person_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_PERSONS)), (list(person_ids),))
-                    results['persons'] = {row[0]: row[1] for row in cur.fetchall()}
-                if stage_ids:
-                    cur.execute(sql.SQL("SELECT stage_id, normalized_name FROM {} WHERE stage_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_STAGES)), (list(stage_ids),))
-                    results['stages'] = {row[0]: row[1] for row in cur.fetchall() if row[1]}
-                if pipeline_ids:
-                    cur.execute(sql.SQL("SELECT pipeline_id, pipeline_name FROM {} WHERE pipeline_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_PIPELINES)), (list(pipeline_ids),))
-                    results['pipelines'] = {row[0]: row[1] for row in cur.fetchall()}
-                if org_ids:
-                     cur.execute(sql.SQL("SELECT org_id, org_name FROM {} WHERE org_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_ORGANIZATIONS)), (list(org_ids),))
-                     results['orgs'] = {row[0]: row[1] for row in cur.fetchall()}
-
-            self.log.debug("Fetched lookup maps for batch from DB",
-                           user_count=len(results['users']), person_count=len(results['persons']),
-                           stage_count=len(results['stages']), pipeline_count=len(results['pipelines']),
-                           org_count=len(results['orgs']))
-            return results
-
-        except Exception as e:
-            self.log.error("Failed to get lookup maps for batch", exc_info=True)
-            return {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
+         return str_value.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r')
 
 
-    def _record_to_csv_line(self, record: Dict, columns: List[str]) -> str:
-        """Converts a dictionary record to a CSV string line for COPY."""
-        output = StringIO()
-        writer = csv.writer(output, delimiter='|', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
-        row = []
-        for field in columns:
-            value = record.get(field)
-            if value is None:
-                row.append('\\N')
-            elif isinstance(value, datetime):
-                 row.append(value.isoformat())
-            elif isinstance(value, bool):
-                 row.append('t' if value else 'f')
-            else:
-                str_value = str(value)
-                escaped_value = str_value.replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r').replace('\\', '\\\\')
-                row.append(escaped_value)
-                
-        writer.writerow(row)
-        csv_line = output.getvalue().strip('\n')
-        output.close()
-        return csv_line
-
-    # --- Métodos da Tabela Principal (pipedrive_data) ---
-
-    def save_data_upsert(self, data: List[Dict]):
-        """Upsert eficiente para a tabela principal `pipedrive_data` (código original mantido)."""
+    def save_data_upsert(self, data: List[Dict[str, Any]]):
+        """Saves data using staging table, COPY, dynamic columns, and cached types."""
         if not data:
             self.log.debug("No data provided to save_data_upsert, skipping.")
             return
 
-        conn = None
-        start_time = py_time.monotonic()
-        columns = self._get_all_columns() 
-        unique_suffix = f"{int(py_time.time())}_{random.randint(1000, 9999)}"
-        staging_table_name = f"{self.STAGING_TABLE_PREFIX}{unique_suffix}"
-        staging_table_id = sql.Identifier(staging_table_name)
-        target_table_id = sql.Identifier(self.TABLE_NAME)
+        start_time = time.monotonic()
         record_count = len(data)
-        self.log.debug("Starting upsert process for main table", record_count=record_count, column_count=len(columns), target_table=self.TABLE_NAME)
+        log_ctx = self.log.bind(record_count=record_count, target_table=self.TABLE_NAME)
+
+        all_keys_in_batch = set()
+        for record in data:
+            all_keys_in_batch.update(record.keys())
+        if 'id' not in all_keys_in_batch:
+             log_ctx.error("Input data for upsert is missing the 'id' key.")
+             raise ValueError("Upsert data must contain the 'id' key.")
+        final_columns_for_batch = sorted(list(all_keys_in_batch))
 
         try:
-            conn = self.db_pool.get_connection()
+            schema_changed = self.schema_manager.ensure_columns_exist(self.TABLE_NAME, all_keys_in_batch)
+            if schema_changed or self._cached_target_column_types is None:
+                if not self._refresh_column_type_cache():
+                     raise RuntimeError(f"Failed to refresh column types for {self.TABLE_NAME} after schema change.")
+        except Exception as schema_update_err:
+            log_ctx.error("Failed operation related to ensuring columns exist", columns=final_columns_for_batch, error=str(schema_update_err))
+            raise
+
+        target_column_types = self._cached_target_column_types
+        if not target_column_types: 
+             log_ctx.error("Target column type cache is not populated. Aborting UPSERT.")
+             raise RuntimeError(f"Column type cache unavailable for table {self.TABLE_NAME}")
+
+        conn = None
+        staging_table_name = f"{self.STAGING_TABLE_PREFIX}{int(time.time())}_{random.randint(1000, 9999)}"
+        staging_table_id = sql.Identifier(staging_table_name)
+        target_table_id = sql.Identifier(self.TABLE_NAME)
+        log_ctx = log_ctx.bind(staging_table=staging_table_name)
+
+        try:
+            conn = self.db_pool.getconn()
             with conn.cursor() as cur:
-                # 1. Criar tabela de staging UNLOGGED (mais rápida)
-                staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
-                create_staging_sql = sql.SQL("""
-                    CREATE UNLOGGED TABLE {staging_table} ( {columns} )
-                """).format(
-                    staging_table=staging_table_id,
-                    columns=sql.SQL(',\n    ').join(staging_col_defs)
+                staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in final_columns_for_batch]
+                create_staging_sql = sql.SQL("CREATE UNLOGGED TABLE {staging_table} ({columns})").format(
+                    staging_table=staging_table_id, columns=sql.SQL(', ').join(staging_col_defs)
                 )
-                self.log.debug("Creating unlogged staging table.", table_name=staging_table_name)
+                log_ctx.debug("Creating dynamic staging table", columns=final_columns_for_batch)
                 cur.execute(create_staging_sql)
 
-                # 2. Preparar dados e usar COPY
                 buffer = StringIO()
                 copy_failed_records = 0
                 try:
-                    writer = csv.writer(buffer, delimiter='|', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
+                    writer = csv.writer(buffer, delimiter='|', quoting=csv.QUOTE_MINIMAL, lineterminator='\n', escapechar='\\', doublequote=False)
                     for i, record in enumerate(data):
                         row = []
                         try:
-                            for field in columns:
+                            for field in final_columns_for_batch:
                                 value = record.get(field)
-                                if value is None:
-                                    row.append('\\N') 
-                                elif isinstance(value, datetime):
-                                    if value.tzinfo is None:
-                                        value = value.replace(tzinfo=timezone.utc)
-                                    else:
-                                        value = value.astimezone(timezone.utc)
-                                    row.append(value.isoformat(timespec='microseconds'))
-                                elif isinstance(value, bool):
-                                    row.append('t' if value else 'f')
-                                elif isinstance(value, (dict, list)):
-                                     row.append(json.dumps(value).replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r'))
-                                else:
-                                    str_value = str(value)
-                                    escaped_value = str_value.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r')
-                                    row.append(escaped_value)
+                                formatted_value = self._format_value_for_csv(value)
+                                row.append(formatted_value)
                             writer.writerow(row)
                         except Exception as row_err:
-                             copy_failed_records += 1
-                             self.log.error("Error preparing record for COPY", record_index=i, error=str(row_err), record_preview=str(record)[:200])
+                            copy_failed_records += 1
+                            log_ctx.error("Error preparing record for COPY", record_index=i, error=str(row_err), record_id=record.get('id', 'N/A'), exc_info=True)
                     buffer.seek(0)
 
                     if copy_failed_records > 0:
-                        self.log.warning("Some records failed preparation for COPY", failed_count=copy_failed_records, total_records=record_count)
+                        log_ctx.warning("Some records failed CSV preparation", failed_count=copy_failed_records)
 
-                    # 3. Executar COPY
                     copy_sql = sql.SQL("COPY {staging_table} ({fields}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N', ENCODING 'UTF8')").format(
                         staging_table=staging_table_id,
-                        fields=sql.SQL(', ').join(map(sql.Identifier, columns))
+                        fields=sql.SQL(', ').join(map(sql.Identifier, final_columns_for_batch))
                     )
-                    self.log.debug("Executing COPY command.", table_name=staging_table_name)
+                    log_ctx.debug("Executing COPY to staging table.")
                     cur.copy_expert(copy_sql, buffer)
                     copy_row_count = cur.rowcount
-                    self.log.debug("Copied data to staging table.", copied_row_count=copy_row_count, expected_count=record_count - copy_failed_records, table_name=staging_table_name)
+                    log_ctx.debug("COPY command executed", copied_rows=copy_row_count, expected_rows=record_count - copy_failed_records)
 
                 finally:
                     buffer.close()
 
-                # 4. Executar UPSERT com CASTING
-                insert_fields = sql.SQL(', ').join(map(sql.Identifier, columns))
+                # 5. Execute UPSERT with dynamic columns and CASTING
+                target_column_types = self.schema_manager._get_table_column_types(self.TABLE_NAME) 
+                if not target_column_types:
+                     log_ctx.error("Could not fetch target column types for casting. Aborting UPSERT.")
+                     raise RuntimeError(f"Failed to get column types for table {self.TABLE_NAME}")
+
+                insert_fields = sql.SQL(', ').join(map(sql.Identifier, final_columns_for_batch))
                 update_assignments_list = []
-                for col in columns:
-                    if col == 'id': continue
-                    if col == 'add_time':
-                         update_assignments_list.append(
-                             sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
-                                 col=sql.Identifier(col), target=target_table_id
+                select_expressions = []
+
+                for col in final_columns_for_batch:
+                    # Build UPDATE SET assignments
+                    if col != 'id': # Don't update the primary key
+                         if col == 'add_time':
+                             update_assignments_list.append(
+                                 sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
+                                     col=sql.Identifier(col), target=target_table_id
+                                 )
+                             )
+                         else:
+                             update_assignments_list.append(sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col)))
+
+                    # Build SELECT with CASTING logic
+                    target_type = target_column_types.get(col, "TEXT").upper()
+                    base_pg_type = target_type.split('(')[0] #
+
+                    if base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE PRECISION', 'SMALLINT'):
+                         # Try to cast numeric types, handle empty strings as NULL
+                         select_expressions.append(
+                             sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
+                                 col=sql.Identifier(col), type=sql.SQL(base_pg_type)
                              )
                          )
-                         continue
-                    update_assignments_list.append(sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col)))
-
-                update_assignments = sql.SQL(', ').join(update_assignments_list)
-
-                # Mapear tipos da tabela principal para casting
-                target_types_main = {**COLUMN_TYPES, **self._custom_columns_dict, **self._stage_history_columns_dict}
-                select_expressions = []
-                for col in columns:
-                    full_type_definition = target_types_main.get(col, "TEXT")
-                    base_pg_type = full_type_definition.split()[0].split('(')[0].upper()
-
-                    if base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE PRECISION', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'BOOLEAN'):
+                    elif base_pg_type in ('TIMESTAMP', 'TIMESTAMPTZ', 'DATE', 'TIME'):
+                         # Try to cast date/time types, handle empty strings as NULL
+                         select_expressions.append(
+                             sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
+                                 col=sql.Identifier(col), type=sql.SQL(base_pg_type)
+                             )
+                         )
+                    elif base_pg_type == 'BOOLEAN':
+                        # Handle 't'/'f' from COPY
                         select_expressions.append(
-                            sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
-                                col=sql.Identifier(col),
-                                type=sql.SQL(base_pg_type) 
+                            sql.SQL("CASE WHEN TRIM(LOWER({col})) = 't' THEN TRUE WHEN TRIM(LOWER({col})) = 'f' THEN FALSE ELSE NULL END").format(
+                                col=sql.Identifier(col)
                             )
                         )
-                    elif base_pg_type == 'JSONB': 
+                    elif base_pg_type == 'JSONB':
+                         # Try casting to JSONB, handle empty/invalid as NULL
                          select_expressions.append(
-                             sql.SQL("NULLIF(TRIM({col}), '')::JSONB").format(col=sql.Identifier(col))
+                             sql.SQL("(CASE WHEN TRIM({col}) = '' THEN NULL ELSE NULLIF(TRIM({col}), '')::JSONB END)").format(
+                                col=sql.Identifier(col)
+                             )
                          )
-                    else: 
-                         select_expressions.append(sql.Identifier(col))
+                    else: # TEXT, VARCHAR, etc.
+                        # Trim whitespace but keep empty strings if they are meaningful
+                        select_expressions.append(sql.SQL("TRIM({col})").format(col=sql.Identifier(col)))
 
+                update_assignments = sql.SQL(', ').join(update_assignments_list)
                 select_clause = sql.SQL(', ').join(select_expressions)
 
                 upsert_sql = sql.SQL("""
@@ -817,71 +310,119 @@ class PipedriveRepository(DataRepositoryPort):
                     ON CONFLICT (id) DO UPDATE SET {update_assignments}
                     WHERE {target_table}.update_time IS NULL OR EXCLUDED.update_time >= {target_table}.update_time
                 """).format(
-                    target_table=target_table_id,
-                    insert_fields=insert_fields,
-                    select_clause=select_clause,
-                    staging_table=staging_table_id,
-                    update_assignments=update_assignments
+                    target_table=target_table_id, insert_fields=insert_fields, select_clause=select_clause,
+                    staging_table=staging_table_id, update_assignments=update_assignments
                 )
-
-                self.log.debug("Executing UPSERT command.", target_table=self.TABLE_NAME)
+                log_ctx.debug("Executing UPSERT from staging table.")
                 cur.execute(upsert_sql)
                 upserted_count = cur.rowcount
                 conn.commit()
-                self.log.debug("Commit successful after UPSERT.")
-
-                duration = py_time.monotonic() - start_time
-                self.log.info(
-                    "Upsert completed successfully for main table.",
-                    record_count=record_count,
-                    initial_copy_failures=copy_failed_records,
-                    affected_rows_upsert=upserted_count,
-                    duration_sec=f"{duration:.3f}"
-                )
+                duration = time.monotonic() - start_time
+                log_ctx.info("Upsert completed successfully", affected_rows=upserted_count, duration_sec=f"{duration:.3f}s")
 
         except Exception as e:
             if conn: conn.rollback()
-            self.log.error("Upsert failed for main table", error=str(e), record_count=record_count, exc_info=True)
+            log_ctx.error("Upsert failed", error=str(e), exc_info=True)
             raise 
         finally:
-            # 5. Dropar tabela de staging sempre
+            # 6. Drop staging table and release connection
             if conn:
                 try:
                     with conn.cursor() as final_cur:
-                         drop_sql = sql.SQL("DROP TABLE IF EXISTS {staging_table}").format(staging_table=staging_table_id)
-                         self.log.debug("Dropping staging table.", table_name=staging_table_name)
-                         final_cur.execute(drop_sql)
-                         conn.commit() # Commit do drop
+                        drop_sql = sql.SQL("DROP TABLE IF EXISTS {staging_table}").format(staging_table=staging_table_id)
+                        log_ctx.debug("Dropping staging table.")
+                        final_cur.execute(drop_sql)
+                    conn.commit() 
                 except Exception as drop_err:
-                     self.log.error("Failed to drop staging table", table_name=staging_table_name, error=str(drop_err))
+                    log_ctx.error("Failed to drop staging table", error=str(drop_err))
                 finally:
-                    self.db_pool.release_connection(conn) # Liberar conexão
+                     self.db_pool.putconn(conn) 
 
-    # --- Funções de Leitura e Validação ---
-    def get_deals_needing_history_backfill(self, limit: int = 10000) -> List[str]:
-        """
-        Busca IDs de deals que podem precisar de backfill histórico.
-        Simplificação: Busca deals antigos onde *qualquer* coluna de stage history seja NULL.
-        Uma lógica mais robusta poderia verificar quais colunas específicas estão faltando.
-        """
+
+    # --- Implementações dos outros métodos da interface ---
+    def get_record_by_id(self, record_id: str) -> Optional[Dict]:
+        """Fetches a single complete record by its ID."""
         conn = None
-        if not self._stage_history_columns_dict:
+        log_ctx = self.log.bind(deal_id=record_id)
+        try:
+            conn = self.db_pool.getconn()
+            with conn.cursor(cursor_factory=extras.DictCursor) as cur:
+                # Select all columns currently in the table dynamically
+                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s;", (self.TABLE_NAME,))
+                columns = [row[0] for row in cur.fetchall()]
+                if not columns:
+                     log_ctx.error("Could not retrieve columns for table", table_name=self.TABLE_NAME)
+                     return None
+
+                select_cols_sql = sql.SQL(', ').join(map(sql.Identifier, columns))
+                query = sql.SQL("SELECT {cols} FROM {table} WHERE id = %s").format(
+                    cols=select_cols_sql,
+                    table=sql.Identifier(self.TABLE_NAME)
+                )
+                cur.execute(query, (str(record_id),)) 
+                row = cur.fetchone()
+                log_ctx.debug("Record fetched by ID", found=row is not None)
+                return dict(row) if row else None
+        except Exception as e:
+            log_ctx.error("Failed to get record by ID", error=str(e), exc_info=True)
+            return None
+        finally:
+            if conn: self.db_pool.putconn(conn)
+
+    def get_all_ids(self) -> Set[str]:
+        """Returns a set of all existing deal IDs."""
+        conn = None
+        ids = set()
+        try:
+            conn = self.db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(sql.SQL("SELECT id FROM {table}").format(table=sql.Identifier(self.TABLE_NAME)))
+                while True:
+                    rows = cur.fetchmany(50000)
+                    if not rows: break
+                    ids.update(row[0] for row in rows)
+                self.log.debug("Fetched all IDs", count=len(ids))
+                return ids
+        except Exception as e:
+            self.log.error("Failed to get all IDs", error=str(e), exc_info=True)
+            return set() 
+        finally:
+            if conn: self.db_pool.putconn(conn)
+
+    def count_records(self) -> int:
+        """Counts the total number of records in the main data table."""
+        conn = None
+        try:
+            conn = self.db_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(sql.SQL("SELECT COUNT(*) FROM {table}").format(table=sql.Identifier(self.TABLE_NAME)))
+                count = cur.fetchone()[0]
+                self.log.debug("Counted records", total=count)
+                return count or 0
+        except Exception as e:
+            self.log.error("Failed to count records", error=str(e), exc_info=True)
+            return -1 
+        finally:
+            if conn: self.db_pool.putconn(conn)
+
+    def get_deals_needing_history_backfill(self, limit: int) -> List[str]:
+        """Finds deal IDs potentially needing stage history backfill."""
+        conn = None
+        history_cols = list(self._stage_history_columns_dict.keys())
+        if not history_cols:
             self.log.warning("No stage history columns defined, cannot find deals for backfill.")
             return []
 
-        where_conditions = [sql.SQL("{} IS NULL").format(sql.Identifier(col)) for col in self._stage_history_columns_dict.keys()]
-        if not where_conditions:
-             self.log.warning("Could not build WHERE clause for backfill query.")
-             return []
+        where_conditions = [sql.SQL("{} IS NULL").format(sql.Identifier(col)) for col in history_cols]
         where_clause = sql.SQL(" OR ").join(where_conditions)
 
         try:
-            conn = self.db_pool.get_connection()
+            conn = self.db_pool.getconn()
             with conn.cursor() as cur:
                 query = sql.SQL("""
                     SELECT id FROM {table}
                     WHERE {conditions}
-                    ORDER BY add_time ASC
+                    ORDER BY add_time ASC NULLS FIRST, id -- Stable sort order
                     LIMIT %s
                 """).format(
                     table=sql.Identifier(self.TABLE_NAME),
@@ -892,341 +433,137 @@ class PipedriveRepository(DataRepositoryPort):
                 self.log.info("Fetched deal IDs needing history backfill", count=len(deal_ids), limit=limit)
                 return deal_ids
         except Exception as e:
-            self.log.error("Failed to get deals for history backfill", exc_info=True)
+            self.log.error("Failed to get deals for history backfill", error=str(e), exc_info=True)
             return []
         finally:
-            if conn:
-                self.db_pool.release_connection(conn)
+            if conn: self.db_pool.putconn(conn)
 
-    def update_stage_history(self, updates: List[Dict[str, Any]]):
-        """
-        Atualiza as colunas de histórico de stage para múltiplos deals.
-        'updates' é uma lista de dicts: [{'deal_id': str, 'stage_column': str, 'timestamp': datetime}, ...]
-        Usa UPDATE FROM VALUES para eficiência. Só atualiza se o valor atual for NULL.
-        """
+    def update_stage_history(self, updates: List[Dict[str, Any]]) -> None:
+        """Applies stage history timestamp updates using UPDATE FROM VALUES."""
         if not updates:
             self.log.debug("No stage history updates to apply.")
             return
 
         conn = None
-        start_time = py_time.monotonic()
-        updated_count = 0
-
-        updates_by_column: Dict[str, List[Tuple[str, datetime]]] = {}
+        start_time = time.monotonic()
+        total_updated_count = 0
         valid_stage_columns = set(self._stage_history_columns_dict.keys())
 
+        # Group updates by the column they affect for batching
+        updates_by_column: Dict[str, List[Tuple[str, datetime]]] = {}
         for update in updates:
-            deal_id = str(update.get('deal_id')) 
+            deal_id = str(update.get('deal_id'))
             stage_column = update.get('stage_column')
-            timestamp = update.get('timestamp')
+            timestamp_val = update.get('timestamp') 
 
-            if not deal_id or not stage_column or not isinstance(timestamp, datetime):
+            if not deal_id or not stage_column or not isinstance(timestamp_val, datetime):
                  self.log.warning("Invalid data in stage history update", update_data=update)
                  continue
-
             if stage_column not in valid_stage_columns:
-                 self.log.warning("Attempted to update non-existent/invalid stage history column", column_name=stage_column, deal_id=deal_id)
+                 self.log.warning("Attempted update on non-existent history column", column=stage_column, deal_id=deal_id)
                  continue
 
             if stage_column not in updates_by_column:
                 updates_by_column[stage_column] = []
-            updates_by_column[stage_column].append((deal_id, timestamp))
+            updates_by_column[stage_column].append((deal_id, timestamp_val))
 
         try:
-            conn = self.db_pool.get_connection()
+            conn = self.db_pool.getconn()
             with conn.cursor() as cur:
                 for stage_column, column_updates in updates_by_column.items():
                     if not column_updates: continue
-
                     column_id = sql.Identifier(stage_column)
                     table_id = sql.Identifier(self.TABLE_NAME)
-
                     values_tuples = [(upd[0], upd[1]) for upd in column_updates]
 
+                    # Update only if the current value is NULL
                     update_sql = sql.SQL("""
                         UPDATE {table} AS t
                         SET {column_to_update} = v.ts
                         FROM (VALUES %s) AS v(id, ts)
-                        WHERE t.id = v.id
-                        AND t.{column_to_update} IS NULL
+                        WHERE t.id = v.id AND t.{column_to_update} IS NULL
                     """).format(
                         table=table_id,
                         column_to_update=column_id
                     )
 
                     try:
-                        extras.execute_values(cur, update_sql.as_string(cur), values_tuples)
-                        updated_count += cur.rowcount
-                        self.log.debug(f"Executed batch update for column '{stage_column}'", records_in_batch=len(values_tuples), affected_rows=cur.rowcount)
+                        log_ctx = self.log.bind(stage_column=stage_column, batch_size=len(values_tuples))
+                        log_ctx.debug("Executing stage history update batch")
+                        extras.execute_values(cur, update_sql.as_string(cur), values_tuples, page_size=1000)
+                        batch_updated_count = cur.rowcount
+                        total_updated_count += batch_updated_count
+                        log_ctx.debug("Stage history update batch executed", affected_rows=batch_updated_count)
                     except Exception as exec_err:
-                        self.log.error(f"Failed to execute batch update for column '{stage_column}'", error=str(exec_err), records_count=len(values_tuples), exc_info=True)
-                        conn.rollback() 
+                        self.log.error("Failed executing batch update for stage history", stage_column=stage_column, error=str(exec_err), exc_info=True)
+                        conn.rollback()
                         raise exec_err 
 
-                conn.commit()
-                duration = py_time.monotonic() - start_time
+                conn.commit() 
+                duration = time.monotonic() - start_time
                 self.log.info(
-                    "Stage history update batch completed.",
-                    total_updates_processed=len(updates),
-                    total_rows_affected=updated_count,
+                    "Stage history update run completed.",
+                    total_updates_provided=len(updates),
+                    total_rows_affected=total_updated_count,
                     columns_updated=list(updates_by_column.keys()),
                     duration_sec=f"{duration:.3f}s"
                 )
 
         except Exception as e:
-            if conn: conn.rollback()
+            if conn: conn.rollback() 
             self.log.error("Failed to update stage history", error=str(e), total_updates=len(updates), exc_info=True)
         finally:
             if conn:
-                self.db_pool.release_connection(conn)
+                self.db_pool.putconn(conn)
 
     def count_deals_needing_backfill(self) -> int:
-        """
-        Conta o número total de deals que precisam de backfill histórico
-        (onde pelo menos uma coluna de histórico de stage é NULL).
-        Retorna -1 em caso de erro.
-        """
+        """Counts how many deals potentially need backfill."""
         conn = None
-        if not self._stage_history_columns_dict:
+        history_cols = list(self._stage_history_columns_dict.keys())
+        if not history_cols:
             self.log.warning("No stage history columns defined, cannot count deals for backfill.")
             return -1
 
-        where_conditions = [sql.SQL("{} IS NULL").format(sql.Identifier(col)) for col in self._stage_history_columns_dict.keys()]
-        if not where_conditions:
-             self.log.warning("Could not build WHERE clause for backfill count query.")
-             return -1
+        where_conditions = [sql.SQL("{} IS NULL").format(sql.Identifier(col)) for col in history_cols]
         where_clause = sql.SQL(" OR ").join(where_conditions)
 
         try:
-            conn = self.db_pool.get_connection()
+            conn = self.db_pool.getconn()
             with conn.cursor() as cur:
-                query = sql.SQL("""
-                    SELECT COUNT(*) FROM {table}
-                    WHERE {conditions}
-                """).format(
+                query = sql.SQL("SELECT COUNT(*) FROM {table} WHERE {conditions}").format(
                     table=sql.Identifier(self.TABLE_NAME),
                     conditions=where_clause
                 )
                 cur.execute(query)
                 count = cur.fetchone()[0]
                 self.log.info("Counted deals needing history backfill", count=count)
-                return count if count is not None else 0
+                return count or 0
         except Exception as e:
-            self.log.error("Failed to count deals for history backfill", exc_info=True)
-            return -1 
+            self.log.error("Failed to count deals for history backfill", error=str(e), exc_info=True)
+            return -1
         finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-                
-    def filter_data_by_ids(self, data: List[Dict], id_key: str = "id") -> List[Dict]:
-        """Filters data, returning records whose IDs are NOT in the database."""
-        if not data:
-            return []
+            if conn: self.db_pool.putconn(conn)
 
-        ids_to_check = {str(rec.get(id_key)) for rec in data if rec.get(id_key) is not None}
-        if not ids_to_check:
-             self.log.warning("No valid IDs found in data for filtering.")
-             return data 
-
-        conn = None
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                query = sql.SQL("SELECT id FROM {} WHERE id IN %s").format(sql.Identifier(self.TABLE_NAME))
-                cur.execute(query, (tuple(ids_to_check),))
-                existing_ids = {row[0] for row in cur.fetchall()}
-
-            new_records = [rec for rec in data if str(rec.get(id_key)) not in existing_ids]
-            self.log.debug("Filtered existing records.", initial_count=len(data), existing_count=len(existing_ids), new_count=len(new_records))
-            return new_records
-
-        except Exception as e:
-            self.log.error("Failed to filter existing records by ID", exc_info=True)
-            return data
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-
-    def get_record_by_id(self, record_id: Any) -> Optional[Dict]:
-        """Busca um registro completo pelo ID, tratando ID como TEXT."""
-        conn = None
-        record_id_str = str(record_id)
-        self.log.debug("Fetching record by ID", record_id=record_id_str)
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor(cursor_factory=extras.DictCursor) as cur:
-                query = sql.SQL("SELECT * FROM {table} WHERE id = %s").format(
-                    table=sql.Identifier(self.TABLE_NAME)
-                )
-                cur.execute(query, (record_id_str,))
-                row = cur.fetchone()
-                return dict(row) if row else None
-        except Exception as e:
-             self.log.error("Failed to get record by ID", record_id=record_id_str, exc_info=True)
-             return None
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-                
-    def add_columns_to_main_table(self, new_columns: List[str], inferred_from_df: pd.DataFrame) -> None:
-        """Tenta adicionar dinamicamente colunas novas no schema da tabela principal, inferindo o tipo via DataFrame."""
-        conn = None
-        added_columns = []
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                for col in new_columns:
-                    sample_value = inferred_from_df[col].dropna().iloc[0] if not inferred_from_df[col].dropna().empty else None
-
-                    inferred_type = "TEXT"
-                    if isinstance(sample_value, (int, float, np.integer, np.floating)):
-                        inferred_type = "NUMERIC(18, 4)"
-                    elif isinstance(sample_value, (datetime, pd.Timestamp)):
-                        inferred_type = "TIMESTAMPTZ"
-                    elif isinstance(sample_value, bool):
-                        inferred_type = "BOOLEAN"
-
-                    alter_sql = sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ctype}").format(
-                        table=sql.Identifier(self.TABLE_NAME),
-                        col=sql.Identifier(col),
-                        ctype=sql.SQL(inferred_type)
-                    )
-                    cur.execute(alter_sql)
-                    added_columns.append((col, inferred_type))
-                conn.commit()
-                self.log.info("Added new columns to main table dynamically.", columns=added_columns)
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            self.log.error("Failed to add columns dynamically", error=str(e), columns=new_columns, exc_info=True)
-            raise
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-
-    def get_configuration(self, config_key: str) -> Any:
-        query = sql.SQL("SELECT value FROM configuration WHERE key = %s LIMIT 1;")
-        with self._connection.cursor() as cursor:
-            cursor.execute(query, (config_key,))
-            result = cursor.fetchone()
-            if result:
-                return result[0]
-            raise KeyError(f"Configuration key '{config_key}' not found")
-        
-    def fetch_all_stages_from_db_table(self) -> List[Dict]:
-        """Busca todos os stages da tabela de lookup persistente."""
-        conn = None
-        log_ctx = self.log.bind(lookup_table=self.LOOKUP_TABLE_STAGES)
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor(cursor_factory=extras.DictCursor) as cur:
-                query = sql.SQL("SELECT stage_id, stage_name, normalized_name FROM {} ORDER BY stage_id").format(
-                    sql.Identifier(self.LOOKUP_TABLE_STAGES)
-                )
-                cur.execute(query)
-                stages_from_db = [dict(row) for row in cur.fetchall()]
-                log_ctx.info("Fetched stages from DB table", count=len(stages_from_db))
-
-                formatted_stages = []
-                for s in stages_from_db:
-                    formatted_stages.append({
-                        'id': s['stage_id'],        # Mapeia stage_id para 'id'
-                        'name': s['stage_name'],    # Mapeia stage_name para 'name'
-                        'normalized_name': s.get('normalized_name') # Mantém normalized_name se existir
-                    })
-                return formatted_stages
-        except Exception as e:
-            log_ctx.error("Failed to fetch stages from DB table", exc_info=True)
-            return []
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-                
-    def get_stage_id_to_column_map(self) -> Dict[int, str]:
-        """
-        Mapeia stage_id → nome final da coluna, com base na nova regra com stage_id no nome.
-        """
-        column_map = {}
-        for stage in self._all_stages_details:
-            stage_id = stage.get("id")
-            stage_name = stage.get("name")
-            if not stage_id or not stage_name:
-                continue
-            normalized = normalize_column_name(stage_name)
-            col_name = f"{self.STAGE_HISTORY_COLUMN_PREFIX}{normalized}_{stage_id}"
-            if col_name in self._stage_history_columns_dict:
-                column_map[stage_id] = col_name
-        return column_map
-
-    def save_configuration(self, key: str, value: Dict):
-        """Salva configurações dinâmicas (formato JSONB) no banco."""
-        conn = None
-        config_table_id = sql.Identifier(self.CONFIG_TABLE_NAME)
-        self.log.debug("Saving configuration", config_key=key)
-        try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                upsert_sql = sql.SQL("""
-                    INSERT INTO {config_table} (key, value, updated_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (key) DO UPDATE SET
-                        value = EXCLUDED.value,
-                        updated_at = EXCLUDED.updated_at;
-                """).format(config_table=config_table_id)
-
-                timestamp_str = value.get('updated_at', datetime.now(timezone.utc).isoformat())
-                try:
-                    ts_obj = datetime.fromisoformat(timestamp_str).astimezone(timezone.utc)
-                except Exception:
-                    self.log.warning("Could not parse timestamp from config value, using current time.", config_key=key, value_ts=timestamp_str)
-                    ts_obj = datetime.now(timezone.utc)
-
-                cur.execute(upsert_sql, (key, json.dumps(value), ts_obj)) 
-                conn.commit()
-                self.log.info("Configuration saved successfully", config_key=key)
-        except Exception as e:
-            if conn: conn.rollback()
-            self.log.error("Failed to save configuration", config_key=key, exc_info=True)
-        finally:
-            if conn:
-                self.db_pool.release_connection(conn)
-            
-    def get_all_ids(self) -> Set[str]:
-        """Retorna todos os IDs presentes no banco."""
-        conn = self.db_pool.get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT id FROM {self.TABLE_NAME}")
-                return {row[0] for row in cur.fetchall()}
-        finally:
-            self.db_pool.release_connection(conn)
-            
     def validate_date_consistency(self) -> int:
-        """Verifica consistência básica de datas, retorna número de problemas."""
-        conn = self.db_pool.get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    SELECT COUNT(*) FROM {self.TABLE_NAME}
-                    WHERE add_time > CURRENT_DATE 
-                        OR update_time < add_time
-                        OR (close_time IS NOT NULL AND close_time < add_time)
-                """)
-                return cur.fetchone()[0]
-        finally:
-            self.db_pool.release_connection(conn)
-
-    def count_records(self) -> int:
-        """Conta o total de registros na tabela."""
-        conn = self.db_pool.get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM {self.TABLE_NAME}")
-                return cur.fetchone()[0]
-        finally:
-            self.db_pool.release_connection(conn)
-            
-    def save_data(self, data: List[Dict]) -> None:
-        """Default save implementation, uses upsert."""
-        self.log.debug("Calling save_data, delegating to save_data_upsert.")
-        self.save_data_upsert(data)
+         """Checks basic date consistency, returns number of issues."""
+         conn = None
+         try:
+             conn = self.db_pool.getconn()
+             with conn.cursor() as cur:
+                 cur.execute(sql.SQL("""
+                     SELECT COUNT(*) FROM {table}
+                     WHERE add_time > NOW() -- Added in the future?
+                       OR (update_time IS NOT NULL AND update_time < add_time)
+                       OR (close_time IS NOT NULL AND close_time < add_time)
+                       OR (won_time IS NOT NULL AND won_time < add_time)
+                       OR (lost_time IS NOT NULL AND lost_time < add_time)
+                 """).format(table=sql.Identifier(self.TABLE_NAME)))
+                 count = cur.fetchone()[0]
+                 if count > 0:
+                      self.log.warning("Date consistency issues found", count=count)
+                 return count or 0
+         except Exception as e:
+             self.log.error("Failed to validate date consistency", error=str(e), exc_info=True)
+             return -1
+         finally:
+             if conn: self.db_pool.putconn(conn)

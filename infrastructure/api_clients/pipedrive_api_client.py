@@ -20,47 +20,40 @@ from infrastructure.monitoring.metrics import (
 
 
 log = structlog.get_logger(__name__)
-
-# Circuit Breaker
 api_breaker = CircuitBreaker(fail_max=3, reset_timeout=60)
 
 class PipedriveAPIClient(PipedriveClientPort):
     BASE_URL_V1 = "https://api.pipedrive.com/v1"
     BASE_URL_V2 = "https://api.pipedrive.com/api/v2"
-
     DEFAULT_TIMEOUT = 45
     DEFAULT_V2_LIMIT = 500
     MAX_V1_PAGINATION_LIMIT = 500
     CHANGELOG_PAGE_LIMIT = 500
+    DEFAULT_MAP_CACHE_TTL_SECONDS = 300 * 12
+    STAGE_DETAILS_CACHE_TTL_SECONDS = 300 * 6
+    DEAL_FIELDS_CACHE_TTL_SECONDS = 86400 # Cache deal fields for 24h
 
-    # TTL para mapas e lookups individuais
-    DEFAULT_MAP_CACHE_TTL_SECONDS = 300 * 12  # 12 hours
-    STAGE_DETAILS_CACHE_TTL_SECONDS = 300 * 6  # 6 hours
-    
     ENDPOINT_COSTS = {
-        # V1 endpoints
-        '/deals/detail/changelog': 20,  # GET /v1/deals/{id}/changelog
-        '/dealFields': 20,              # GET /v1/dealFields
-        '/users': 20,                   # GET /v1/users
-        '/users/detail': 5,             # GET /v1/users/{id} se existir
-
-        # V2 endpoints
-        '/deals': 10,                   # GET /api/v2/deals
-        '/stages': 5,                   # GET /api/v2/stages
-        '/pipelines': 5,                # GET /api/v2/pipelines
-        '/persons/detail': 1,           # GET /api/v2/persons/{id}
-        '/persons': 10,                 # GET /api/v2/persons?ids=...
+        '/deals/detail/changelog': 20,
+        '/dealFields': 20,
+        '/users': 20,
+        '/users/detail': 5,
+        '/deals': 10,
+        '/stages': 5,
+        '/pipelines': 5,
+        '/persons/detail': 1,
+        '/persons': 10,
+        '/organizations': 10
     }
-    
     DEFAULT_ENDPOINT_COST = 10
     UNKNOWN_NAME = "Desconhecido"
-    
+
     def __init__(self, cache: RedisCache):
         self.api_key = settings.PIPEDRIVE_API_KEY
         if not self.api_key:
             log.error("PIPEDRIVE_API_KEY is not set!")
             raise ValueError("Pipedrive API Key is required.")
-        
+
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
         self.cache = cache
@@ -119,9 +112,9 @@ class PipedriveAPIClient(PipedriveClientPort):
             retry_if_exception_type(requests.exceptions.Timeout) |
             retry_if_exception_type(requests.exceptions.ConnectionError) |
             retry_if_exception_type(requests.exceptions.ChunkedEncodingError) |
-            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) 
+            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError)
                                and getattr(e.response, 'status_code', None) >= 500) |
-            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError) 
+            retry_if_exception(lambda e: isinstance(e, requests.exceptions.HTTPError)
                                and getattr(e.response, 'status_code', None) == 429)
         ),
         reraise=True
@@ -373,53 +366,83 @@ class PipedriveAPIClient(PipedriveClientPort):
             return []
         
     def fetch_deal_fields_mapping(self) -> Dict[str, str]:
-        cache_key = "pipedrive:deal_fields_mapping"; cache_ttl_seconds = 86400 # 24h
+        cache_key = "pipedrive:deal_fields_mapping"
         cached = self.cache.get(cache_key)
-        pipedrive_api_cache_hit_total.labels(entity="deal_fields", source="redis").inc()
-        if cached and isinstance(cached, dict): self.log.info("Deal fields mapping retrieved from cache.", cache_hit=True, map_size=len(cached)); return cached
-        self.log.info("Fetching deal fields mapping from API (V1).", cache_hit=False)
+        pipedrive_api_cache_hit_total.labels(entity="deal_fields", source="redis_map").inc()
+        if cached and isinstance(cached, dict):
+            self.log.info("Deal fields mapping retrieved from cache.", cache_hit=True, map_size=len(cached))
+            return cached
+
+        self.log.info("Fetching deal fields definitions to build mapping (V1).", cache_hit=False)
+        try:
+            # Fetch full definitions first (uses cache internally)
+            all_fields_data = self.fetch_deal_fields()
+            if not all_fields_data:
+                self.log.warning("Received no data for deal fields when building mapping.")
+                return {}
+
+            # Define standard fields to exclude from custom mapping
+            non_custom_keys = {
+                 "id", "creator_user_id", "person_id", "org_id",
+                 "stage_id", "pipeline_id", "title", "value", "currency", "add_time",
+                 "update_time", "status", "lost_reason", "visible_to", "close_time",
+                 "won_time", "lost_time", "first_won_time", "products_count",
+                 "files_count", "notes_count", "followers_count", "email_messages_count",
+                 "activities_count", "done_activities_count", "undone_activities_count",
+                 "participants_count", "expected_close_date", "probability",
+                 "next_activity_date", "next_activity_time", "next_activity_id",
+                 "last_activity_id", "last_activity_date", "stage_change_time",
+                 "last_incoming_mail_time", "last_outgoing_mail_time",
+                 "label", "stage_order_nr", "person_name", "org_name", "next_activity_subject",
+                 "next_activity_type", "next_activity_duration", "next_activity_note",
+                 "formatted_value", "weighted_value", "formatted_weighted_value",
+                 "weighted_value_currency", "rotten_time", "owner_name", "cc_email"
+            }
+            mapping = {}
+            for field in all_fields_data:
+                api_key = field.get("key")
+                name = field.get("name")
+                if api_key and name and api_key not in non_custom_keys:
+                    normalized = normalize_column_name(name)
+                    if normalized and normalized != "_invalid_normalized_name":
+                         if normalized in mapping.values():
+                             self.log.warning("Normalized custom field name collision detected.",
+                                              conflicting_api_key=api_key, conflicting_name=name,
+                                              normalized_name=normalized)
+                         mapping[api_key] = normalized
+                    else:
+                         self.log.warning("Failed to normalize custom field name.", api_key=api_key, original_name=name)
+
+            # Cache the generated mapping
+            self.cache.set(cache_key, mapping, ex_seconds=self.DEAL_FIELDS_CACHE_TTL_SECONDS)
+            self.log.info("Deal fields mapping built and cached.", custom_mapping_count=len(mapping))
+            return mapping
+        except Exception as e:
+            self.log.error("Failed to fetch and process deal fields mapping", exc_info=True)
+            return {}
+
+    def fetch_deal_fields(self) -> List[Dict]:
+        cache_key = "pipedrive:deal_fields_definitions"
+        cached = self.cache.get(cache_key)
+        pipedrive_api_cache_hit_total.labels(entity="deal_fields", source="redis_defs").inc()
+        if cached and isinstance(cached, list):
+            self.log.info("Deal fields definitions retrieved from cache.", cache_hit=True, count=len(cached))
+            return cached
+
+        self.log.info("Fetching deal fields definitions from API (V1).", cache_hit=False)
         url = f"{self.BASE_URL_V1}/dealFields"
         try:
             all_fields_data = self._fetch_paginated_v1(url)
-            if not all_fields_data: self.log.warning("Received no data for deal fields from API."); return {}
-            non_custom_keys = {
-                "id", "creator_user_id", "person_id", "org_id",
-                "stage_id", "pipeline_id", "title", "value", "currency", "add_time",
-                "update_time", "status", "lost_reason", "visible_to", "close_time",
-                "won_time", "lost_time", "first_won_time", "products_count",
-                "files_count", "notes_count", "followers_count", "email_messages_count",
-                "activities_count", "done_activities_count", "undone_activities_count",
-                "participants_count", "expected_close_date", "probability",
-                "next_activity_date", "next_activity_time", "next_activity_id",
-                "last_activity_id", "last_activity_date", "stage_change_time",
-                "last_incoming_mail_time", "last_outgoing_mail_time",
-                "label", "stage_order_nr", "person_name", "org_name", "next_activity_subject",
-                "next_activity_type", "next_activity_duration", "next_activity_note",
-                "formatted_value", "weighted_value", "formatted_weighted_value",
-                "weighted_value_currency", "rotten_time", "owner_name", "cc_email"
-            }
+            if all_fields_data:
+                self.cache.set(cache_key, all_fields_data, ex_seconds=self.DEAL_FIELDS_CACHE_TTL_SECONDS)
+                self.log.info("Deal fields definitions fetched and cached.", count=len(all_fields_data))
+            else:
+                self.log.warning("Received no data for deal fields definitions from API.")
+            return all_fields_data or []
+        except Exception as e:
+            self.log.error("Failed to fetch deal fields definitions", exc_info=True)
+            return []
 
-            mapping = {}
-            for field in all_fields_data:
-                 api_key = field.get("key")
-                 name = field.get("name")
-                 if api_key and name and api_key not in non_custom_keys:
-                     normalized = normalize_column_name(name) 
-                     if normalized:
-                         # Adiciona log se houver colisão de nome normalizado
-                         if normalized in [m for m in mapping.values()]:
-                             self.log.warning("Normalized custom field name collision detected.",
-                                               conflicting_api_key=api_key,
-                                               conflicting_name=name,
-                                               normalized_name=normalized)
-                         mapping[api_key] = normalized
-                     else:
-                         self.log.warning("Failed to normalize custom field name.", api_key=api_key, original_name=name)
-
-            self.cache.set(cache_key, mapping, ex_seconds=cache_ttl_seconds)
-            self.log.info("Deal fields mapping fetched and cached.", total_fields_api=len(all_fields_data), custom_mapping_count=len(mapping))
-            return mapping
-        except Exception as e: self.log.error("Failed to fetch and process deal fields mapping", exc_info=True); return {}
 
     def get_last_timestamp(self) -> str | None:
         cache_key = "pipedrive:last_update_timestamp"
@@ -535,7 +558,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             if items_limit and count >= items_limit:
                 break
             count += 1
-            yield deal
+            yield from self._fetch_paginated_v2_stream(url, params=params)
 
 
     def update_last_timestamp(self, new_timestamp: str):
@@ -545,16 +568,68 @@ class PipedriveAPIClient(PipedriveClientPort):
         except Exception as e: self.log.error("Failed to store last update timestamp in cache", timestamp=new_timestamp, exc_info=True)
         
     def fetch_deal_changelog(self, deal_id: int) -> List[Dict]:
-            """Busca o changelog para um deal específico (V1)."""
-            if not deal_id or deal_id <= 0:
-                self.log.warning("Invalid deal_id for changelog fetch", deal_id=deal_id)
-                return []
+        url = f"{self.BASE_URL_V1}/deals/{deal_id}/changelog"
+        self.log.debug("Fetching deal changelog from API (V1)", deal_id=deal_id)
+        try:
+            return self._fetch_paginated_v1(url, params={"limit": self.CHANGELOG_PAGE_LIMIT})
+        except Exception as e:
+            self.log.error("Failed to fetch deal changelog", deal_id=deal_id, error=str(e), exc_info=True)
+            return []
+            
+    def fetch_all_users(self) -> List[Dict]:
+        url = f"{self.BASE_URL_V1}/users"
+        self.log.info("Fetching all users from API (V1).")
+        try:
+            return self._fetch_paginated_v1(url)
+        except Exception as e:
+            self.log.error("Failed to fetch all users", exc_info=True)
+            return []
 
-            url = f"{self.BASE_URL_V1}/deals/{deal_id}/changelog"
-            self.log.debug("Fetching deal changelog from API (V1)", deal_id=deal_id)
-            try:
-                changelog_data = self._fetch_paginated_v1(url)
-                return changelog_data
-            except Exception as e:
-                self.log.error("Failed to fetch deal changelog", deal_id=deal_id, error=str(e))
-                raise e
+    def fetch_all_persons(self) -> List[Dict]:
+        url = f"{self.BASE_URL_V2}/persons"
+        self.log.info("Fetching all persons from API (V2).")
+        try:
+            # Usar _fetch_paginated_v2 que retorna lista completa
+            return self._fetch_paginated_v2(url)
+        except Exception as e:
+            self.log.error("Failed to fetch all persons", exc_info=True)
+            return []
+
+    def fetch_all_stages_details(self) -> List[Dict]:
+        # Reutiliza implementação existente que já usa cache e paginated_v2
+        cache_key = "pipedrive:all_stages_details"
+        cached = self.cache.get(cache_key)
+        if cached and isinstance(cached, list):
+             self.log.info("Stage details retrieved from cache.", count=len(cached))
+             return cached
+        self.log.info("Fetching stage details from API (V2).")
+        url = f"{self.BASE_URL_V2}/stages"
+        try:
+            all_stages = self._fetch_paginated_v2(url)
+            if all_stages:
+                 self.cache.set(cache_key, all_stages, ex_seconds=self.STAGE_DETAILS_CACHE_TTL_SECONDS)
+                 self.log.info("Stage details fetched and cached.", count=len(all_stages))
+            else:
+                 self.log.warning("Fetched stage list was empty.")
+            return all_stages or []
+        except Exception as e:
+            self.log.error("Failed to fetch stage details", exc_info=True)
+            return []
+
+    def fetch_all_pipelines(self) -> List[Dict]:
+        url = f"{self.BASE_URL_V2}/pipelines"
+        self.log.info("Fetching all pipelines from API (V2).")
+        try:
+            return self._fetch_paginated_v2(url)
+        except Exception as e:
+            self.log.error("Failed to fetch all pipelines", exc_info=True)
+            return []
+
+    def fetch_all_organizations(self) -> List[Dict]:
+        url = f"{self.BASE_URL_V2}/organizations"
+        self.log.info("Fetching all organizations from API (V2).")
+        try:
+             return self._fetch_paginated_v2(url)
+        except Exception as e:
+            self.log.error("Failed to fetch all organizations", exc_info=True)
+            return []

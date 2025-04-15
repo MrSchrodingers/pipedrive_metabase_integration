@@ -2,7 +2,7 @@ import pandas as pd
 from application.services.etl_service import ETLService
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
-from infrastructure.db_pool import DBConnectionPool
+from infrastructure.db.db_pool import DBConnectionPool
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
 from infrastructure.config.settings import settings
 

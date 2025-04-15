@@ -1,550 +1,276 @@
-import psutil
+import json
 import time
 from datetime import datetime, timedelta, timezone
 import tracemalloc
-from typing import Any, Dict, List, Tuple, Optional
-import pandas as pd
-import numpy as np
-import requests
+from typing import Any, Dict, List, Optional
 import structlog
-import json
-from pydantic import ValidationError
+from pydantic import ValidationError 
 from tenacity import RetryError
+import requests
 
-from application.utils.column_utils import flatten_custom_fields, normalize_column_name
-from infrastructure.monitoring.metrics import (
-    etl_counter, 
-    etl_failure_counter, 
-    etl_duration_hist,
-    records_processed_counter, 
-    memory_usage_gauge, 
-    batch_size_gauge,
-    db_operation_duration_hist,
-    transform_duration_summary,
-    etl_empty_batches_total,
-    etl_batch_validation_errors_total,
-    etl_final_column_mismatch_total,
-    etl_heartbeat,
-    etl_cpu_usage_percent,
-    etl_thread_count,
-    etl_disk_usage_bytes,
-    etl_skipped_batches_total,
-    etl_last_successful_run_timestamp,
-    etl_transformation_error_rate,
-    etl_loaded_records_per_batch
-)
+from core_domain.value_objects.timestamp import Timestamp
+
+
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from application.ports.data_repository_port import DataRepositoryPort
+from infrastructure.repository_impl.lookup_repositories import (
+    UserRepository, PersonRepository, StageRepository, PipelineRepository, OrganizationRepository
+)
+from application.mappers import deal_mapper
 from application.schemas.deal_schema import DealSchema
-from infrastructure.repository_impl.pipedrive_repository import UNKNOWN_NAME
 
-log = structlog.get_logger()
+from infrastructure.monitoring.metrics import (
+    etl_counter, etl_failure_counter, etl_duration_hist,
+    records_processed_counter, memory_usage_gauge, batch_size_gauge,
+    db_operation_duration_hist, etl_empty_batches_total,
+    etl_batch_validation_errors_total, etl_skipped_batches_total,
+)
 
-STAGE_HISTORY_COLUMN_PREFIX = "moved_to_stage_"
+log = structlog.get_logger(__name__)
 
 class ETLService:
+    """
+    Orchestrates the ETL process for Pipedrive deals, coordinating the API client,
+    mappers, domain objects, data repository, and lookup repositories.
+    """
+
     def __init__(
         self,
         client: PipedriveClientPort,
-        repository: DataRepositoryPort,
-        batch_size: int = 1000 
+        data_repository: DataRepositoryPort,
+        user_repository: UserRepository,
+        person_repository: PersonRepository,
+        stage_repository: StageRepository,
+        pipeline_repository: PipelineRepository,
+        org_repository: OrganizationRepository,
+        mapper_module: Any = deal_mapper, 
+        batch_size: int = 1000
     ):
         self.client = client
-        self.repository = repository
-        self.process_batch_size = batch_size 
-        self.log = log.bind(service="ETLService")
-        self._stage_id_to_column_name_map = self.repository.get_stage_id_to_column_map()
-
-        try:
-             self._all_stages_details = self.client.fetch_all_stages_details()
-             self._stage_id_to_normalized_name_map = self._build_stage_id_map(self._all_stages_details)
-        except Exception as stage_err:
-             self.log.error("Failed to fetch initial stage details during init.", error=str(stage_err))
-             self._all_stages_details = []
-             self._stage_id_to_normalized_name_map = {}
-        
-    def run_etl_with_data(self, data: List[Dict], batch_size: int, flow_type: str) -> Dict:
-        self.log.warning("Running ETL with provided data for test/experiment.", data_size=len(data), batch_size=batch_size)
-        original_fetch = self.client.fetch_all_deals_stream
-        original_process_batch_size = self.process_batch_size
-
-        def mock_stream(**kwargs):
-            self.log.debug("Using mocked deal stream for test run.")
-            yield from data
-
-        self.client.fetch_all_deals_stream = mock_stream
+        self.data_repository = data_repository
+        self.user_repo = user_repository
+        self.person_repo = person_repository
+        self.stage_repo = stage_repository
+        self.pipeline_repo = pipeline_repository
+        self.org_repo = org_repository
+        self.mapper = mapper_module
         self.process_batch_size = batch_size
-        result = self.run_etl(flow_type=flow_type)
+        self.log = log.bind(service="ETLService")
 
-        self.client.fetch_all_deals_stream = original_fetch
-        self.process_batch_size = original_process_batch_size
-        self.log.info("Restored original deal stream and batch size after test run.")
-        return result
-
-    def _build_stage_id_map(self, all_stages: List[Dict]) -> Dict[int, str]:
-        """Cria um mapa de stage_id para nome normalizado."""
-        id_map = {}
-        if not all_stages:
-            return {}
-        for stage in all_stages:
-            stage_id = stage.get('id')
-            stage_name = stage.get('name')
-            if stage_id and stage_name:
-                try:
-                    normalized = normalize_column_name(stage_name)
-                    if normalized:
-                        id_map[stage_id] = normalized
-                except Exception as e:
-                    self.log.warning("Failed to normalize stage name for map",
-                                     stage_id=stage_id, name=stage_name, error=str(e))
-        return id_map
-
-    def _parse_changelog_timestamp(self, timestamp_str: Optional[str]) -> Optional[datetime]:
-        """Converte o timestamp do changelog (ex: '2020-09-25 09:21:55') para datetime com UTC."""
-        if not timestamp_str:
-            return None
         try:
-            dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-            return dt.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            self.log.warning("Failed to parse changelog timestamp", timestamp_str=timestamp_str)
-            return None
+            self._custom_field_map = self.client.fetch_deal_fields_mapping()
+            self._field_definitions = self._get_field_definitions_map()
+            self._stage_id_to_col_map = self.data_repository.get_stage_id_to_column_map()
+            self.log.info("ETL Service initialized with field maps and definitions.")
+        except Exception as init_err:
+             self.log.error("Failed to fetch initial mappings/definitions for ETL Service", error=str(init_err), exc_info=True)
+             raise RuntimeError("ETL Service initialization failed: Could not fetch required mappings.") from init_err
 
-    def _validate_and_transform_batch_pandas(
-        self,
-        batch: List[Dict],
-        flow_type: str
-    ) -> Tuple[List[Dict], int]:
-        """Valida, transforma e enriquece um batch de deals usando lookups no DB."""
-        start_time = time.monotonic()
-        pydantic_failed_count = 0
-        original_count = len(batch)
-        transform_log = self.log.bind(batch_original_size=original_count, flow_type=flow_type)
-
-        if not batch:
-            return [], 0
-
-        # 1. Validação com Pydantic
-        valid_input_for_df = []
-        for i, record in enumerate(batch):
-            record_id = record.get("id", f"no-id-index-{i}")
-            try:
-                DealSchema.model_validate(record)
-                valid_input_for_df.append(record)
-            except ValidationError as e:
-                pydantic_failed_count += 1
-                errors_summary = [f"{err['loc']}: {err['msg']}" for err in e.errors()]
-                transform_log.warning("Pydantic validation failed", record_id=record_id, errors=errors_summary)
-            except Exception as e:
-                pydantic_failed_count += 1
-                transform_log.error("Unexpected error during Pydantic validation", record_id=record_id, exc_info=True)
-
-        pydantic_valid_count = len(valid_input_for_df)
-        transform_log = transform_log.bind(pydantic_valid_count=pydantic_valid_count, pydantic_failed_count=pydantic_failed_count)
-
-        if not valid_input_for_df:
-            transform_log.warning("No records passed Pydantic validation in the batch.")
-            return [], pydantic_failed_count
-
-        # 2. DataFrame e transformação
-        validated_records: List[Dict] = []
-        transform_failed_count = 0
-        db_lookup_maps = {}
-        
+    def _get_field_definitions_map(self) -> Dict[str, Dict]:
+        """Fetches /dealFields and returns a map indexed by API hash key."""
         try:
-            df = pd.DataFrame(valid_input_for_df)
-            
-            # --- Coletar IDs para Lookup no DB ---
-            user_ids_needed = set(df['creator_user_id'].dropna().unique()) | set(df['owner_id'].dropna().unique())
-            df["owner_id_parsed"] = df["owner_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
-            owner_ids_needed = set(df['owner_id_parsed'].dropna().unique())
-            user_ids_needed.update(owner_ids_needed) 
-
-            person_ids_needed = set(df['person_id'].dropna().unique())
-            stage_ids_needed = set(df['stage_id'].dropna().unique())
-            pipeline_ids_needed = set(df['pipeline_id'].dropna().unique())
-            df["org_id_parsed"] = df["org_id"].apply(lambda x: x.get("id") if isinstance(x, dict) else x).astype('Int64')
-            org_ids_needed = set(df['org_id_parsed'].dropna().unique())
-
-
-            transform_log.debug("IDs collected for DB lookup",
-                                users=len(user_ids_needed), persons=len(person_ids_needed),
-                                stages=len(stage_ids_needed), pipelines=len(pipeline_ids_needed),
-                                orgs=len(org_ids_needed))
-
-            # --- Buscar Mapas do DB para o Batch ---
-            lookup_start_time = time.monotonic()
-            try:
-                db_lookup_maps = self.repository.get_lookup_maps_for_batch(
-                    user_ids={int(uid) for uid in user_ids_needed if pd.notna(uid)}, 
-                    person_ids={int(pid) for pid in person_ids_needed if pd.notna(pid)},
-                    stage_ids={int(sid) for sid in stage_ids_needed if pd.notna(sid)},
-                    pipeline_ids={int(plid) for plid in pipeline_ids_needed if pd.notna(plid)},
-                    org_ids={int(oid) for oid in org_ids_needed if pd.notna(oid)}
-                )
-                lookup_duration = time.monotonic() - lookup_start_time
-                transform_log.info("Fetched batch lookups from DB", duration_sec=f"{lookup_duration:.3f}s",
-                                   users=len(db_lookup_maps.get('users', {})), persons=len(db_lookup_maps.get('persons', {})),
-                                   stages=len(db_lookup_maps.get('stages', {})), pipelines=len(db_lookup_maps.get('pipelines', {})),
-                                   orgs=len(db_lookup_maps.get('orgs', {})))
-            except Exception as lookup_err:
-                 transform_log.error("Failed to fetch lookups from DB for batch", error=str(lookup_err), exc_info=True)
-                 db_lookup_maps = {'users': {}, 'persons': {}, 'stages': {}, 'pipelines': {}, 'orgs': {}}
-
-
-            # --- Transformações usando os mapas buscados do DB ---
-            transformed_df = pd.DataFrame()
-            transformed_df["id"] = df["id"].astype(str)
-            transformed_df["titulo"] = df["title"].fillna("").astype(str)
-            status_map = { "won": "Ganho", "lost": "Perdido", "open": "Em aberto", "deleted": "Deletado" }
-            transformed_df["status"] = df["status"].fillna("").astype(str).map(status_map).fillna(df["status"])
-            transformed_df["currency"] = df["currency"].fillna("USD").astype(str)
-            transformed_df["value"] = pd.to_numeric(df["value"], errors='coerce').fillna(0.0)
-            transformed_df["add_time"] = pd.to_datetime(df["add_time"], errors='coerce', utc=True)
-            transformed_df["update_time"] = pd.to_datetime(df["update_time"], errors='coerce', utc=True)
-
-            # Mapeamentos usando db_lookup_maps
-            batch_user_map = db_lookup_maps.get('users', {})
-            batch_person_map = db_lookup_maps.get('persons', {})
-            batch_stage_map = db_lookup_maps.get('stages', {}) 
-            batch_pipeline_map = db_lookup_maps.get('pipelines', {})
-            batch_org_map = db_lookup_maps.get('orgs', {})
-
-            transformed_df["creator_user_id"] = pd.to_numeric(df["creator_user_id"], errors='coerce').astype('Int64')
-            transformed_df['creator_user_name'] = transformed_df['creator_user_id'].map(batch_user_map).fillna(UNKNOWN_NAME)
-
-            transformed_df["stage_id"] = pd.to_numeric(df["stage_id"], errors='coerce').astype('Int64')
-            transformed_df['stage_name'] = transformed_df['stage_id'].map(batch_stage_map).fillna(UNKNOWN_NAME)
-
-            transformed_df["pipeline_id"] = pd.to_numeric(df["pipeline_id"], errors='coerce').astype('Int64')
-            transformed_df['pipeline_name'] = transformed_df['pipeline_id'].map(batch_pipeline_map).fillna(UNKNOWN_NAME)
-
-            transformed_df["person_id"] = pd.to_numeric(df["person_id"], errors='coerce').astype('Int64')
-            transformed_df['person_name'] = transformed_df['person_id'].map(batch_person_map).fillna(UNKNOWN_NAME)
-
-            # Usar owner_id_parsed que já foi calculado
-            transformed_df["owner_id"] = df["owner_id_parsed"] 
-            transformed_df["owner_name"] = transformed_df["owner_id"].map(batch_user_map).fillna(UNKNOWN_NAME)
-
-            # Usar org_id_parsed que já foi calculado
-            transformed_df["org_id"] = df["org_id_parsed"] 
-            transformed_df['org_name'] = transformed_df['org_id'].map(batch_org_map).fillna(UNKNOWN_NAME)
-
-            # --- Outros campos base ---
-            transformed_df["lost_reason"] = df["lost_reason"].fillna("").astype(str)
-            transformed_df["visible_to"] = df["visible_to"].fillna("").astype(str)
-            transformed_df["close_time"] = pd.to_datetime(df["close_time"], errors='coerce', utc=True)
-            transformed_df["won_time"] = pd.to_datetime(df["won_time"], errors='coerce', utc=True)
-            transformed_df["lost_time"] = pd.to_datetime(df["lost_time"], errors='coerce', utc=True)
-            transformed_df["first_won_time"] = pd.to_datetime(
-                df.get("first_won_time", pd.NaT), errors='coerce', utc=True
-            )
-            transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
-            transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
-
-            # --- Campos Customizados ---
-            repo_custom_mapping = self.repository.custom_field_mapping
-            if repo_custom_mapping and 'custom_fields' in df.columns:
-                transform_log.warning("Flatten Custom Fields", custom_fields_after_flatten=repo_custom_mapping)
-                df['custom_fields_parsed'] = df['custom_fields'].apply(
-                    lambda x: json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
-                )
-                transform_log.warning("Flatten Custom Fields", custom_fields_before_flatten=repo_custom_mapping)
-
-                custom_fields_flattened_df = pd.json_normalize(
-                    df['custom_fields_parsed'].apply(
-                        lambda x: flatten_custom_fields(x, repo_custom_mapping)
-                    ).tolist()
-                )
-
-                # Garantir alinhamento
-                custom_fields_flattened_df.index = df.index
-
-                # Concat com df principal
-                transformed_df = pd.concat([transformed_df, custom_fields_flattened_df], axis=1)
-            
-            # --- Selecionar e Ordenar Colunas Finais ---
-            final_columns = self.repository._get_all_columns()
-            existing_cols_in_df = list(transformed_df.columns)
-            ordered_final_columns = [col for col in final_columns if col in existing_cols_in_df]
-
-            # Adicionar colunas que faltam no DataFrame com None
-            missing_final_cols = [col for col in final_columns if col not in existing_cols_in_df]
-            if missing_final_cols:
-                transform_log.debug("Columns defined in repository are missing in transformed DataFrame, adding as None.", missing_columns=missing_final_cols)
-                missing_df = pd.DataFrame({col: [None] * len(transformed_df) for col in missing_final_cols})
-                transformed_df = pd.concat([transformed_df, missing_df], axis=1)
-                transformed_df = transformed_df.copy()
-                ordered_final_columns.extend(missing_final_cols)
-
-            # Verificar colunas extras
-            extra_cols = [col for col in existing_cols_in_df if col not in ordered_final_columns and col not in missing_final_cols]
-            if extra_cols:
-                transform_log.warning("Columns created during transform but not in final repository schema (will be dropped)", extra_columns=extra_cols)
-            try:
-                if extra_cols:
-                    transform_log.info("Attempting to update schema dynamically for extra columns detected.", columns=extra_cols)
-                    self.repository.add_columns_to_main_table(extra_cols, inferred_from_df=transformed_df)
-                    etl_final_column_mismatch_total.labels(flow_type=flow_type).inc()
-            except Exception as schema_err:
-                transform_log.error("Failed to update schema with new columns", error=str(schema_err), exc_info=True)        
-
-            # Selecionar apenas as colunas finais na ordem definida
-            # Remover colunas extras que não estão no schema atual
-            transformed_df = transformed_df[[col for col in ordered_final_columns if col in transformed_df.columns]]
-
-            # Verifica se há colunas extras após concatenação com campos customizados
-            current_cols = set(transformed_df.columns)
-            defined_cols = set(final_columns)
-            extra_cols = current_cols - defined_cols
-
-            if extra_cols:
-                transform_log.warning("Detected extra columns not present in schema. Will add dynamically.", extra_columns=list(extra_cols))
-                try:
-                    self.repository.add_columns_to_main_table(list(extra_cols), inferred_from_df=transformed_df)
-                    # Recarregar o schema após adicionar
-                    final_columns = self.repository._get_all_columns()
-                    ordered_final_columns = [col for col in final_columns if col in transformed_df.columns]
-                except Exception as schema_err:
-                    transform_log.error("Failed to dynamically update schema with extra columns", error=str(schema_err), exc_info=True)
-
-            # --- Limpeza Final ---
-            transformed_df = transformed_df.replace({pd.NA: None, np.nan: None, pd.NaT: None})
-            validated_records = transformed_df.to_dict('records')
-            transform_succeeded_count = len(validated_records)
-            transform_failed_count = pydantic_valid_count - transform_succeeded_count 
-            
-            
-
-        except AttributeError as ae: 
-            transform_failed_count = pydantic_valid_count
-            transform_log.error("Pandas transformation failed due to AttributeError", error=str(ae), exc_info=True)
-            raise ae 
-        except KeyError as ke:
-            transform_failed_count = pydantic_valid_count
-            transform_log.error("Pandas transformation failed due to KeyError", error=str(ke), exc_info=True)
-            raise ke
+             all_fields_list = self.client.fetch_deal_fields() 
+             if not all_fields_list:
+                  self.log.warning("Received empty list from fetch_deal_fields")
+                  return {}
+             return {field['key']: field for field in all_fields_list if 'key' in field}
+        except AttributeError:
+             self.log.error("PipedriveClientPort does not have fetch_deal_fields method.")
+             self.log.warning("Falling back to empty field definitions map due to missing client method.")
+             return {}
         except Exception as e:
-            transform_failed_count = pydantic_valid_count
-            transform_log.error("Pandas transformation/enrichment failed", exc_info=True)
-            raise e 
+             self.log.error("Failed to fetch or process deal field definitions", error=str(e), exc_info=True)
+             return {} 
 
-        duration = time.monotonic() - start_time
-        transform_duration_summary.labels(flow_type=flow_type).observe(duration)
-        total_failed_in_batch = pydantic_failed_count + transform_failed_count
-        if original_count > 0:
-            error_rate = total_failed_in_batch / original_count
-            etl_transformation_error_rate.labels(flow_type=flow_type).set(error_rate)
-        etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="pydantic").inc(pydantic_failed_count)
-        etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="transform").inc(transform_failed_count)
-        transform_log.info(
-            "Batch transformation completed",
-            validated_count=len(validated_records),
-            transform_errors=transform_failed_count,
-            total_failed_in_batch=total_failed_in_batch,
-            duration_sec=f"{duration:.3f}s"
-        )
-        return validated_records, total_failed_in_batch
 
-    def _track_resources(self, flow_type: str) -> float:
-        """Monitora o uso de memória e retorna a memória atual em bytes."""
-        current_mem = 0.0
-        if tracemalloc.is_tracing():
-            try:
-                current, peak = tracemalloc.get_traced_memory()
-                memory_usage_gauge.labels(flow_type=flow_type).set(peak / 1e6)  # em MB
-                self.log.debug(f"Memory Usage: Current={current/1e6:.2f}MB, Peak={peak/1e6:.2f}MB")
-                current_mem = current
-            except Exception as mem_err:
-                self.log.warning("Failed to track memory usage", error=str(mem_err))
-        else:
-            self.log.debug("Tracemalloc is not running, skipping memory tracking.")
-        return current_mem
+    def _enrich_persistence_dicts(self, persistence_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Enriches persistence dictionaries with names fetched from lookup repositories.
+        """
+        if not persistence_dicts:
+            return []
 
-    def run_etl(self, flow_type: str) -> Dict[str, object]:
-        """Executa o processo ETL completo, agora sem buscar mapas na inicialização."""
+        enriched_dicts = [d.copy() for d in persistence_dicts] 
+        enrich_start_time = time.monotonic()
+        log_ctx = self.log.bind(batch_size=len(persistence_dicts))
+        log_ctx.debug("Starting enrichment of persistence dictionaries.")
+
+        try:
+            # 1. Collect all unique IDs needed for lookups
+            user_ids = set()
+            person_ids = set()
+            org_ids = set()
+            stage_ids = set()
+            pipeline_ids = set()
+
+            for p_dict in enriched_dicts:
+                 if p_dict.get("creator_user_id"): user_ids.add(p_dict["creator_user_id"])
+                 if p_dict.get("owner_id"): user_ids.add(p_dict["owner_id"])
+                 if p_dict.get("person_id"): person_ids.add(p_dict["person_id"])
+                 if p_dict.get("org_id"): org_ids.add(p_dict["org_id"])
+                 if p_dict.get("stage_id"): stage_ids.add(p_dict["stage_id"])
+                 if p_dict.get("pipeline_id"): pipeline_ids.add(p_dict["pipeline_id"])
+
+            # 2. Fetch name maps from lookup repositories concurrently? (For now, sequentially)
+            user_map = self.user_repo.get_name_map_for_ids(user_ids) if user_ids else {}
+            person_map = self.person_repo.get_name_map_for_ids(person_ids) if person_ids else {}
+            org_map = self.org_repo.get_name_map_for_ids(org_ids) if org_ids else {}
+            stage_map = self.stage_repo.get_name_map_for_ids(stage_ids) if stage_ids else {}
+            pipeline_map = self.pipeline_repo.get_name_map_for_ids(pipeline_ids) if pipeline_ids else {}
+
+            # 3. Apply names to the dictionaries
+            for p_dict in enriched_dicts:
+                 p_dict["creator_user_name"] = user_map.get(p_dict.get("creator_user_id"))
+                 p_dict["owner_name"] = user_map.get(p_dict.get("owner_id"))
+                 p_dict["person_name"] = person_map.get(p_dict.get("person_id"))
+                 p_dict["org_name"] = org_map.get(p_dict.get("org_id"))
+                 p_dict["stage_name"] = stage_map.get(p_dict.get("stage_id"))
+                 p_dict["pipeline_name"] = pipeline_map.get(p_dict.get("pipeline_id"))
+
+            duration = time.monotonic() - enrich_start_time
+            log_ctx.debug("Enrichment completed.", duration_sec=f"{duration:.3f}s")
+            return enriched_dicts
+
+        except Exception as e:
+             log_ctx.error("Failed during persistence dictionary enrichment", error=str(e), exc_info=True)
+             return persistence_dicts 
+
+
+    def run_etl(self, flow_type: str = "sync") -> Dict[str, Any]:
+        """
+        Executes the main ETL flow: Fetch, Map (API->Schema->Domain->Persistence), Enrich, Load.
+        """
         run_start_time = time.monotonic()
         run_start_utc = datetime.now(timezone.utc)
-        if not tracemalloc.is_tracing():
-            tracemalloc.start()
+        if not tracemalloc.is_tracing(): tracemalloc.start()
         etl_counter.labels(flow_type=flow_type).inc()
+        run_log = self.log.bind(run_start_iso=run_start_utc.isoformat(), flow_type=flow_type)
 
+        # Initialize results and counters
         result = {
-            "status": "error", "total_fetched": 0, "total_validated": 0, "total_loaded": 0,
-            "total_failed": 0, "start_time": run_start_utc.isoformat(), "end_time": None,
-            "duration_seconds": 0, "message": "ETL process did not complete.", "peak_memory_mb": 0
+            "status": "started", "total_fetched": 0, "total_schema_valid": 0,
+            "total_domain_mapped": 0, "total_enriched": 0, "total_loaded": 0,
+            "total_schema_failed": 0, "total_domain_failed": 0, "total_enrich_failed": 0,
+            "total_load_failed": 0, "start_time": run_start_utc.isoformat(),
+            "end_time": None, "duration_seconds": 0, "message": "ETL process initiated.",
+            "peak_memory_mb": 0, "last_processed_timestamp": None
         }
+        total_fetched = 0
+        total_schema_valid = 0
+        total_domain_mapped = 0
+        total_loaded = 0
+        total_schema_failed = 0
+        total_domain_failed = 0
+        total_load_failed = 0
+
         latest_update_time_in_run: Optional[datetime] = None
-        total_fetched = 0; total_validated = 0; total_loaded = 0; total_failed = 0
-        run_log = self.log.bind(run_start_time=run_start_utc.isoformat(), flow_type=flow_type)
+        run_log.info(f"Starting ETL run ({flow_type})")
 
         try:
-            run_log.info(f"Starting ETL run ({flow_type})")
-
-            # --- Extração (Streaming) ---
             last_timestamp_str = self.client.get_last_timestamp()
             run_log.info("Fetching deals stream from Pipedrive", updated_since=last_timestamp_str)
             deal_stream_iterator = self.client.fetch_all_deals_stream(updated_since=last_timestamp_str)
 
-            # --- Transformação e Carga (Batching) ---
             batch_num = 0
             records_for_processing_batch: List[Dict] = []
             run_log.info("Starting ETL batch processing loop", batch_size=self.process_batch_size)
 
-            for deal_record in deal_stream_iterator:
+            for api_record in deal_stream_iterator:
                 total_fetched += 1
-                records_for_processing_batch.append(deal_record)
-                update_time_str = deal_record.get("update_time")
-                
+                records_for_processing_batch.append(api_record)
+
+                update_time_str = api_record.get("update_time")
                 if update_time_str:
                     try:
-                        current_record_time = pd.to_datetime(update_time_str, errors='coerce', utc=True)
-                        if pd.notna(current_record_time):
-                            if latest_update_time_in_run is None or current_record_time > latest_update_time_in_run:
-                                latest_update_time_in_run = current_record_time
-                        else:
-                             run_log.warning("Could not parse update_time (Pandas)", record_id=deal_record.get("id"), time_str=update_time_str)
+                        current_record_time = Timestamp(datetime.fromisoformat(update_time_str.replace('Z', '+00:00'))).value
+                        if latest_update_time_in_run is None or current_record_time > latest_update_time_in_run:
+                            latest_update_time_in_run = current_record_time
                     except Exception:
-                        run_log.warning("Could not parse update_time from fetched record", record_id=deal_record.get("id"), time_str=update_time_str)
+                         run_log.warning("Could not parse update_time from fetched record", record_id=api_record.get("id"), time_str=update_time_str)
 
-
+                # --- Process Batch ---
                 if len(records_for_processing_batch) >= self.process_batch_size:
                     batch_num += 1
-                    batch_to_process = records_for_processing_batch
+                    api_batch = records_for_processing_batch
                     records_for_processing_batch = []
-                    batch_log = run_log.bind(batch_num=batch_num, batch_size=len(batch_to_process))
+                    batch_log = run_log.bind(batch_num=batch_num, batch_size=len(api_batch))
                     batch_log.info("Processing ETL batch")
                     batch_start_time = time.monotonic()
-                    batch_size_gauge.labels(flow_type=flow_type).set(len(batch_to_process))
+                    batch_size_gauge.labels(flow_type=flow_type).set(len(api_batch))
 
-                    try:
-                        validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                            batch=batch_to_process,
-                            flow_type=flow_type
-                        )
-                        total_failed += failed_count_in_batch
-                        total_validated += len(validated_batch)
-                        
-                        if not validated_batch:
-                            etl_empty_batches_total.labels(flow_type=flow_type).inc()
-                        else:
-                            etl_skipped_batches_total.labels(flow_type=flow_type).inc()
-                        if validated_batch:
-                            load_start = time.monotonic()
-                            try:
-                                with db_operation_duration_hist.labels(operation='upsert').time():
-                                    batch_log.warning("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
-                                    self.repository.save_data_upsert(validated_batch)
-                                current_loaded_count = len(validated_batch)
-                                total_loaded += current_loaded_count
-                                records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
-                                etl_loaded_records_per_batch.labels(flow_type=flow_type).observe(current_loaded_count)
-                                load_duration = time.monotonic() - load_start
-                                batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count,
-                                               load_duration_sec=f"{load_duration:.3f}s")
-                            except Exception as load_error:
-                                etl_failure_counter.labels(flow_type=flow_type).inc(len(validated_batch))
-                                failed_on_load = len(validated_batch)
-                                total_failed += failed_on_load
-                                total_validated -= failed_on_load
-                                batch_log.error("Failed to load batch to repository", error=str(load_error),
-                                                records_count=failed_on_load, exc_info=True)
-                        else:
-                            batch_log.warning("ETL Batch resulted in no validated records to load", failed_in_transform=failed_count_in_batch)
+                    processed_info = self._process_and_load_batch(
+                        api_batch, batch_log, flow_type
+                    )
 
-                    except Exception as batch_proc_err: 
-                        batch_log.error("Critical error processing ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
-                        failed_in_this_batch = len(batch_to_process)
-                        etl_failure_counter.labels(flow_type=flow_type).inc(failed_in_this_batch)
-                        total_failed += failed_in_this_batch
+                    # Update overall counters from batch results
+                    total_schema_valid += processed_info["schema_valid"]
+                    total_domain_mapped += processed_info["domain_mapped"]
+                    total_loaded += processed_info["loaded"]
+                    total_schema_failed += processed_info["schema_failed"]
+                    total_domain_failed += processed_info["domain_failed"]
+                    total_load_failed += processed_info["load_failed"]
 
                     batch_duration = time.monotonic() - batch_start_time
-                    batch_log.debug("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
+                    batch_log.info("ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s", **processed_info)
 
+            # --- Process Final Partial Batch ---
             if records_for_processing_batch:
                 batch_num += 1
-                batch_to_process = records_for_processing_batch
-                batch_log = run_log.bind(batch_num=batch_num, batch_size=len(batch_to_process))
+                api_batch = records_for_processing_batch
+                batch_log = run_log.bind(batch_num=batch_num, batch_size=len(api_batch))
                 batch_log.info("Processing final ETL batch")
                 batch_start_time = time.monotonic()
-                batch_size_gauge.labels(flow_type=flow_type).set(len(batch_to_process))
+                batch_size_gauge.labels(flow_type=flow_type).set(len(api_batch))
 
-                try:
-                    validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                         batch=batch_to_process,
-                         flow_type=flow_type
-                     )
-                    total_failed += failed_count_in_batch
-                    total_validated += len(validated_batch)
+                processed_info = self._process_and_load_batch(
+                    api_batch, batch_log, flow_type
+                )
 
-                    if validated_batch:
-                        load_start = time.monotonic()
-                        try:
-                            with db_operation_duration_hist.labels(operation='upsert').time():
-                                batch_log.warning("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
-                                self.repository.save_data_upsert(validated_batch)
-                            current_loaded_count = len(validated_batch)
-                            total_loaded += current_loaded_count
-                            records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
-                            etl_loaded_records_per_batch.labels(flow_type=flow_type).observe(current_loaded_count)
-                            load_duration = time.monotonic() - load_start
-                            batch_log.info("Final ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count,
-                                           load_duration_sec=f"{load_duration:.3f}s")
-                        except Exception as load_error:
-                            etl_failure_counter.labels(flow_type=flow_type).inc(len(validated_batch))
-                            failed_on_load = len(validated_batch)
-                            total_failed += failed_on_load
-                            total_validated -= failed_on_load
-                            batch_log.error("Failed to load final batch to repository", error=str(load_error),
-                                            records_count=failed_on_load, exc_info=True)
-                    else:
-                        batch_log.warning("Final ETL Batch resulted in no validated records to load", failed_in_transform=failed_count_in_batch)
-
-                except Exception as batch_proc_err:
-                    batch_log.error("Critical error processing final ETL batch, skipping.", error=str(batch_proc_err), exc_info=True)
-                    failed_in_this_batch = len(batch_to_process)
-                    etl_failure_counter.labels(flow_type=flow_type).inc(failed_in_this_batch)
-                    total_failed += failed_in_this_batch
+                total_schema_valid += processed_info["schema_valid"]
+                total_domain_mapped += processed_info["domain_mapped"]
+                total_loaded += processed_info["loaded"]
+                total_schema_failed += processed_info["schema_failed"]
+                total_domain_failed += processed_info["domain_failed"]
+                total_load_failed += processed_info["load_failed"]
 
                 batch_duration = time.monotonic() - batch_start_time
-                batch_log.debug("Final ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s")
+                batch_log.info("Final ETL Batch processing complete", duration_sec=f"{batch_duration:.3f}s", **processed_info)
 
-
-            # --- Finalização ---
+            # --- Finalization ---
             run_log.info("ETL stream processing finished.")
-            if latest_update_time_in_run and total_loaded > 0: 
+            result["status"] = "success" if total_load_failed == 0 and total_schema_failed == 0 and total_domain_failed == 0 else "completed_with_errors"
+            result["message"] = f"ETL run {result['status']}."
+
+            if latest_update_time_in_run and total_loaded > 0:
                 try:
                     buffered_time = latest_update_time_in_run + timedelta(seconds=1)
                     iso_timestamp = buffered_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                     self.client.update_last_timestamp(iso_timestamp)
-                    run_log.info("Last timestamp updated in cache", timestamp=iso_timestamp)
+                    result["last_processed_timestamp"] = iso_timestamp
+                    run_log.info("Last processed timestamp updated in client/cache", timestamp=iso_timestamp)
                 except Exception as cache_err:
-                    run_log.error("Failed to update last timestamp in cache", error=str(cache_err), exc_info=True)
+                    run_log.error("Failed to update last timestamp", error=str(cache_err), exc_info=True)
+            elif total_fetched > 0 and total_loaded == 0:
+                 run_log.warning("ETL fetched records but loaded none. Last timestamp NOT updated.")
+                 result["status"] = "error"
+                 result["message"] = "ETL fetched records but loaded none."
             elif total_fetched == 0:
-                run_log.info("No new records fetched since last run. Last timestamp not updated.")
-            elif total_loaded == 0 and total_fetched > 0:
-                 run_log.warning("ETL fetched records but loaded none. Last timestamp NOT updated.",
-                                fetched=total_fetched, loaded=total_loaded, failed=total_failed)
-            else: 
-                run_log.warning("ETL finished but could not determine or save the last timestamp reliably. Timestamp NOT updated.",
-                                fetched=total_fetched, loaded=total_loaded, failed=total_failed, last_time=latest_update_time_in_run)
+                 run_log.info("No new records fetched. Last timestamp not updated.")
+                 result["status"] = "success_no_new_data"
+                 result["message"] = "ETL completed successfully, no new data fetched."
 
-            result.update({
-                "status": "success", "total_fetched": total_fetched, "total_validated": total_validated,
-                "total_loaded": total_loaded, "total_failed": total_failed,
-                "message": f"ETL completed. Fetched={total_fetched}, Validated={total_validated}, Loaded={total_loaded}, Failed={total_failed}."
-            })
-            
-            etl_last_successful_run_timestamp.labels(flow_type=flow_type).set(int(run_end_utc.timestamp()))
+
+        except (requests.exceptions.RequestException, RetryError) as api_err:
+             run_log.critical("ETL failed due to API Client error", error=str(api_err), exc_info=True)
+             result["status"] = "error"
+             result["message"] = f"ETL failed: API Client Error - {api_err}"
+             etl_failure_counter.labels(flow_type=flow_type).inc()
         except Exception as e:
-            if result.get("status") != "error": 
-                 etl_failure_counter.labels(flow_type=flow_type).inc()
-            run_log.critical("Critical ETL failure during run_etl", exc_info=True)
+            run_log.critical("Critical ETL failure during run_etl", error=str(e), exc_info=True)
             result["status"] = "error"
-            if result["message"] == "ETL process did not complete.":
-                result["message"] = f"Critical ETL failure: {str(e)}"
-            result["total_failed"] = max(total_failed, total_fetched - total_loaded) 
-
+            result["message"] = f"Critical ETL failure: {e}"
+            etl_failure_counter.labels(flow_type=flow_type).inc()
+            result["total_load_failed"] = total_load_failed + (total_fetched - total_schema_valid - total_domain_failed - total_loaded)
 
         finally:
             run_end_time = time.monotonic()
@@ -553,46 +279,143 @@ class ETLService:
             result["duration_seconds"] = round(duration, 3)
             result["end_time"] = run_end_utc.isoformat()
             etl_duration_hist.labels(flow_type=flow_type).observe(duration)
+
+            # Update final counts in result
+            result["total_fetched"] = total_fetched
+            result["total_schema_valid"] = total_schema_valid
+            result["total_domain_mapped"] = total_domain_mapped
+            result["total_loaded"] = total_loaded
+            result["total_schema_failed"] = total_schema_failed
+            result["total_domain_failed"] = total_domain_failed
+            result["total_load_failed"] = total_load_failed
+
             peak_mem_mb = 0
-            etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
-            etl_cpu_usage_percent.labels(flow_type=flow_type).set(psutil.cpu_percent())
-            etl_thread_count.labels(flow_type=flow_type).set(len(psutil.Process().threads()))
-            etl_disk_usage_bytes.labels(mount_point='/').set(psutil.disk_usage('/').used)
             if tracemalloc.is_tracing():
                 try:
                     current_mem, peak_mem = tracemalloc.get_traced_memory()
                     peak_mem_mb = round(peak_mem / 1e6, 2)
                     tracemalloc.stop()
-                    run_log.debug(f"Final Memory Usage: Current={current_mem/1e6:.2f}MB, Peak={peak_mem_mb:.2f}MB")
+                    tracemalloc.clear_traces()
+                    run_log.debug(f"Final Memory: Current={current_mem/1e6:.2f}MB, Peak={peak_mem_mb:.2f}MB")
                 except Exception as trace_err:
                     run_log.error("Error stopping tracemalloc", error=str(trace_err))
-                    if tracemalloc.is_tracing(): tracemalloc.stop()
-
+                    if tracemalloc.is_tracing(): tracemalloc.stop() ; tracemalloc.clear_traces()
             result["peak_memory_mb"] = peak_mem_mb
+            if peak_mem_mb > 0:
+                 memory_usage_gauge.labels(flow_type=flow_type).set(peak_mem_mb)
 
-            # Reafirmar contagens finais
-            result["total_fetched"] = total_fetched
-            result["total_validated"] = total_validated 
-            result["total_loaded"] = total_loaded     
-            result["total_failed"] = total_failed     
-
-            log_level = run_log.info if result["status"] == "success" else run_log.error
+            log_level = run_log.info if result["status"].startswith("success") else run_log.error
             log_level("ETL run summary", **result)
-            try:
-                print(f"ETL_COMPLETION_METRICS: {json.dumps(result)}")
-            except TypeError: 
-                print(f"ETL_COMPLETION_METRICS: {str(result)}")
+            print(f"ETL_COMPLETION_METRICS: {json.dumps(result)}")
 
-            self.log.debug("Cleared internal maps after ETL run.")
             return result
+
+
+    def _process_and_load_batch(
+        self,
+        api_batch: List[Dict],
+        batch_log: structlog.BoundLoggerBase,
+        flow_type: str
+    ) -> Dict[str, int]:
+        """Maps, enriches, and loads a single batch of data."""
+        batch_results = {
+            "schema_valid": 0, "domain_mapped": 0, "loaded": 0,
+            "schema_failed": 0, "domain_failed": 0, "load_failed": 0
+        }
+        if not api_batch:
+            etl_empty_batches_total.labels(flow_type=flow_type).inc()
+            return batch_results
+
+        # --- 1. API Dict -> Schema ---
+        schema_batch: List[DealSchema] = []
+        for api_record in api_batch:
+            try:
+                schema = self.mapper.map_api_dict_to_schema(api_record)
+                schema_batch.append(schema)
+            except ValidationError as schema_err:
+                 batch_results["schema_failed"] += 1
+                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="schema").inc()
+                 batch_log.warning("Schema validation failed", record_id=api_record.get("id"), error=str(schema_err))
+            except Exception as e:
+                 batch_results["schema_failed"] += 1
+                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="schema_unexpected").inc()
+                 batch_log.error("Unexpected error during schema mapping", record_id=api_record.get("id"), error=str(e), exc_info=True)
+        batch_results["schema_valid"] = len(schema_batch)
+
+        if not schema_batch:
+             batch_log.warning("No records passed schema validation in this batch.")
+             etl_skipped_batches_total.labels(flow_type=flow_type).inc()
+             return batch_results
+
+        # --- 2. Schema -> Domain ---
+        domain_batch: List[Any] = []
+        for schema in schema_batch:
+            try:
+                domain_entity = self.mapper.map_schema_to_domain(schema, self._custom_field_map, self._field_definitions)
+                domain_batch.append(domain_entity)
+            except ValueError as domain_err:
+                 batch_results["domain_failed"] += 1
+                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="domain").inc()
+                 batch_log.warning("Domain mapping failed", record_id=schema.id, error=str(domain_err))
+            except Exception as e:
+                 batch_results["domain_failed"] += 1
+                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="domain_unexpected").inc()
+                 batch_log.error("Unexpected error during domain mapping", record_id=schema.id, error=str(e), exc_info=True)
+        batch_results["domain_mapped"] = len(domain_batch)
+
+        if not domain_batch:
+             batch_log.warning("No records passed domain mapping in this batch.")
+             etl_skipped_batches_total.labels(flow_type=flow_type).inc()
+             return batch_results
+
+        # --- 3. Domain -> Persistence Dict ---
+        persistence_batch: List[Dict[str, Any]] = []
+        map_to_persist_failed = 0
+        for domain_entity in domain_batch:
+             try:
+                 persistence_dict = self.mapper.map_domain_to_persistence_dict(domain_entity)
+                 persistence_batch.append(persistence_dict)
+             except Exception as e:
+                  map_to_persist_failed += 1
+                  batch_log.error("Failed mapping Domain to Persistence Dict", record_id=domain_entity.id, error=str(e), exc_info=True)
+        batch_results["domain_failed"] += map_to_persist_failed
+        batch_results["domain_mapped"] -= map_to_persist_failed 
+
+        if not persistence_batch:
+              batch_log.warning("No records successfully mapped to persistence dictionary.")
+              etl_skipped_batches_total.labels(flow_type=flow_type).inc()
+              return batch_results
+
+        # --- 4. Enrich Persistence Dicts with Names ---
+        enriched_batch = self._enrich_persistence_dicts(persistence_batch)
+
+        # --- 5. Load to Repository ---
+        if enriched_batch:
+            try:
+                with db_operation_duration_hist.labels(operation='upsert_deals').time():
+                    self.data_repository.save_data_upsert(enriched_batch)
+                batch_results["loaded"] = len(enriched_batch)
+                records_processed_counter.labels(flow_type=flow_type).inc(len(enriched_batch))
+            except Exception as load_err:
+                batch_results["load_failed"] = len(enriched_batch)
+                etl_failure_counter.labels(flow_type=flow_type).inc(len(enriched_batch))
+                batch_log.error("Repository save_data_upsert failed for batch", error=str(load_err), record_count=len(enriched_batch), exc_info=True)
+        else:
+             batch_log.warning("No enriched records to load for this batch (enrichment or previous steps failed).")
+             etl_skipped_batches_total.labels(flow_type=flow_type).inc()
+
+
+        return batch_results
+
 
     def run_retroactive_backfill(self, deal_ids: List[str]) -> Dict[str, Any]:
         """
-        Executa o backfill do histórico de stages para uma lista de deal IDs (Fluxo 2).
+        Executes the stage history backfill process for a given list of Deal IDs.
+        Fetches changelogs and updates the history columns in the data repository.
         """
         if not deal_ids:
             self.log.info("No deal IDs provided for retroactive backfill.")
-            return {"status": "skipped", "processed_deals": 0, "updates_generated": 0}
+            return {"status": "skipped", "processed_deals": 0, "updates_applied": 0, "api_errors": 0, "processing_errors": 0}
 
         run_start_time = time.monotonic()
         run_log = self.log.bind(flow_type="backfill", batch_deal_count=len(deal_ids))
@@ -602,41 +425,44 @@ class ETLService:
         updates_to_apply: List[Dict[str, Any]] = []
         api_errors = 0
         processing_errors = 0
+        db_update_errors = 0
 
-        stage_column_map = self._stage_id_to_column_name_map
-        if not stage_column_map:
-            run_log.error("Stage ID to normalized name map is empty. Cannot perform backfill.")
-            return {"status": "error", "message": "Stage ID map is empty."}
+        if not self._stage_id_to_col_map:
+             run_log.error("Stage ID to history column map is empty. Cannot perform backfill.")
+             return {"status": "error", "message": "Stage ID map is empty.", "processed_deals": 0, "updates_applied": 0, "api_errors": 0, "processing_errors": 1}
 
         for deal_id_str in deal_ids:
+            deal_log = run_log.bind(deal_id=deal_id_str)
             try:
-                deal_id = int(deal_id_str)
-                deal_log = run_log.bind(deal_id=deal_id)
+                deal_id = int(deal_id_str) 
                 deal_log.debug("Fetching changelog for deal.")
 
                 changelog = self.client.fetch_deal_changelog(deal_id)
                 processed_deals_count += 1
 
                 if not changelog:
-                    deal_log.debug("No changelog entries found for deal.")
+                    deal_log.debug("No changelog entries found.")
                     continue
 
                 stage_changes = []
                 for entry in changelog:
                     if entry.get('field_key') == 'stage_id':
-                        ts = self._parse_changelog_timestamp(entry.get('time'))
-                        new_stage_id = entry.get('new_value')
-                        if ts and new_stage_id is not None:
-                            try:
-                                new_stage_id_int = int(new_stage_id)
-                                stage_changes.append({'timestamp': ts, 'stage_id': new_stage_id_int})
-                            except (ValueError, TypeError):
-                                deal_log.warning("Could not parse new_value as int for stage_id change", entry=entry)
+                        ts_str = entry.get('time') 
+                        new_stage_id_val = entry.get('new_value')
+                        if ts_str and new_stage_id_val is not None:
+                             try:
+                                 ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                                 new_stage_id = int(new_stage_id_val)
+                                 stage_changes.append({'timestamp': ts, 'stage_id': new_stage_id})
+                             except (ValueError, TypeError):
+                                 deal_log.warning("Could not parse stage change entry", entry=entry)
+                                 processing_errors += 1
 
                 if not stage_changes:
-                    deal_log.debug("No 'stage_id' changes found in changelog.")
+                    deal_log.debug("No valid 'stage_id' changes parsed from changelog.")
                     continue
 
+                # Find the earliest timestamp for each stage ID encountered
                 stage_changes.sort(key=lambda x: x['timestamp'])
                 first_entry_times: Dict[int, datetime] = {}
                 for change in stage_changes:
@@ -645,69 +471,139 @@ class ETLService:
                     if stage_id not in first_entry_times:
                         first_entry_times[stage_id] = timestamp
 
+                # Prepare updates for the database
                 for stage_id, first_timestamp in first_entry_times.items():
-                    normalized_name = stage_column_map.get(stage_id)
-                    if normalized_name:
-                        column_name = normalized_name  
+                    column_name = self._stage_id_to_col_map.get(stage_id)
+                    if column_name:
                         updates_to_apply.append({
-                            'deal_id': deal_id_str,
+                            'deal_id': deal_id_str, 
                             'stage_column': column_name,
-                            'timestamp': first_timestamp.strftime('%Y-%m-%d')
+                            'timestamp': first_timestamp 
                         })
                     else:
                         deal_log.warning("Stage ID from changelog not found in current stage map", stage_id=stage_id)
-            except RetryError as retry_err:
-                api_errors += 1
-                run_log.error("API RetryError fetching changelog", deal_id=deal_id_str, error=str(retry_err.last_attempt.exception()))
-            except requests.exceptions.RequestException as req_err:
-                api_errors += 1
-                run_log.error("API RequestException fetching changelog", deal_id=deal_id_str, error=str(req_err))
-            except ValueError:
-                processing_errors += 1
-                run_log.error("Invalid deal_id format, skipping", deal_id_str=deal_id_str)
-            except Exception as e:
-                processing_errors += 1
-                run_log.error("Error processing changelog for deal", deal_id=deal_id_str, exc_info=True)
+                        processing_errors += 1 
 
+            except (requests.exceptions.RequestException, RetryError) as api_err:
+                 api_errors += 1
+                 deal_log.error("API error fetching changelog", error=str(api_err))
+            except ValueError:
+                 processing_errors += 1
+                 deal_log.error("Invalid deal_id format", deal_id_str=deal_id_str)
+            except Exception as e:
+                 processing_errors += 1
+                 deal_log.error("Error processing changelog", error=str(e), exc_info=True)
+
+        # Apply collected updates to the database
+        updates_applied_count = 0
         if updates_to_apply:
-            run_log.info(
-                    "Preparando para chamar update_stage_history",
-                    total_updates=len(updates_to_apply)
-                )
+            run_log.info("Applying stage history updates to database", update_count=len(updates_to_apply))
             try:
-                self.repository.update_stage_history(updates_to_apply)
-                run_log.info(
-                    "update_stage_history foi chamado com sucesso",
-                    affected_deals=processed_deals_count
-                )
+                self.data_repository.update_stage_history(updates_to_apply)
+                updates_applied_count = len(updates_to_apply)
             except Exception as db_err:
-                run_log.error(
-                    "Falha durante a atualização do histórico de stages",
-                    error=str(db_err),
-                    exc_info=True
-                )
-                return {
-                    "status": "error",
-                    "message": f"Database update failed: {db_err}",
-                    "processed_deals": processed_deals_count,
-                    "updates_generated": len(updates_to_apply),
-                    "api_errors": api_errors,
-                    "processing_errors": processing_errors
-                }
+                db_update_errors += 1
+                run_log.error("Failed during database update_stage_history", error=str(db_err), exc_info=True)
         else:
-            run_log.info(
-                "Nenhuma mudança de stage para aplicar no backfill",
-                processed_deals=processed_deals_count
-            )
+            run_log.info("No stage history updates generated from this batch.")
 
         duration = time.monotonic() - run_start_time
-        status = "success" if api_errors == 0 and processing_errors == 0 else "partial_success"
-        run_log.info("Retroactive backfill run finished.", status=status, duration_sec=f"{duration:.3f}s")
+        final_status = "success"
+        if api_errors > 0 or processing_errors > 0 or db_update_errors > 0:
+             final_status = "completed_with_errors"
+        run_log.info("Retroactive backfill run finished.", status=final_status, duration_sec=f"{duration:.3f}s")
+
         return {
-            "status": status,
+            "status": final_status,
             "processed_deals": processed_deals_count,
-            "updates_generated": len(updates_to_apply),
+            "updates_generated": len(updates_to_apply), 
+            "updates_applied_attempted": updates_applied_count,
             "api_errors": api_errors,
-            "processing_errors": processing_errors,
+            "processing_errors": processing_errors + db_update_errors, 
             "duration_seconds": round(duration, 3)
         }
+
+    # --- run_etl_with_data method (kept for experiments) ---
+    def run_etl_with_data(self, data: List[Dict], batch_size: int, flow_type: str = "experiment") -> Dict:
+        """ Executes ETL using provided data list instead of API stream, for testing/experiments. """
+        run_start_time = time.monotonic()
+        run_start_utc = datetime.now(timezone.utc)
+        if not tracemalloc.is_tracing(): tracemalloc.start()
+        run_log = self.log.bind(run_start_iso=run_start_utc.isoformat(), flow_type=flow_type, batch_size=batch_size)
+        run_log.info("Starting ETL run with provided data", data_size=len(data))
+
+        # Initialize results and counters
+        result = {
+            "status": "started", "total_fetched": len(data), "total_schema_valid": 0,
+            "total_domain_mapped": 0, "total_loaded": 0, "total_schema_failed": 0,
+            "total_domain_failed": 0, "total_load_failed": 0, "start_time": run_start_utc.isoformat(),
+            "end_time": None, "duration_seconds": 0, "message": "Experiment initiated.",
+            "peak_memory_mb": 0, "success_rate": 0.0, "data_quality_issues": 0 
+        }
+        total_schema_valid = 0
+        total_domain_mapped = 0
+        total_loaded = 0
+        total_schema_failed = 0
+        total_domain_failed = 0
+        total_load_failed = 0
+
+        try:
+            num_batches = (len(data) + batch_size - 1) // batch_size
+            for i in range(num_batches):
+                batch_start_idx = i * batch_size
+                batch_end_idx = batch_start_idx + batch_size
+                api_batch = data[batch_start_idx:batch_end_idx]
+
+                batch_log = run_log.bind(batch_num=i+1, batch_size=len(api_batch))
+                batch_log.info("Processing experiment batch")
+
+                processed_info = self._process_and_load_batch(
+                    api_batch, batch_log, flow_type
+                )
+
+                total_schema_valid += processed_info["schema_valid"]
+                total_domain_mapped += processed_info["domain_mapped"]
+                total_loaded += processed_info["loaded"]
+                total_schema_failed += processed_info["schema_failed"]
+                total_domain_failed += processed_info["domain_failed"]
+                total_load_failed += processed_info["load_failed"]
+
+            result["status"] = "success" if total_load_failed == 0 and total_schema_failed == 0 and total_domain_failed == 0 else "completed_with_errors"
+            result["message"] = f"Experiment {result['status']}."
+            if len(data) > 0:
+                result["success_rate"] = total_loaded / len(data)
+
+        except Exception as e:
+             run_log.critical("Critical failure during experiment run", error=str(e), exc_info=True)
+             result["status"] = "error"
+             result["message"] = f"Critical experiment failure: {e}"
+             result["total_load_failed"] = total_load_failed + (len(data) - total_loaded)
+
+        finally:
+            run_end_time = time.monotonic()
+            run_end_utc = datetime.now(timezone.utc)
+            duration = run_end_time - run_start_time
+            result["duration_seconds"] = round(duration, 3)
+            result["end_time"] = run_end_utc.isoformat()
+
+            result["total_schema_valid"] = total_schema_valid
+            result["total_domain_mapped"] = total_domain_mapped
+            result["total_loaded"] = total_loaded
+            result["total_schema_failed"] = total_schema_failed
+            result["total_domain_failed"] = total_domain_failed
+            result["total_load_failed"] = total_load_failed
+
+            peak_mem_mb = 0
+            if tracemalloc.is_tracing():
+                try:
+                    _, peak_mem = tracemalloc.get_traced_memory()
+                    peak_mem_mb = round(peak_mem / 1e6, 2)
+                    tracemalloc.stop(); tracemalloc.clear_traces()
+                except Exception: pass
+            result["peak_memory_mb"] = peak_mem_mb
+
+            log_level = run_log.info if result["status"].startswith("success") else run_log.error
+            log_level("Experiment run summary", **result)
+            print(f"ETL_COMPLETION_METRICS: {json.dumps(result)}") 
+
+            return result
