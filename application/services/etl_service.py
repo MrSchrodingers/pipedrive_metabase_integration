@@ -1,7 +1,8 @@
+import psutil
 import time
 from datetime import datetime, timedelta, timezone
 import tracemalloc
-from typing import Any, Dict, List, Tuple, Optional, Set
+from typing import Any, Dict, List, Tuple, Optional
 import pandas as pd
 import numpy as np
 import requests
@@ -12,15 +13,29 @@ from tenacity import RetryError
 
 from application.utils.column_utils import flatten_custom_fields, normalize_column_name
 from infrastructure.monitoring.metrics import (
-    etl_counter, etl_failure_counter, etl_duration_hist,
-    records_processed_counter, memory_usage_gauge, batch_size_gauge,
+    etl_counter, 
+    etl_failure_counter, 
+    etl_duration_hist,
+    records_processed_counter, 
+    memory_usage_gauge, 
+    batch_size_gauge,
     db_operation_duration_hist,
     transform_duration_summary,
+    etl_empty_batches_total,
+    etl_batch_validation_errors_total,
+    etl_final_column_mismatch_total,
+    etl_heartbeat,
+    etl_cpu_usage_percent,
+    etl_thread_count,
+    etl_disk_usage_bytes,
+    etl_skipped_batches_total,
+    etl_last_successful_run_timestamp,
+    etl_transformation_error_rate,
+    etl_loaded_records_per_batch
 )
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from application.ports.data_repository_port import DataRepositoryPort
 from application.schemas.deal_schema import DealSchema
-from infrastructure.repository_impl.pipedrive_repository import BASE_COLUMNS as REPO_BASE_COLUMNS
 from infrastructure.repository_impl.pipedrive_repository import UNKNOWN_NAME
 
 log = structlog.get_logger()
@@ -226,14 +241,6 @@ class ETLService:
             )
             transformed_df["expected_close_date"] = pd.to_datetime(df["expected_close_date"], errors='coerce').dt.date
             transformed_df["probability"] = pd.to_numeric(df["probability"], errors='coerce')
-            
-            for i, record in enumerate(valid_input_for_df[:3]):  # só uns 3 para exemplo
-                    endereço_obj = record.get('custom_fields', {}).get('f4f3fac909ab6066662a9ceb9b40d3149172d319')
-                    transform_log.warning(
-                        "DEBUG: Conteúdo real no custom field 'local_do_acidente'",
-                        record_id=record.get('id'),
-                        conteudo=endereço_obj
-                    )
 
             # --- Campos Customizados ---
             repo_custom_mapping = self.repository.custom_field_mapping
@@ -278,6 +285,7 @@ class ETLService:
                 if extra_cols:
                     transform_log.info("Attempting to update schema dynamically for extra columns detected.", columns=extra_cols)
                     self.repository.add_columns_to_main_table(extra_cols, inferred_from_df=transformed_df)
+                    etl_final_column_mismatch_total.labels(flow_type=flow_type).inc()
             except Exception as schema_err:
                 transform_log.error("Failed to update schema with new columns", error=str(schema_err), exc_info=True)        
 
@@ -324,6 +332,11 @@ class ETLService:
         duration = time.monotonic() - start_time
         transform_duration_summary.labels(flow_type=flow_type).observe(duration)
         total_failed_in_batch = pydantic_failed_count + transform_failed_count
+        if original_count > 0:
+            error_rate = total_failed_in_batch / original_count
+            etl_transformation_error_rate.labels(flow_type=flow_type).set(error_rate)
+        etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="pydantic").inc(pydantic_failed_count)
+        etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="transform").inc(transform_failed_count)
         transform_log.info(
             "Batch transformation completed",
             validated_count=len(validated_records),
@@ -411,7 +424,11 @@ class ETLService:
                         )
                         total_failed += failed_count_in_batch
                         total_validated += len(validated_batch)
-
+                        
+                        if not validated_batch:
+                            etl_empty_batches_total.labels(flow_type=flow_type).inc()
+                        else:
+                            etl_skipped_batches_total.labels(flow_type=flow_type).inc()
                         if validated_batch:
                             load_start = time.monotonic()
                             try:
@@ -421,6 +438,7 @@ class ETLService:
                                 current_loaded_count = len(validated_batch)
                                 total_loaded += current_loaded_count
                                 records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
+                                etl_loaded_records_per_batch.labels(flow_type=flow_type).observe(current_loaded_count)
                                 load_duration = time.monotonic() - load_start
                                 batch_log.info("ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count,
                                                load_duration_sec=f"{load_duration:.3f}s")
@@ -468,6 +486,7 @@ class ETLService:
                             current_loaded_count = len(validated_batch)
                             total_loaded += current_loaded_count
                             records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
+                            etl_loaded_records_per_batch.labels(flow_type=flow_type).observe(current_loaded_count)
                             load_duration = time.monotonic() - load_start
                             batch_log.info("Final ETL Batch loaded/upserted successfully", loaded_count=current_loaded_count,
                                            load_duration_sec=f"{load_duration:.3f}s")
@@ -515,7 +534,8 @@ class ETLService:
                 "total_loaded": total_loaded, "total_failed": total_failed,
                 "message": f"ETL completed. Fetched={total_fetched}, Validated={total_validated}, Loaded={total_loaded}, Failed={total_failed}."
             })
-
+            
+            etl_last_successful_run_timestamp.labels(flow_type=flow_type).set(int(run_end_utc.timestamp()))
         except Exception as e:
             if result.get("status") != "error": 
                  etl_failure_counter.labels(flow_type=flow_type).inc()
@@ -534,6 +554,10 @@ class ETLService:
             result["end_time"] = run_end_utc.isoformat()
             etl_duration_hist.labels(flow_type=flow_type).observe(duration)
             peak_mem_mb = 0
+            etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
+            etl_cpu_usage_percent.labels(flow_type=flow_type).set(psutil.cpu_percent())
+            etl_thread_count.labels(flow_type=flow_type).set(len(psutil.Process().threads()))
+            etl_disk_usage_bytes.labels(mount_point='/').set(psutil.disk_usage('/').used)
             if tracemalloc.is_tracing():
                 try:
                     current_mem, peak_mem = tracemalloc.get_traced_memory()
