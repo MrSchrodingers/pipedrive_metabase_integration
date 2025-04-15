@@ -652,7 +652,7 @@ class ETLService:
                         updates_to_apply.append({
                             'deal_id': deal_id_str,
                             'stage_column': column_name,
-                            'timestamp': first_timestamp
+                            'timestamp': first_timestamp.strftime('%Y-%m-%d')
                         })
                     else:
                         deal_log.warning("Stage ID from changelog not found in current stage map", stage_id=stage_id)
