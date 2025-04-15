@@ -624,7 +624,7 @@ class ETLService:
                 for stage_id, first_timestamp in first_entry_times.items():
                     normalized_name = stage_column_map.get(stage_id)
                     if normalized_name:
-                        column_name = f"{STAGE_HISTORY_COLUMN_PREFIX}{normalized_name}_{stage_id}"
+                        column_name = normalized_name  
                         updates_to_apply.append({
                             'deal_id': deal_id_str,
                             'stage_column': column_name,
