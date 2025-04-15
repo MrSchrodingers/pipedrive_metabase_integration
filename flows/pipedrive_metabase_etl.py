@@ -1,4 +1,3 @@
-from datetime import timedelta
 import time
 from typing import Any, Dict, List, Tuple
 import pandas as pd
@@ -6,10 +5,9 @@ import structlog
 from prefect import flow, get_run_logger, task, context
 from prefect.blocks.system import JSON
 import logging
-from prefect.tasks import task_input_hash
 
 from application.services.etl_service import ETLService
-from flows.utils.flows_utils import backfill_cache_key_from_deal_ids, calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
+from flows.utils.flows_utils import calculate_optimal_batch_size, get_optimal_batch_size, validate_loaded_data, update_optimal_batch_config
 from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
 from infrastructure.cache import RedisCache
 from infrastructure.db_pool import DBConnectionPool
@@ -22,7 +20,10 @@ from infrastructure.monitoring.metrics import (
     memory_usage_gauge,
     batch_size_gauge,
     backfill_deals_remaining_gauge,
-    batch_experiment_counter
+    batch_experiment_counter,
+    etl_heartbeat,
+    batch_experiment_success_rate,
+    batch_experiment_best_score
 )
 
 log = structlog.get_logger() 
@@ -162,6 +163,7 @@ def main_etl_flow():
         raise 
 
     finally:
+        etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
         flow_log.info("Pushing metrics to Pushgateway for main sync flow.")
         push_metrics_to_gateway(job_name="pipedrive_sync_job", grouping_key={'flow_run_id': str(flow_run_id)})
 
@@ -448,6 +450,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
         raise
 
     finally:
+        etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
         flow_log.info("Pushing metrics to Pushgateway for backfill flow.")
         push_metrics_to_gateway(job_name="pipedrive_backfill_job", grouping_key={'flow_run_id': str(flow_run_id)})
         
@@ -461,6 +464,10 @@ def calculate_and_save_optimal_batch(
     Calcula o tamanho ótimo de batch com base nas métricas e salva na config do DB.
     Retorna o tamanho ótimo calculado.
     """
+    flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = flow_run_ctx.id if flow_run_ctx else "calculate_and_save_optimal_batch"
+    flow_log.info("Starting batch size experiment flow.", extra={"flow_run_id": str(flow_run_id)})
     logger = get_run_logger()
     if not results:
         logger.warning("No results provided for batch size calculation.")
@@ -513,6 +520,9 @@ def calculate_and_save_optimal_batch(
     )
     logger.info("Scores per batch size (valid runs):\n" + \
                 valid_df[['batch_size', 'score', 'throughput', 'memory_peak', 'duration']].round(3).to_string())
+    
+    batch_experiment_best_score.labels(flow_run_id=flow_run_id, metric="score").set(best_run["score"])
+    batch_experiment_success_rate.labels(batch_size=str(optimal_size), flow_run_id=flow_run_id).set(best_run["success_rate"])
 
     try:
         update_optimal_batch_config(repository, optimal_size) 
