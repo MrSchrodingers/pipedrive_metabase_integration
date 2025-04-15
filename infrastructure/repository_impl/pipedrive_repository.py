@@ -576,16 +576,21 @@ class PipedriveRepository(DataRepositoryPort):
         mapped_data = []
         for r in data:
             if 'id' in r:
-                 stage_name = r.get('name', UNKNOWN_NAME)
-                 normalized = normalize_column_name(stage_name) if stage_name != UNKNOWN_NAME else None
-                 mapped_data.append({
-                     'stage_id': r['id'],
-                     'stage_name': stage_name,
-                     'normalized_name': normalized,
-                     'pipeline_id': r.get('pipeline_id'),
-                     'order_nr': r.get('order_nr'),
-                     'is_active': r.get('active_flag', True) # Verificar nome correto do campo na API
-                 })
+                original_name = r.get('name', UNKNOWN_NAME) or UNKNOWN_NAME
+                prefix = self.STAGE_HISTORY_COLUMN_PREFIX
+                if original_name.startswith(prefix):
+                    original_name = original_name[len(prefix):]
+
+                normalized = normalize_column_name(original_name) if original_name != UNKNOWN_NAME else None
+
+                mapped_data.append({
+                    'stage_id': r['id'],
+                    'stage_name': original_name,     
+                    'normalized_name': normalized,    
+                    'pipeline_id': r.get('pipeline_id'),
+                    'order_nr': r.get('order_nr'),
+                    'is_active': r.get('active_flag', True)
+                })
         return self._upsert_lookup_data(LOOKUP_TABLE_STAGES, mapped_data, 'stage_id', cols)
 
     def upsert_pipelines(self, data: List[Dict]):
