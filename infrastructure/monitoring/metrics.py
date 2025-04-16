@@ -51,6 +51,7 @@ db_idle_connections                  = Gauge("db_idle_connections",             
 backfill_deals_remaining_gauge       = Gauge("pipedrive_backfill_deals_remaining_estimated","Estimated number of deals remaining for stage history backfill")
 etl_last_successful_run_timestamp    = Gauge("etl_last_successful_run_timestamp",          "Timestamp (UNIX) da última execução bem-sucedida do ETL", ["flow_type"])
 etl_transformation_error_rate        = Gauge("etl_transformation_error_rate",              "Taxa de erro durante transformação Pydantic + transformação pandas", ["flow_type"])
+batch_size_gauge                     = Gauge("pipedrive_etl_batch_size",                    "Number of records in the current processing batch", ["flow_type"])
 
 # --- Histograms ---
 etl_duration_hist        = Histogram("pipedrive_etl_duration_seconds",     "Total ETL processing time", ["flow_type"], buckets=[10,30,60,120,300,600,1800,3600,7200,10800])
