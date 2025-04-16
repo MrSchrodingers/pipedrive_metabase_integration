@@ -508,7 +508,7 @@ def calculate_and_save_optimal_batch(
     ].copy()
 
     if valid_df.empty:
-        logger.error("No valid results found after filtering for batch size calculation. Using default.", original_results_count=len(df))
+        logger.error(f"No valid results found after filtering for batch size calculation. Using default. Count: {len(df)}")
         optimal_size = get_optimal_batch_size(repository, default_size=DEFAULT_OPTIMAL_BATCH_SIZE)
         logger.warning(f"Could not calculate optimal size, will keep/use: {optimal_size}")
         return optimal_size
