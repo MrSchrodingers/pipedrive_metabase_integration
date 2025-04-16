@@ -65,7 +65,6 @@ application
 ├── ├── data_repository_port.py
 ├── ├── pipedrive_client_port.py
 ├── utils
-├── ├── data_transform.py
 ├── ├── replace_nan_with_none_recursive.py
 ├── ├── column_utils.py
 ├── ├── __init__.py
@@ -97,8 +96,4 @@ tests
 ├── __init__.py
 ├── test_infrastructure.py
 pipedrive_metabase_integration_tree.txt
-pipedrive_metabase_integration_content.json
-benchmark
-├── batch_size_optimizer.py
-├── __init__.py
 poetry.lock

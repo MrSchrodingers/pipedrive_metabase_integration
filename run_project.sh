@@ -16,7 +16,7 @@ MINIKUBE_CPUS=4
 MINIKUBE_MEMORY=10240 # 10GB
 MINIKUBE_DRIVER=docker
 CLEANUP_NAMESPACES="default,kube-system"
-PREFECT_YAML_FILE="prefect.yaml"
+PREFECT_YAML_FILE="./infrastructure/k8s/prefect.yaml"
 
 ##############################
 # Funções Auxiliares
@@ -174,7 +174,7 @@ deploy_prefect_flows() {
     log "debug" "PREFECT_API_URL configurada como ${PREFECT_API_URL} para script Python e CLI."
 
     # Executa o script que agora também cria os blocos K8sJob
-    if ! python create_or_update_core_blocks.py; then
+    if ! python scripts/create_or_update_core_blocks.py; then
          fail "Falha ao executar create_or_update_core_blocks.py. Verifique os logs do script Python acima."
     fi
     log "info" "Blocos Prefect (incluindo K8sJob) criados/atualizados com sucesso."

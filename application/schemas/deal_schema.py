@@ -13,7 +13,7 @@ class DealSchema(BaseModel, extra='allow'):
     pipeline_name: Optional[str] = None 
     status: Optional[str] = None
     value: Optional[float] = 0.0
-    currency: Optional[str] = 'USD'
+    currency: Optional[str] = 'BRL'
     add_time: Optional[datetime] = None
     update_time: Optional[datetime] = None
     custom_fields: Dict[str, Any] = Field({}, alias='custom_fields')
