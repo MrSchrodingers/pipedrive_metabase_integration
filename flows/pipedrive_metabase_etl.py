@@ -97,9 +97,15 @@ def main_etl_flow():
     """Fluxo principal ETL: busca deals recentes e usa lookups no DB."""
     setup_logging(level=logging.INFO)
     flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_main_sync"
-    flow_run_name = flow_run_ctx.name if flow_run_ctx else "MainSyncRun"
+    ctx = context.get_run_context()
+    if hasattr(ctx, "flow_run"):
+        flow_run_id = ctx.flow_run.id
+        flow_run_name = ctx.flow_run.name
+    else:
+        flow_run_id = "local_main_sync"
+        flow_run_name = "MainSyncRun"
+    flow_log.info("Main ETL flow started", extra={"flow_run_id": flow_run_id})
+
     flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
     etl_counter.labels(flow_type=flow_type).inc()
     flow_start = time.monotonic()
@@ -230,8 +236,11 @@ def batch_size_experiment_flow(
     """Fluxo aprimorado para experimentos de tamanho de batch com análise automática e validação."""
     setup_logging(level=logging.INFO)
     flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
+    ctx = context.get_run_context()
+    if hasattr(ctx, "flow_run"):
+        flow_run_id = ctx.flow_run.id
+    else:
+        flow_run_id = "local_experiment"
 
     try:
         # 1. Buscar dados reais para o teste
@@ -340,11 +349,14 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     """Orquestra o backfill do histórico de stages em lotes."""
     setup_logging(level=logging.INFO)
     base_flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local"
+    ctx = context.get_run_context()
+    if hasattr(ctx, "flow_run"):
+        flow_run_id = ctx.flow_run.id
+    else:
+        flow_run_id = "local_backfill"
 
     flow_log = base_flow_log
-    flow_log.info(f"Starting {flow_run_ctx.name} flow...")
+    flow_log.info(f"Starting backfill flow", extra={"flow_run_id": flow_run_id})
 
     flow_log.info(f"Starting stage history backfill flow. Daily limit: {daily_deal_limit}, DB batch size: {db_batch_size}")
     flow_type = "backfill"
@@ -472,8 +484,14 @@ def calculate_and_save_optimal_batch(
     Retorna o tamanho ótimo calculado.
     """
     flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = flow_run_ctx.id if flow_run_ctx else "calculate_and_save_optimal_batch"
+    # dentro de tasks, o contexto é TaskRunContext, sem .flow_run, então extraímos via task_run
+    ctx = context.get_run_context()
+    if hasattr(ctx, "flow_run"):
+        flow_run_id = ctx.flow_run.id
+    elif hasattr(ctx, "task_run") and hasattr(ctx.task_run, "flow_run"):
+        flow_run_id = ctx.task_run.flow_run.id
+    else:
+        flow_run_id = "calculate_and_save_optimal_batch"
     flow_log.info("Starting batch size experiment flow.", extra={"flow_run_id": str(flow_run_id)})
     logger = get_run_logger()
     if not results:
@@ -551,8 +569,11 @@ def batch_size_experiment_flow(
     """Testa tamanhos de batch, calcula e salva o ótimo na config."""
     setup_logging(level=logging.INFO)
     flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_batch_experiment"
+    ctx = context.get_run_context()
+    if hasattr(ctx, "flow_run"):
+        flow_run_id = ctx.flow_run.id
+    else:
+        flow_run_id = "local_experiment"
     flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
     etl_counter.labels(flow_type="experiment").inc()
     flow_start = time.monotonic()
