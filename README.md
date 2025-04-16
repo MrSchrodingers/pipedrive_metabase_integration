@@ -1,126 +1,202 @@
-# Pipeboard - Integração Pipedrive + Metabase
+# Pipedrive ⇆ Metabase Integration
+> **Tags:** ETL · Prefect · Pipedrive · Metabase · PostgreSQL · Prometheus · Grafana · Kubernetes · Python
 
-![Status](https://img.shields.io/badge/status-em%20execu%C3%A7%C3%A3o-green)
-![License](https://img.shields.io/badge/license-Propriet%C3%A1rio-red)
-![Python](https://img.shields.io/badge/python-3.10+-blue)
-![Kubernetes](https://img.shields.io/badge/k8s-minikube%20%7C%20prod%20ready-orange)
-![Prefect](https://img.shields.io/badge/prefect-v3.x-brightgreen)
-![PostgreSQL](https://img.shields.io/badge/postgres-15+-blueviolet)
+&#x20; &#x20;
+
+> **Integra dados de negócios (Deals) e entidades auxiliares do Pipedrive em um banco Postgres, tornando-os disponíveis no Metabase quase em tempo real; o fluxo é orquestrado pelo Prefect e monitorado via Prometheus + Grafana.**
 
 ---
 
-## 💡 Visão Geral
+## Índice&#x20;
 
-O **Pipeboard** é uma solução robusta e extensível de ETL desenvolvida internamente na **Pavcob**, com o objetivo de extrair, transformar e carregar dados do **Pipedrive** para um banco **PostgreSQL** com visualização no **Metabase**. Utiliza o **Prefect** para orquestração e o **Kubernetes** para escalabilidade. Conta com monitoramento por **Prometheus/Grafana**, logging estruturado e cache com **Redis**.
-
-Este repositório foi projetado para ser acessível para qualquer desenvolvedor interno da Pavcob, com execução automatizada e estrutura de pastas intuitiva. Tudo pode ser reproduzido localmente com Minikube.
+1. [Visão Geral](#visão-geral)
+2. [Arquitetura](#arquitetura)
+3. [Stack Tecnológico](#stack-tecnológico)
+4. [Estrutura do Repositório](#estrutura-do-repositório)
+5. [Pré‑requisitos](#pré‑requisitos)
+6. [Guia Rápido (Minikube)](#guia-rápido-minikube)
+7. [Configuração Detalhada](#configuração-detalhada)
+   1. [Variáveis de Ambiente](#variáveis-de-ambiente)
+   2. [Build das Imagens](#build-das-imagens)
+   3. [Deploy no Kubernetes](#deploy-no-kubernetes)
+   4. [Deploy dos Flows Prefect](#deploy-dos-flows-prefect)
+   5. [Observabilidade](#observabilidade)
+8. [Operações do Dia‑a‑dia](#operações-do-dia‑a‑dia)
+9. [Solução de Problemas](#solução-de-problemas)
+10. [Como Contribuir](#como-contribuir)
+11. [Licença](#licença)
 
 ---
 
-## 🌍 Propósito do Projeto
+## Visão Geral
 
-- Centralizar dados do Pipedrive para BI.
-- Garantir fluxo incremental e com tolerância a falhas.
-- Executar ETL robusto com métricas, logs e cache.
-- Permitir escala futura e manutenção simplificada.
+O projeto oferece um pipeline de dados **Kubernetes‑nativo**, totalmente automatizado e observável:
 
----
+- **ETL de alta performance** usando tabelas de *staging* UNLOGGED e `COPY`, com *schema evolution* automático.
+- **Atualização quase em tempo‑real** das dashboards do Metabase (intervalo padrão: 30 min).
+- **Métricas detalhadas**: custos de tokens Pipedrive, latência da API, tamanhos de *batch*, qualidade dos dados, uso de CPU/memória e muito mais.
+- **Autoscaling** via HPA e *self‑healing* de Pods com `livenessProbe`/`readinessProbe`.
 
-## 🚀 Como Executar (Resumo)
+## Arquitetura
+
+```
+┌────────────┐     API            ┌──────────────┐
+│  Pipedrive │ ─────────────────► │  ETL Flows   │
+└────────────┘                    │ (Prefect)    │
+        ▲                         └──────┬───────┘
+        │   Lookups / back‑fill          │
+        │                                 ▼
+┌────────────┐  Queries        ┌────────────────┐
+│  Metabase  │ ◄────────────── │   Postgres     │
+└────────────┘                 └────────────────┘
+        ▲                                 │
+        │  Dashboards / alerts            │ pushgateway
+        │                                 ▼
+┌────────────┐ <── PromQL ────┌────────────────┐
+│  Grafana   │                │ Prometheus     │
+└────────────┘                └────────────────┘
+```
+
+Todos os componentes são descritos em `pipedrive_metabase_integration.yaml`, implantando **7 Deployments** e seus respectivos Services/HPAs.
+
+## Stack Tecnológico
+
+| Camada          | Componentes                            | Observações                                                                       |
+| --------------- | -------------------------------------- | --------------------------------------------------------------------------------- |
+| Orquestração    | **Prefect 3 (Orion)**                  | `prefect.yaml` define 6 deployments (ETL, back‑fill, syncs, experimento de batch) |
+| Processamento   | Python 3.12, Pandas, Pydantic          | Imagem multi‑stage via Poetry                                                     |
+| Armazenamento   | **Postgres 14**, **Redis 7**           | PVC de 5 GiB para dados                                                           |
+| Observabilidade | **Prometheus + Pushgateway + Grafana** | Coleta métricas em `/metrics` por anotações                                       |
+| Apresentação    | **Metabase**                           | Exposto na porta `3000` no cluster                                                |
+
+## Estrutura do Repositório
+
+```text
+.
+├─ flows/                    # Flows Prefect (ETL principal, back‑fill, syncs…)
+├─ infrastructure/
+│  ├─ k8s/                   # Manifests + scripts entrypoint/wait
+│  ├─ monitoring/            # Helpers de métricas Prometheus
+│  └─ prefect/orion/         # Imagem ultraleve do Orion
+├─ application/              # Domínio + ports/adapters
+├─ run_project                 # Build + deploy tudo em um comando
+├─ create_secret_block.py    # Registra Secret no Prefect
+├─ Dockerfile                # Build da imagem ETL
+└─ prefect.yaml              # Deployments do Prefect
+```
+
+## Pré‑requisitos
+
+- **Docker** ≥ 20.x
+- **Minikube** ≥ 1.31
+- **kubectl** ≥ 1.26
+- **Poetry** ≥ 1.5
+- **Prefect CLI** ≥ 2.14
+- GNU `bash`, `make` (para scripts auxiliares)
+
+## Guia Rápido (Minikube)
 
 ```bash
-# 1. Clonar o projeto
-$ git clone git@gitlab.pavcob.internal/pipeboard.git && cd pipeboard
+# 1. Clone o repositório e ajuste as variáveis
+git clone https://github.com/SUA_ORG/pipedrive_metabase_integration.git
+cd pipedrive_metabase_integration
+cp .env.template .env           # preencha PIPEDRIVE_API_KEY, POSTGRES_*, ...
 
-# 2. Definir variáveis de ambiente (.env)
-$ cp .env.example .env && nano .env
+# 2. Construa e faça o deploy de tudo
+./run_project                     # ~10‑15 min na primeira execução
 
-# 3. Exportar token do GitHub (usado para pull dos fluxos Prefect)
-$ export GITHUB_PAT="<seu-token-aqui>"
+# 3. Registre o token GitHub como Secret Prefect (opcional)
+python create_secret_block.py ghp_<token>
 
-# 4. Executar o deploy automatizado
-$ chmod +x run_project.sh
-$ ./run_project.sh
+# 4. Inicie um agente Prefect local (caso não rode dentro do cluster)
+prefect agent start -q kubernetes
 ```
 
----
+Quando o script terminar, acesse:
 
-## 🧳 Infraestrutura Provisionada
+| Serviço    | URL                                            | Credenciais padrão  |
+| ---------- | ---------------------------------------------- | ------------------- |
+| Prefect UI | [http://localhost:4200](http://localhost:4200) | (sem auth)          |
+| Postgres   | `localhost:5432`                               | definidas no `.env` |
+| Metabase   | [http://localhost:3000](http://localhost:3000) | definir no 1º login |
+| Grafana    | [http://localhost:3015](http://localhost:3015) | `admin` / `admin`   |
 
-- PostgreSQL 15
-- Redis 6
-- Prefect Orion + Agent
-- Prometheus + Pushgateway
-- Grafana
-- Metabase
-- Metrics Server customizado
+## Configuração Detalhada
 
----
+### Variáveis de Ambiente
 
-## ⚖️ Tecnologias e Arquitetura
+`entrypoint.sh` aborta se alguma estiver faltando:
 
-- **Python 3.10+** com **Poetry**
-- **Prefect v3** para orquestração
-- **Kubernetes + Minikube** (com suporte a ambientes cloud)
-- **PostgreSQL** para armazenamento estruturado
-- **Redis** para cache incremental
-- **Prometheus + Pushgateway** para métricas
-- **Grafana** e **Metabase** para visualização
+| Variável                                            | Descrição                                   |
+| --------------------------------------------------- | ------------------------------------------- |
+| `PIPEDRIVE_API_KEY`                                 | Token pessoal do Pipedrive                  |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Credenciais do banco                        |
+| `REDIS_URL`                                         | *Optional* – default `redis://redis:6379/0` |
+| `PUSHGATEWAY_ADDRESS`                               | default `pushgateway:9091`                  |
 
----
+O script `run_project` converte o `.env` em um **Secret** Kubernetes (`app-secrets`) para evitar vazamento de chaves.
 
-## 🔍 Estrutura do Projeto
+### Build das Imagens
 
-```
-pipeboard/
-├── application/         # Código de negócio e ETLService
-├── infrastructure/      # Repositórios, clients API, cache, DB
-├── flows/               # Fluxos Prefect com @flow
-├── scripts/             # Scripts auxiliares para registrar blocos Prefect
-├── run_project.sh       # Script principal de execução (automático)
-├── prefect.yaml         # Definição dos Deployments Prefect
-├── .env                 # Segredos e configuração (criar manualmente)
-└── pipedrive_metabase_integration.yaml  # Manifests K8s
-```
+Três imagens são construídas:
 
----
+| Contexto build                   | Tag gerada                                            |
+| -------------------------------- | ----------------------------------------------------- |
+| repositório raiz                 | `pipedrive_metabase_integration-etl:latest`           |
+| `infrastructure/prefect/orion`   | `pipedrive_metabase_integration-prefect-orion:latest` |
+| (metrics reutiliza a imagem ETL) | —                                                     |
 
-## 🔔 Observabilidade e Monitoramento
+### Deploy no Kubernetes
 
-- **Prometheus:** Coleta métricas customizadas do ETL e Pushgateway.
-- **Grafana:** Visualização de dashboards de ETL, batch, memória, falhas.
-- **Prefect UI:** Logs, schedules, execuções e status dos fluxos.
-- **Logging:** Formatado com Structlog (JSON, contexto estruturado).
+`run_project deploy_infra` aplica em ordem:
 
----
+1. ConfigMap `observability-config` (nível de log, path métricas)
+2. Secrets `app-secrets`, `db-secrets`
+3. PVC `pgdata-pvc` (5 GiB)
+4. Stack de monitoramento (Prometheus, Pushgateway, Grafana)
+5. Manifesto principal `pipedrive_metabase_integration.yaml`
 
-## 🏆 Diferenciais da Solução
+### Deploy dos Flows Prefect
 
-1. **Upsert via COPY + staging:** Alta performance e segurança de dados.
-2. **Streaming e batching:** Memória otimizada, mesmo com 1M+ registros.
-3. **Campos customizados dinâmicos:** Schema auto-adaptável.
-4. **Histórico de Stage:** Permite analisar pipeline ao longo do tempo.
-5. **Cache Redis + API resiliente:** Busca incremental, circuit breaker.
-6. **Métricas granulares:** Latência, falhas, memória, qualidade dos dados.
-7. **Backfill robusto:** Para recuperar histórico retroativo sob demanda.
-8. **Deploy 100% automatizado:** Com rollback e port-forward incluído.
+- **ETL principal:** intervalo padrão 30 min.
+- **Back‑fill:** gatilho manual.
+- **Syncs auxiliares:** usuários, pessoas/orgs, stages/pipelines em CRON.
+- **Experimento de batch‑size:** otimiza throughput.
 
----
+`run_project deploy_prefect_flows` executa `prefect deploy --all` e garante o `work_pool` *kubernetes-pool*.
 
-## 🔧 Manutenção e Acesso
+### Observabilidade
 
-- Para adicionar novos campos ou entidades:
-  - Atualize os campos em `etl_service.py` e `deal_schema.py`
-  - Rode `main_etl_flow` ou `backfill_stage_history_flow`
-- Para execuções manuais:
-  - Use a UI Prefect (http://localhost:4200)
-  - Ou `prefect deployments run` via CLI
+- Cada task ETL faz `push_to_gateway` de métricas: latência, custo de tokens, erros, etc.
+- Prometheus descobre serviços com `prometheus.io/scrape: "true"`.
+- Dashboard pronto em `dashboards/metabase_pipeline.json`.
 
----
+## Operações do Dia‑a‑dia
 
-## 🤝 Contato Interno
+| Tarefa              | Comando / UI                                      |
+| ------------------- | ------------------------------------------------- |
+| Monitorar pipeline  | Grafana → dashboard **Metabase Pipeline**         |
+| Disparar sync agora | Prefect UI → Deployments → *Run*                  |
+| Escalonar workers   | `kubectl scale deploy/prefect-agent --replicas=N` |
+| Ver logs de um Pod  | `kubectl logs -f deploy/metrics`                  |
+| Atualizar código    | `git pull && ./run_project`                       |
 
-- **Responsável técnico:** Matheus Munhoz - mrschrodingers@gmail.com
-- **Sugestões:** Abra uma issue no repositório interno GitLab
+## Solução de Problemas
 
----
+| Sintoma                        | Verificações                                                      |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `create_secret_block.py` falha | Orion acessível em `localhost:4200/api/health`? Secret já existe? |
+| Flows **Pending**              | Agente online? `work_pool` correto?                               |
+| ETL aborta por env ausente     | `.env` e Secret `app-secrets` válidos?                            |
+| Métricas não aparecem          | Serviço tem anotações `prometheus.io/…`? Pushgateway ativo?       |
+
+## Como Contribuir
+
+1. Fork → branch → commit → PR.
+2. Descreva claramente o problema/feature.
+
+## Licença
+
+Distribuído sob licença **MIT**. Consulte `LICENSE` para mais detalhes.
+
+

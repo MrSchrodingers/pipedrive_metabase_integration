@@ -1,0 +1,84 @@
+pipedrive_metabase_integration/
+.
+pipedrive_metabase_integration.yaml
+create_secret_block.py
+Dockerfile
+observability-config.yaml
+prometheus.yml
+infrastructure
+├── monitoring
+├── ├── metrics_server.py
+├── ├── metrics.py
+├── ├── __init__.py
+├── config
+├── ├── settings.py
+├── ├── __init__.py
+├── db.py
+├── db_pool.py
+├── repository_impl
+├── ├── __init__.py
+├── ├── pipedrive_repository.py
+├── cache.py
+├── prefect
+├── ├── orion
+├── ├── ├── Dockerfile
+├── k8s
+├── ├── wait-for-it.sh
+├── ├── db-secrets.yaml
+├── ├── entrypoint.sh
+├── __init__.py
+├── api_clients
+├── ├── pipedrive_api_client.py
+├── ├── __init__.py
+├── logging_config.py
+create_or_update_core_blocks.py
+.gitignore
+kubectl.sha256
+flows
+├── pipedrive_deployments.py
+├── pipedrive_sync_aux.py
+├── pipedrive_metabase_etl.py
+├── utils
+├── ├── __init__.py
+├── ├── flows_utils.py
+├── __init__.py
+scripts
+├── register_k8s_block.py
+├── __init__.py
+pushgateway.yaml
+application
+├── schemas
+├── ├── deal_schema.py
+├── services
+├── ├── __init__.py
+├── ├── etl_service.py
+├── ports
+├── ├── __init__.py
+├── ├── data_repository_port.py
+├── ├── pipedrive_client_port.py
+├── utils
+├── ├── replace_nan_with_none_recursive.py
+├── ├── column_utils.py
+├── ├── batch_optimizer.py
+├── ├── __init__.py
+├── __init__.py
+├── use_cases
+├── ├── process_pipedrive_data.py
+├── ├── __init__.py
+README.md
+pyproject.toml
+update.sh
+run_project.sh
+persistent-volume-claim.yaml
+meta
+├── pipedrive_metabase_integration_tree.txt
+├── pipedrive_metabase_integration_content.json
+kubectl
+prefect.yaml
+tests
+├── test_use_cases.py
+├── __init__.py
+├── test_infrastructure.py
+pipedrive_metabase_integration_tree.txt
+pipedrive_metabase_integration_content.json
+poetry.lock
