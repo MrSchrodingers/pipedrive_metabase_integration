@@ -107,11 +107,11 @@ def main_etl_flow():
     flow_log.info("Main ETL flow started", extra={"flow_run_id": flow_run_id})
 
     flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
+    flow_type = "sync" 
     etl_counter.labels(flow_type=flow_type).inc()
     flow_start = time.monotonic()
 
     flow_log.info(f"Starting flow run '{flow_run_name}'...")
-    flow_type = "sync" 
     result = {}
 
     try:
