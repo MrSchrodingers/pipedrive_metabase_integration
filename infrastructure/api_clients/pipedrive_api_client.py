@@ -10,8 +10,8 @@ from infrastructure.cache import RedisCache
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from application.utils.column_utils import normalize_column_name 
 from infrastructure.monitoring.metrics import (
-    api_request_duration_hist,
-    api_errors_counter,
+    pipedrive_api_request_duration_seconds,
+    pipedrive_api_errors_total,
     pipedrive_api_token_cost_total,
     pipedrive_api_call_total,
     pipedrive_api_cache_hit_total,
@@ -177,7 +177,7 @@ class PipedriveAPIClient(PipedriveClientPort):
 
 
             duration = time.monotonic() - start_time
-            api_request_duration_hist.labels(
+            pipedrive_api_request_duration_seconds.labels(
                 endpoint=normalized_endpoint_label, 
                 method='GET', 
                 status_code=status_code
@@ -206,7 +206,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             current_status_code = e.cause.response.status_code
 
         final_status_code_label = str(current_status_code) if current_status_code else 'N/A'
-        api_errors_counter.labels(endpoint=normalized_endpoint_label, 
+        pipedrive_api_errors_total.labels(endpoint=normalized_endpoint_label, 
                                   error_type=error_type, 
                                   status_code=final_status_code_label).inc()
         request_log.debug("API Error counter incremented", 
