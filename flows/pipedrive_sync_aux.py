@@ -6,7 +6,7 @@ from application.ports.pipedrive_client_port import PipedriveClientPort
 from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
 from flows.pipedrive_metabase_etl import initialize_components_no_maps
 from infrastructure.monitoring.metrics import (
-  push_metrics_to_gateway, records_synced_counter, sync_counter, sync_failure_counter,
+  push_metrics_to_gateway, records_synced_counter, sync_counter, sync_failure_counter,db_operation_duration_hist
 )
 
 log = structlog.get_logger(__name__)
@@ -62,14 +62,16 @@ def sync_entity_task(
             processed_count += 1
             if len(data_batch) >= batch_size:
                 logger.debug(f"Upserting batch of {len(data_batch)} {entity_type}...")
-                upserted = upsert_method(data_batch)
+                with db_operation_duration_hist.labels(operation=f"sync_{entity_type}").time():
+                    upserted = upsert_method(data_batch)
                 total_synced += upserted
                 records_synced_counter.labels(entity_type=entity_type).inc(upserted)
                 data_batch = []
 
         if data_batch:
             logger.debug(f"Upserting final batch of {len(data_batch)} {entity_type}...")
-            upserted = upsert_method(data_batch)
+            with db_operation_duration_hist.labels(operation=f"sync_{entity_type}").time():
+                upserted = upsert_method(data_batch)
             total_synced += upserted
             records_synced_counter.labels(entity_type=entity_type).inc(upserted)
 
