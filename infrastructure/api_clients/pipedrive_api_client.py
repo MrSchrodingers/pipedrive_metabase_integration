@@ -10,12 +10,12 @@ from infrastructure.cache import RedisCache
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from application.utils.column_utils import normalize_column_name 
 from infrastructure.monitoring.metrics import (
-    pipedrive_api_request_duration_seconds,
-    pipedrive_api_errors_total,
-    pipedrive_api_token_cost_total,
-    pipedrive_api_call_total,
-    pipedrive_api_cache_hit_total,
-    pipedrive_api_rate_limit_remaining
+    pipedrive_api_request_duration_seconds, 
+    pipedrive_api_errors_total,       
+    pipedrive_api_token_cost_total,     
+    pipedrive_api_call_total,        
+    pipedrive_api_cache_hit_total,      
+    pipedrive_api_rate_limit_remaining   
 )
 
 

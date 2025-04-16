@@ -63,7 +63,7 @@ etl_skipped_batches_total = Counter(
 )
 
 # --- API Interaction Metrics ---
-pipedrive_api_calls_total = Counter(
+pipedrive_api_call_total = Counter(
     "pipedrive_api_calls_total",
     "Total Pipedrive API calls made",
     ["endpoint", "method", "status_code"]
@@ -97,7 +97,7 @@ pipedrive_api_calls_per_batch_hist = Histogram(
 )
 
 # --- Cache Interaction Metrics ---
-pipedrive_cache_hit_total = Counter(
+pipedrive_api_cache_hit_total = Counter(
     "pipedrive_cache_hit_total",
     "Cache hit count for Pipedrive related lookups",
     ["entity", "source"] # source: 'redis', 'memory', etc.
