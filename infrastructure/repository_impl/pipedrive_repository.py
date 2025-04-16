@@ -542,6 +542,16 @@ class PipedriveDataRepository(DataRepositoryPort):
             return -1
         finally:
             if conn: self.db_pool.release_connection(conn)
+            
+    def get_stage_id_to_column_map(self) -> Dict[int, str]:
+        """
+        Retorna o mapeamento pré-calculado de Stage ID para o nome da sua
+        coluna de histórico correspondente.
+        """
+        if self._stage_id_to_column_name_map is None:
+             self.log.warning("Stage ID to column map accessed before it was built or is empty.")
+             return {}
+        return self._stage_id_to_column_name_map
 
     def validate_date_consistency(self) -> int:
          """Checks basic date consistency, returns number of issues."""

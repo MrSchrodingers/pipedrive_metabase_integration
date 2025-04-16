@@ -35,6 +35,10 @@ class DataRepositoryPort(ABC):
     def count_records(self) -> int:
         """Counts the total number of records in the main data table."""
         pass
+    
+    @abstractmethod
+    def get_stage_id_to_column_map(self) -> Dict[int, str]:
+        pass
 
     # --- Methods specific to Stage History Backfill ---
     @abstractmethod
