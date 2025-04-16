@@ -16,7 +16,7 @@ MINIKUBE_CPUS=4
 MINIKUBE_MEMORY=10240 # 10GB
 MINIKUBE_DRIVER=docker
 CLEANUP_NAMESPACES="default,kube-system"
-PREFECT_YAML_FILE="infrastructure/k8s/prefect.yaml"
+PREFECT_YAML_FILE="./infrastructure/k8s/prefect.yaml"
 
 ##############################
 # Funções Auxiliares
@@ -195,7 +195,7 @@ deploy_prefect_flows() {
 
     # --- Aplicação dos Deployments ---
     log "info" "Aplicando/Atualizando Deployments Prefect a partir do ${PREFECT_YAML_FILE}..."
-    if prefect deploy --all; then 
+    if prefect deploy --all --prefect-file "${PREFECT_YAML_FILE}"; then
         log "success" "Deployments Prefect aplicados com sucesso via CLI."
     else
         fail "Falha ao aplicar deployments Prefect via CLI. Verifique os logs do comando."
