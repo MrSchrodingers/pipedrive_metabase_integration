@@ -40,18 +40,20 @@ pipedrive_api_retries_total    = Counter("pipedrive_api_retries_total",    "Tota
 pipedrive_api_retry_failures_total = Counter("pipedrive_api_retry_failures_total", "Failures after retry attempts for Pipedrive API calls", ["endpoint"])
 
 # --- Gauges ---
-memory_usage_gauge                   = Gauge("pipedrive_etl_process_memory_mbytes",      "Peak memory usage of the ETL process run in Megabytes", ["flow_type"])
-etl_heartbeat                        = Gauge("etl_heartbeat",                            "Timestamp da última execução do flow", ["flow_type"])
-etl_cpu_usage_percent                = Gauge("etl_cpu_usage_percent",                      "CPU usage percentage of ETL process", ["flow_type"])
-etl_thread_count                     = Gauge("etl_thread_count",                          "Number of active threads in ETL process", ["flow_type"])
-etl_disk_usage_bytes                 = Gauge("etl_disk_usage_bytes",                       "Disk usage in bytes for ETL storage", ["mount_point"])
-etl_pushgateway_up                   = Gauge("etl_pushgateway_up",                         "Status of pushgateway success (1 if ok)", ["instance"])
-db_active_connections                = Gauge("db_active_connections",                      "Número de conexões ativas no pool de banco")
-db_idle_connections                  = Gauge("db_idle_connections",                        "Número de conexões ociosas no pool de banco")
-backfill_deals_remaining_gauge       = Gauge("pipedrive_backfill_deals_remaining_estimated","Estimated number of deals remaining for stage history backfill")
-etl_last_successful_run_timestamp    = Gauge("etl_last_successful_run_timestamp",          "Timestamp (UNIX) da última execução bem-sucedida do ETL", ["flow_type"])
-etl_transformation_error_rate        = Gauge("etl_transformation_error_rate",              "Taxa de erro durante transformação Pydantic + transformação pandas", ["flow_type"])
-batch_size_gauge                     = Gauge("pipedrive_etl_batch_size",                    "Number of records in the current processing batch", ["flow_type"])
+memory_usage_gauge                          = Gauge("pipedrive_etl_process_memory_mbytes",      "Peak memory usage of the ETL process run in Megabytes", ["flow_type"])
+etl_heartbeat                               = Gauge("etl_heartbeat",                            "Timestamp da última execução do flow", ["flow_type"])
+etl_cpu_usage_percent                       = Gauge("etl_cpu_usage_percent",                      "CPU usage percentage of ETL process", ["flow_type"])
+etl_thread_count                            = Gauge("etl_thread_count",                          "Number of active threads in ETL process", ["flow_type"])
+etl_disk_usage_bytes                        = Gauge("etl_disk_usage_bytes",                       "Disk usage in bytes for ETL storage", ["mount_point"])
+etl_pushgateway_up                          = Gauge("etl_pushgateway_up",                         "Status of pushgateway success (1 if ok)", ["instance"])
+db_active_connections                       = Gauge("db_active_connections",                      "Número de conexões ativas no pool de banco")
+db_idle_connections                         = Gauge("db_idle_connections",                        "Número de conexões ociosas no pool de banco")
+backfill_deals_remaining_gauge              = Gauge("pipedrive_backfill_deals_remaining_estimated","Estimated number of deals remaining for stage history backfill")
+etl_last_successful_run_timestamp           = Gauge("etl_last_successful_run_timestamp",          "Timestamp (UNIX) da última execução bem-sucedida do ETL", ["flow_type"])
+etl_transformation_error_rate               = Gauge("etl_transformation_error_rate",              "Taxa de erro durante transformação Pydantic + transformação pandas", ["flow_type"])
+batch_size_gauge                            = Gauge("pipedrive_etl_batch_size",                    "Number of records in the current processing batch", ["flow_type"])
+pipedrive_api_rate_limit_remaining          = Gauge("pipedrive_api_rate_limit_remaining",          "Remaining API quota before hitting rate limit", ["endpoint"])
+pipedrive_api_rate_limit_reset_seconds      = Gauge("pipedrive_api_rate_limit_reset_seconds",      "Seconds until API rate limit resets", ["endpoint"])
 
 # --- Histograms ---
 etl_duration_hist               = Histogram("pipedrive_etl_duration_seconds",     "Total ETL processing time", ["flow_type"], buckets=[10,30,60,120,300,600,1800,3600,7200,10800])
@@ -60,6 +62,7 @@ hist_transform                  = Histogram("etl_transform_seconds",            
 hist_load                       = Histogram("etl_load_seconds",                 "Tempo de carga no ETL", ["flow_type"])
 db_operation_duration_hist      = Histogram("pipedrive_db_operation_duration_seconds","DB operation durations", ["operation"], buckets=[0.1,0.5,1,5,10,30,60,120])
 etl_loaded_records_per_batch    = Histogram("etl_loaded_records_per_batch", "Distribuição do número de registros carregados por batch", ["flow_type"], buckets=[0, 10, 50, 100, 200, 500, 1000, 2000])
+api_request_duration_hist       = Histogram("pipedrive_api_request_duration_seconds", "Pipedrive API request durations", ["endpoint", "method", "status_code"], buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 30, 45, 60])
 
 # --- Summaries ---
 transform_duration_summary = Summary("pipedrive_transform_batch_duration_seconds", "Time spent transforming a batch of data", ["flow_type"])
@@ -68,6 +71,11 @@ transform_duration_summary = Summary("pipedrive_transform_batch_duration_seconds
 batch_experiment_counter     = Counter("pipedrive_batch_experiment_runs_total",   "Batch experiment executions", ["experiment","batch_size","flow_run_id"])
 batch_experiment_best_score  = Gauge("batch_experiment_best_score",  "Melhor score encontrado no experimento de batch", ["flow_run_id","metric"])
 batch_experiment_success_rate= Gauge("batch_experiment_success_rate","Taxa de sucesso dos experimentos por batch size", ["batch_size","flow_run_id"])
+
+# Sync flows
+sync_counter            = Counter("pipedrive_aux_sync_runs_total", "Total de auxiliary syncs executados", ["entity_type"])
+sync_failure_counter    = Counter("pipedrive_aux_sync_failures_total", "Total de auxiliary syncs que falharam", ["entity_type"])
+records_synced_counter  = Counter("pipedrive_aux_sync_records_synced_total", "Total de registros sincronizados", ["entity_type"])
 
 # --- Função de Push ---
 def push_metrics_to_gateway(job_name="pipedrive_etl_job", grouping_key=None):
