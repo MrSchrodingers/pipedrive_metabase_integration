@@ -16,7 +16,7 @@ MINIKUBE_CPUS=4
 MINIKUBE_MEMORY=10240 # 10GB
 MINIKUBE_DRIVER=docker
 CLEANUP_NAMESPACES="default,kube-system"
-PREFECT_YAML_FILE="prefect.yaml"
+PREFECT_YAML_FILE="./infrastructure/k8s/prefect.yaml"
 
 ##############################
 # Funções Auxiliares
@@ -195,7 +195,7 @@ deploy_prefect_flows() {
 
     # --- Aplicação dos Deployments ---
     log "info" "Aplicando/Atualizando Deployments Prefect a partir do ${PREFECT_YAML_FILE}..."
-    if prefect deploy --all; then 
+    if prefect deploy --all --prefect-file "${PREFECT_YAML_FILE}"; then 
         log "success" "Deployments Prefect aplicados com sucesso via CLI."
     else
         fail "Falha ao aplicar deployments Prefect via CLI. Verifique os logs do comando."
@@ -205,16 +205,16 @@ deploy_prefect_flows() {
 deploy_infra() {
     log "info" "Aplicando configurações base..."
 
-    kubectl apply -f observability-config.yaml --server-side=true || fail "Falha ao aplicar observability-config.yaml"
-    kubectl apply -f db-secrets.yaml || fail "Falha ao aplicar db-secrets.yaml"
+    kubectl apply -f infrastructure/k8s/observability-config.yaml --server-side=true || fail "Falha ao aplicar observability-config.yaml"
+    kubectl apply -f infrastructure/k8s/db-secrets.yaml || fail "Falha ao aplicar db-secrets.yaml"
     if kubectl get pvc pgdata-pvc > /dev/null 2>&1 ; then
        log "info" "PVC pgdata-pvc já existe."
     else
-       kubectl apply -f persistent-volume-claim.yaml || fail "Falha ao aplicar persistent-volume-claim.yaml"
+       kubectl apply -f infrastructure/k8s/persistent-volume-claim.yaml || fail "Falha ao aplicar persistent-volume-claim.yaml"
     fi
 
-    kubectl apply -f prometheus.yml || fail "Falha ao aplicar prometheus.yml"
-    kubectl apply -f pushgateway.yaml || fail "Falha ao aplicar pushgateway.yaml"
+    kubectl apply -f infrastructure/k8s/prometheus.yml || fail "Falha ao aplicar prometheus.yml"
+    kubectl apply -f infrastructure/k8s/pushgateway.yaml || fail "Falha ao aplicar pushgateway.yaml"
 
     log "info" "Criando/Atualizando secret 'app-secrets' a partir do .env"
     kubectl create secret generic app-secrets \
@@ -223,7 +223,7 @@ deploy_infra() {
         -o yaml | kubectl apply -f - || fail "Falha ao criar/atualizar app-secrets"
 
     log "info" "Aplicando manifesto principal (sem o Job 'etl' estático)..."
-    kubectl apply -f pipedrive_metabase_integration.yaml || fail "Falha ao aplicar pipedrive_metabase_integration.yaml"
+    kubectl apply -f infrastructure/k8s/pipedrive_metabase_integration.yaml || fail "Falha ao aplicar pipedrive_metabase_integration.yaml"
 }
 
 wait_for_rollout() {
