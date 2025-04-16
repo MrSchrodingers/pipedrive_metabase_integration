@@ -142,8 +142,7 @@ def main_etl_flow():
 
         if result.get("status", "error") not in ("success", "success_no_new_data"):
             message = result.get("message", "Unknown error in ETL service")
-            flow_log.error(f"ETL Service reported failure/errors: {message}", etl_result=result)
-            # Incrementar falha aqui se o serviço indicar erro, mesmo sem exceção
+            flow_log.bind(etl_result=result).error(f"ETL Service reported failure/errors: {message}")
             etl_run_failures_total.labels(flow_type=flow_type).inc()
             raise RuntimeError(f"ETL task failed: {message}")
 

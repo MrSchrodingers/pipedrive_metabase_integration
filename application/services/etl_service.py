@@ -340,11 +340,19 @@ class ETLService:
                 schema_batch.append(schema)
             except ValidationError as schema_err:
                  batch_results["schema_failed"] += 1
-                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="schema").inc()
+                 etl_batch_validation_errors_total.labels(
+                        flow_type=flow_type,
+                        validation_stage="schema",
+                        error_detail=str(schema_err)
+                    ).inc()
                  batch_log.warning("Schema validation failed", record_id=api_record.get("id"), error=str(schema_err))
             except Exception as e:
                  batch_results["schema_failed"] += 1
-                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="schema_unexpected").inc()
+                 etl_batch_validation_errors_total.labels(
+                        flow_type=flow_type,
+                        validation_stage="schema",
+                        error_detail=str(e)
+                    ).inc()
                  batch_log.error("Unexpected error during schema mapping", record_id=api_record.get("id"), error=str(e), exc_info=True)
         batch_results["schema_valid"] = len(schema_batch)
 
@@ -361,11 +369,19 @@ class ETLService:
                 domain_batch.append(domain_entity)
             except ValueError as domain_err:
                  batch_results["domain_failed"] += 1
-                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="domain").inc()
+                 etl_batch_validation_errors_total.labels(
+                        flow_type=flow_type,
+                        validation_stage="domain",
+                        error_detail=str(domain_err)
+                    ).inc()
                  batch_log.warning("Domain mapping failed", record_id=schema.id, error=str(domain_err))
             except Exception as e:
                  batch_results["domain_failed"] += 1
-                 etl_batch_validation_errors_total.labels(flow_type=flow_type, error_type="domain_unexpected").inc()
+                 etl_batch_validation_errors_total.labels(
+                        flow_type=flow_type,
+                        validation_stage="domain",
+                        error_detail=str(e)
+                    ).inc()
                  batch_log.error("Unexpected error during domain mapping", record_id=schema.id, error=str(e), exc_info=True)
         batch_results["domain_mapped"] = len(domain_batch)
 
