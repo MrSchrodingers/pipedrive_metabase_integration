@@ -23,7 +23,8 @@ from infrastructure.monitoring.metrics import (
     batch_experiment_counter,
     etl_heartbeat,
     batch_experiment_success_rate,
-    batch_experiment_best_score
+    batch_experiment_best_score,
+    etl_duration_hist
 )
 
 log = structlog.get_logger() 
@@ -100,6 +101,8 @@ def main_etl_flow():
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_main_sync"
     flow_run_name = flow_run_ctx.name if flow_run_ctx else "MainSyncRun"
     flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
+    etl_counter.labels(flow_type=flow_type).inc()
+    flow_start = time.monotonic()
 
     flow_log.info(f"Starting flow run '{flow_run_name}'...")
     flow_type = "sync" 
@@ -165,6 +168,8 @@ def main_etl_flow():
     finally:
         etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
         flow_log.info("Pushing metrics to Pushgateway for main sync flow.")
+        duration = time.monotonic() - flow_start
+        etl_duration_hist.labels(flow_type=flow_type).observe(duration)
         push_metrics_to_gateway(job_name="pipedrive_sync_job", grouping_key={'flow_run_id': str(flow_run_id)})
 
     
@@ -344,7 +349,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     flow_log.info(f"Starting stage history backfill flow. Daily limit: {daily_deal_limit}, DB batch size: {db_batch_size}")
     flow_type = "backfill"
     etl_counter.labels(flow_type=flow_type).inc()
-    start_time = time.time()
+    flow_start = time.monotonic()
 
     total_processed_today = 0
     total_api_errors = 0
@@ -452,6 +457,8 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
     finally:
         etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
         flow_log.info("Pushing metrics to Pushgateway for backfill flow.")
+        duration = time.monotonic() - flow_start
+        etl_duration_hist.labels(flow_type=flow_type).observe(duration)
         push_metrics_to_gateway(job_name="pipedrive_backfill_job", grouping_key={'flow_run_id': str(flow_run_id)})
         
 @task(name="Calculate and Save Optimal Batch Size")
@@ -547,6 +554,8 @@ def batch_size_experiment_flow(
     flow_run_ctx = context.get_run_context().flow_run
     flow_run_id = flow_run_ctx.id if flow_run_ctx else "local_batch_experiment"
     flow_log.info("Main ETL flow started", extra={"flow_run_id": str(flow_run_id)})
+    etl_counter.labels(flow_type="experiment").inc()
+    flow_start = time.monotonic()
 
     results = []
     optimal_size = DEFAULT_OPTIMAL_BATCH_SIZE 
@@ -613,6 +622,8 @@ def batch_size_experiment_flow(
         flow_log.critical("Batch experiment flow failed critically", exc_info=True)
         raise
     finally:
-         push_metrics_to_gateway(job_name="batch_experiment", grouping_key={'flow_run_id': str(flow_run_id)})
+        duration = time.monotonic() - flow_start
+        etl_duration_hist.labels(flow_type="experiment").observe(duration)
+        push_metrics_to_gateway(job_name="batch_experiment", grouping_key={'flow_run_id': str(flow_run_id)})
 
 

@@ -31,7 +31,10 @@ from infrastructure.monitoring.metrics import (
     etl_skipped_batches_total,
     etl_last_successful_run_timestamp,
     etl_transformation_error_rate,
-    etl_loaded_records_per_batch
+    etl_loaded_records_per_batch,
+    hist_load,
+    hist_extract,
+    hist_transform
 )
 from application.ports.pipedrive_client_port import PipedriveClientPort
 from application.ports.data_repository_port import DataRepositoryPort
@@ -384,7 +387,8 @@ class ETLService:
             # --- Extração (Streaming) ---
             last_timestamp_str = self.client.get_last_timestamp()
             run_log.info("Fetching deals stream from Pipedrive", updated_since=last_timestamp_str)
-            deal_stream_iterator = self.client.fetch_all_deals_stream(updated_since=last_timestamp_str)
+            with hist_extract.labels(flow_type=flow_type).time():
+                deal_stream_iterator = self.client.fetch_all_deals_stream(updated_since=last_timestamp_str)
 
             # --- Transformação e Carga (Batching) ---
             batch_num = 0
@@ -418,10 +422,11 @@ class ETLService:
                     batch_size_gauge.labels(flow_type=flow_type).set(len(batch_to_process))
 
                     try:
-                        validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                            batch=batch_to_process,
-                            flow_type=flow_type
-                        )
+                        with hist_transform.labels(flow_type=flow_type).time():
+                            validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
+                                batch=batch_to_process,
+                                flow_type=flow_type
+                            )
                         total_failed += failed_count_in_batch
                         total_validated += len(validated_batch)
                         
@@ -434,7 +439,8 @@ class ETLService:
                             try:
                                 with db_operation_duration_hist.labels(operation='upsert').time():
                                     batch_log.warning("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
-                                    self.repository.save_data_upsert(validated_batch)
+                                    with hist_load.labels(flow_type=flow_type).time():
+                                        self.repository.save_data_upsert(validated_batch)
                                 current_loaded_count = len(validated_batch)
                                 total_loaded += current_loaded_count
                                 records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)
@@ -470,10 +476,11 @@ class ETLService:
                 batch_size_gauge.labels(flow_type=flow_type).set(len(batch_to_process))
 
                 try:
-                    validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
-                         batch=batch_to_process,
-                         flow_type=flow_type
-                     )
+                    with hist_transform.labels(flow_type=flow_type).time():
+                        validated_batch, failed_count_in_batch = self._validate_and_transform_batch_pandas(
+                            batch=batch_to_process,
+                            flow_type=flow_type
+                        )
                     total_failed += failed_count_in_batch
                     total_validated += len(validated_batch)
 
@@ -482,7 +489,8 @@ class ETLService:
                         try:
                             with db_operation_duration_hist.labels(operation='upsert').time():
                                 batch_log.warning("Sending batch to repository upsert.", first_ids=[rec.get("id") for rec in validated_batch[:5]])
-                                self.repository.save_data_upsert(validated_batch)
+                                with hist_load.labels(flow_type=flow_type).time():
+                                    self.repository.save_data_upsert(validated_batch)
                             current_loaded_count = len(validated_batch)
                             total_loaded += current_loaded_count
                             records_processed_counter.labels(flow_type=flow_type).inc(current_loaded_count)

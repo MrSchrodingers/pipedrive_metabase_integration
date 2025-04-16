@@ -16,6 +16,13 @@ from application.ports.data_repository_port import DataRepositoryPort
 from application.utils.column_utils import normalize_column_name
 from infrastructure.db_pool import DBConnectionPool
 
+from infrastructure.monitoring.metrics import (
+    db_active_connections,
+    db_idle_connections,
+    db_operation_duration_hist,
+)
+
+
 log = structlog.get_logger(__name__)
 
 # Colunas da tabela principal de deals
@@ -295,31 +302,34 @@ class PipedriveRepository(DataRepositoryPort):
         locked = False
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                # 1. Adquire lock para modificação do schema
-                cur.execute("SELECT pg_advisory_lock(%s)", (self.SCHEMA_LOCK_ID,))
-                locked = True
-                self.log.info("Acquired schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="ensure_schema_exists").time():
+                with conn.cursor() as cur:
+                    # 1. Adquire lock para modificação do schema
+                    cur.execute("SELECT pg_advisory_lock(%s)", (self.SCHEMA_LOCK_ID,))
+                    locked = True
+                    self.log.info("Acquired schema modification lock.", lock_id=self.SCHEMA_LOCK_ID)
 
-                # 2. Criar/Alterar tabela principal
-                self._create_or_alter_table(cur, self.TABLE_NAME, self._get_main_table_column_definitions)
+                    # 2. Criar/Alterar tabela principal
+                    self._create_or_alter_table(cur, self.TABLE_NAME, self._get_main_table_column_definitions)
 
-                # 3. Criar/Alterar tabela de configuração
-                self._create_or_alter_table(cur, self.CONFIG_TABLE_NAME, self._get_config_column_definitions)
+                    # 3. Criar/Alterar tabela de configuração
+                    self._create_or_alter_table(cur, self.CONFIG_TABLE_NAME, self._get_config_column_definitions)
 
-                # 4. Criar/Alterar tabelas de lookup
-                lookup_tables = [
-                    LOOKUP_TABLE_USERS, LOOKUP_TABLE_PERSONS, LOOKUP_TABLE_STAGES,
-                    LOOKUP_TABLE_PIPELINES, LOOKUP_TABLE_ORGANIZATIONS
-                ]
-                for table in lookup_tables:
-                    self._create_or_alter_table(cur, table, lambda t=table: self._get_lookup_table_definitions(t))
+                    # 4. Criar/Alterar tabelas de lookup
+                    lookup_tables = [
+                        LOOKUP_TABLE_USERS, LOOKUP_TABLE_PERSONS, LOOKUP_TABLE_STAGES,
+                        LOOKUP_TABLE_PIPELINES, LOOKUP_TABLE_ORGANIZATIONS
+                    ]
+                    for table in lookup_tables:
+                        self._create_or_alter_table(cur, table, lambda t=table: self._get_lookup_table_definitions(t))
 
-                # 5. Criar índices
-                self._create_indexes(cur)
+                    # 5. Criar índices
+                    self._create_indexes(cur)
 
-                conn.commit()
-                self.log.info("Schema check/modification committed for all tables.")
+                    conn.commit()
+                    self.log.info("Schema check/modification committed for all tables.")
 
         except Exception as e:
             if conn:
@@ -528,15 +538,18 @@ class PipedriveRepository(DataRepositoryPort):
 
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                # Usar execute_values para eficiência
-                extras.execute_values(cur, upsert_sql_template.as_string(cur), values_tuples, page_size=500)
-                rows_affected = cur.rowcount
-                conn.commit()
-                duration = py_time.monotonic() - start_time
-                self.log.info("Upsert successful for lookup table", table_name=table_name,
-                records_processed=len(data), rows_affected=rows_affected, duration_sec=f"{duration:.3f}s")
-                return rows_affected
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="_upsert_lookup_data").time():
+                with conn.cursor() as cur:
+                    # Usar execute_values para eficiência
+                    extras.execute_values(cur, upsert_sql_template.as_string(cur), values_tuples, page_size=500)
+                    rows_affected = cur.rowcount
+                    conn.commit()
+                    duration = py_time.monotonic() - start_time
+                    self.log.info("Upsert successful for lookup table", table_name=table_name,
+                    records_processed=len(data), rows_affected=rows_affected, duration_sec=f"{duration:.3f}s")
+                    return rows_affected
         except Exception as e:
             if conn: conn.rollback()
             self.log.error("Upsert failed for lookup table", table_name=table_name, error=str(e), record_count=len(data), exc_info=True)
@@ -638,22 +651,25 @@ class PipedriveRepository(DataRepositoryPort):
         conn = None
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                if user_ids:
-                    cur.execute(sql.SQL("SELECT user_id, user_name FROM {} WHERE user_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_USERS)), (list(user_ids),))
-                    results['users'] = {row[0]: row[1] for row in cur.fetchall()}
-                if person_ids:
-                    cur.execute(sql.SQL("SELECT person_id, person_name FROM {} WHERE person_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_PERSONS)), (list(person_ids),))
-                    results['persons'] = {row[0]: row[1] for row in cur.fetchall()}
-                if stage_ids:
-                    cur.execute(sql.SQL("SELECT stage_id, normalized_name FROM {} WHERE stage_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_STAGES)), (list(stage_ids),))
-                    results['stages'] = {row[0]: row[1] for row in cur.fetchall() if row[1]}
-                if pipeline_ids:
-                    cur.execute(sql.SQL("SELECT pipeline_id, pipeline_name FROM {} WHERE pipeline_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_PIPELINES)), (list(pipeline_ids),))
-                    results['pipelines'] = {row[0]: row[1] for row in cur.fetchall()}
-                if org_ids:
-                     cur.execute(sql.SQL("SELECT org_id, org_name FROM {} WHERE org_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_ORGANIZATIONS)), (list(org_ids),))
-                     results['orgs'] = {row[0]: row[1] for row in cur.fetchall()}
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="get_lookup_maps_for_batch").time():
+                with conn.cursor() as cur:
+                    if user_ids:
+                        cur.execute(sql.SQL("SELECT user_id, user_name FROM {} WHERE user_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_USERS)), (list(user_ids),))
+                        results['users'] = {row[0]: row[1] for row in cur.fetchall()}
+                    if person_ids:
+                        cur.execute(sql.SQL("SELECT person_id, person_name FROM {} WHERE person_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_PERSONS)), (list(person_ids),))
+                        results['persons'] = {row[0]: row[1] for row in cur.fetchall()}
+                    if stage_ids:
+                        cur.execute(sql.SQL("SELECT stage_id, normalized_name FROM {} WHERE stage_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_STAGES)), (list(stage_ids),))
+                        results['stages'] = {row[0]: row[1] for row in cur.fetchall() if row[1]}
+                    if pipeline_ids:
+                        cur.execute(sql.SQL("SELECT pipeline_id, pipeline_name FROM {} WHERE pipeline_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_PIPELINES)), (list(pipeline_ids),))
+                        results['pipelines'] = {row[0]: row[1] for row in cur.fetchall()}
+                    if org_ids:
+                        cur.execute(sql.SQL("SELECT org_id, org_name FROM {} WHERE org_id = ANY(%s)").format(sql.Identifier(LOOKUP_TABLE_ORGANIZATIONS)), (list(org_ids),))
+                        results['orgs'] = {row[0]: row[1] for row in cur.fetchall()}
 
             self.log.debug("Fetched lookup maps for batch from DB",
                            user_count=len(results['users']), person_count=len(results['persons']),
@@ -712,132 +728,135 @@ class PipedriveRepository(DataRepositoryPort):
 
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                # 1. Criar tabela de staging UNLOGGED (mais rápida)
-                staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
-                create_staging_sql = sql.SQL("""
-                    CREATE UNLOGGED TABLE {staging_table} ( {columns} )
-                """).format(
-                    staging_table=staging_table_id,
-                    columns=sql.SQL(',\n    ').join(staging_col_defs)
-                )
-                self.log.debug("Creating unlogged staging table.", table_name=staging_table_name)
-                cur.execute(create_staging_sql)
-
-                # 2. Preparar dados e usar COPY
-                buffer = StringIO()
-                copy_failed_records = 0
-                try:
-                    writer = csv.writer(buffer, delimiter='|', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
-                    for i, record in enumerate(data):
-                        row = []
-                        try:
-                            for field in columns:
-                                value = record.get(field)
-                                if value is None:
-                                    row.append('\\N') 
-                                elif isinstance(value, datetime):
-                                    if value.tzinfo is None:
-                                        value = value.replace(tzinfo=timezone.utc)
-                                    else:
-                                        value = value.astimezone(timezone.utc)
-                                    row.append(value.isoformat(timespec='microseconds'))
-                                elif isinstance(value, bool):
-                                    row.append('t' if value else 'f')
-                                elif isinstance(value, (dict, list)):
-                                     row.append(json.dumps(value).replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r'))
-                                else:
-                                    str_value = str(value)
-                                    escaped_value = str_value.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r')
-                                    row.append(escaped_value)
-                            writer.writerow(row)
-                        except Exception as row_err:
-                             copy_failed_records += 1
-                             self.log.error("Error preparing record for COPY", record_index=i, error=str(row_err), record_preview=str(record)[:200])
-                    buffer.seek(0)
-
-                    if copy_failed_records > 0:
-                        self.log.warning("Some records failed preparation for COPY", failed_count=copy_failed_records, total_records=record_count)
-
-                    # 3. Executar COPY
-                    copy_sql = sql.SQL("COPY {staging_table} ({fields}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N', ENCODING 'UTF8')").format(
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="save_data_upsert").time():
+                with conn.cursor() as cur:
+                    # 1. Criar tabela de staging UNLOGGED (mais rápida)
+                    staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in columns]
+                    create_staging_sql = sql.SQL("""
+                        CREATE UNLOGGED TABLE {staging_table} ( {columns} )
+                    """).format(
                         staging_table=staging_table_id,
-                        fields=sql.SQL(', ').join(map(sql.Identifier, columns))
+                        columns=sql.SQL(',\n    ').join(staging_col_defs)
                     )
-                    self.log.debug("Executing COPY command.", table_name=staging_table_name)
-                    cur.copy_expert(copy_sql, buffer)
-                    copy_row_count = cur.rowcount
-                    self.log.debug("Copied data to staging table.", copied_row_count=copy_row_count, expected_count=record_count - copy_failed_records, table_name=staging_table_name)
+                    self.log.debug("Creating unlogged staging table.", table_name=staging_table_name)
+                    cur.execute(create_staging_sql)
 
-                finally:
-                    buffer.close()
+                    # 2. Preparar dados e usar COPY
+                    buffer = StringIO()
+                    copy_failed_records = 0
+                    try:
+                        writer = csv.writer(buffer, delimiter='|', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
+                        for i, record in enumerate(data):
+                            row = []
+                            try:
+                                for field in columns:
+                                    value = record.get(field)
+                                    if value is None:
+                                        row.append('\\N') 
+                                    elif isinstance(value, datetime):
+                                        if value.tzinfo is None:
+                                            value = value.replace(tzinfo=timezone.utc)
+                                        else:
+                                            value = value.astimezone(timezone.utc)
+                                        row.append(value.isoformat(timespec='microseconds'))
+                                    elif isinstance(value, bool):
+                                        row.append('t' if value else 'f')
+                                    elif isinstance(value, (dict, list)):
+                                        row.append(json.dumps(value).replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r'))
+                                    else:
+                                        str_value = str(value)
+                                        escaped_value = str_value.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r')
+                                        row.append(escaped_value)
+                                writer.writerow(row)
+                            except Exception as row_err:
+                                copy_failed_records += 1
+                                self.log.error("Error preparing record for COPY", record_index=i, error=str(row_err), record_preview=str(record)[:200])
+                        buffer.seek(0)
 
-                # 4. Executar UPSERT com CASTING
-                insert_fields = sql.SQL(', ').join(map(sql.Identifier, columns))
-                update_assignments_list = []
-                for col in columns:
-                    if col == 'id': continue
-                    if col == 'add_time':
-                         update_assignments_list.append(
-                             sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
-                                 col=sql.Identifier(col), target=target_table_id
-                             )
-                         )
-                         continue
-                    update_assignments_list.append(sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col)))
+                        if copy_failed_records > 0:
+                            self.log.warning("Some records failed preparation for COPY", failed_count=copy_failed_records, total_records=record_count)
 
-                update_assignments = sql.SQL(', ').join(update_assignments_list)
-
-                # Mapear tipos da tabela principal para casting
-                target_types_main = {**COLUMN_TYPES, **self._custom_columns_dict, **self._stage_history_columns_dict}
-                select_expressions = []
-                for col in columns:
-                    full_type_definition = target_types_main.get(col, "TEXT")
-                    base_pg_type = full_type_definition.split()[0].split('(')[0].upper()
-
-                    if base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE PRECISION', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'BOOLEAN'):
-                        select_expressions.append(
-                            sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
-                                col=sql.Identifier(col),
-                                type=sql.SQL(base_pg_type) 
-                            )
+                        # 3. Executar COPY
+                        copy_sql = sql.SQL("COPY {staging_table} ({fields}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N', ENCODING 'UTF8')").format(
+                            staging_table=staging_table_id,
+                            fields=sql.SQL(', ').join(map(sql.Identifier, columns))
                         )
-                    elif base_pg_type == 'JSONB': 
-                         select_expressions.append(
-                             sql.SQL("NULLIF(TRIM({col}), '')::JSONB").format(col=sql.Identifier(col))
-                         )
-                    else: 
-                         select_expressions.append(sql.Identifier(col))
+                        self.log.debug("Executing COPY command.", table_name=staging_table_name)
+                        cur.copy_expert(copy_sql, buffer)
+                        copy_row_count = cur.rowcount
+                        self.log.debug("Copied data to staging table.", copied_row_count=copy_row_count, expected_count=record_count - copy_failed_records, table_name=staging_table_name)
 
-                select_clause = sql.SQL(', ').join(select_expressions)
+                    finally:
+                        buffer.close()
 
-                upsert_sql = sql.SQL("""
-                    INSERT INTO {target_table} ({insert_fields})
-                    SELECT {select_clause} FROM {staging_table}
-                    ON CONFLICT (id) DO UPDATE SET {update_assignments}
-                    WHERE {target_table}.update_time IS NULL OR EXCLUDED.update_time >= {target_table}.update_time
-                """).format(
-                    target_table=target_table_id,
-                    insert_fields=insert_fields,
-                    select_clause=select_clause,
-                    staging_table=staging_table_id,
-                    update_assignments=update_assignments
-                )
+                    # 4. Executar UPSERT com CASTING
+                    insert_fields = sql.SQL(', ').join(map(sql.Identifier, columns))
+                    update_assignments_list = []
+                    for col in columns:
+                        if col == 'id': continue
+                        if col == 'add_time':
+                            update_assignments_list.append(
+                                sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
+                                    col=sql.Identifier(col), target=target_table_id
+                                )
+                            )
+                            continue
+                        update_assignments_list.append(sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col)))
 
-                self.log.debug("Executing UPSERT command.", target_table=self.TABLE_NAME)
-                cur.execute(upsert_sql)
-                upserted_count = cur.rowcount
-                conn.commit()
-                self.log.debug("Commit successful after UPSERT.")
+                    update_assignments = sql.SQL(', ').join(update_assignments_list)
 
-                duration = py_time.monotonic() - start_time
-                self.log.info(
-                    "Upsert completed successfully for main table.",
-                    record_count=record_count,
-                    initial_copy_failures=copy_failed_records,
-                    affected_rows_upsert=upserted_count,
-                    duration_sec=f"{duration:.3f}"
-                )
+                    # Mapear tipos da tabela principal para casting
+                    target_types_main = {**COLUMN_TYPES, **self._custom_columns_dict, **self._stage_history_columns_dict}
+                    select_expressions = []
+                    for col in columns:
+                        full_type_definition = target_types_main.get(col, "TEXT")
+                        base_pg_type = full_type_definition.split()[0].split('(')[0].upper()
+
+                        if base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE PRECISION', 'DATE', 'TIMESTAMP', 'TIMESTAMPTZ', 'BOOLEAN'):
+                            select_expressions.append(
+                                sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
+                                    col=sql.Identifier(col),
+                                    type=sql.SQL(base_pg_type) 
+                                )
+                            )
+                        elif base_pg_type == 'JSONB': 
+                            select_expressions.append(
+                                sql.SQL("NULLIF(TRIM({col}), '')::JSONB").format(col=sql.Identifier(col))
+                            )
+                        else: 
+                            select_expressions.append(sql.Identifier(col))
+
+                    select_clause = sql.SQL(', ').join(select_expressions)
+
+                    upsert_sql = sql.SQL("""
+                        INSERT INTO {target_table} ({insert_fields})
+                        SELECT {select_clause} FROM {staging_table}
+                        ON CONFLICT (id) DO UPDATE SET {update_assignments}
+                        WHERE {target_table}.update_time IS NULL OR EXCLUDED.update_time >= {target_table}.update_time
+                    """).format(
+                        target_table=target_table_id,
+                        insert_fields=insert_fields,
+                        select_clause=select_clause,
+                        staging_table=staging_table_id,
+                        update_assignments=update_assignments
+                    )
+
+                    self.log.debug("Executing UPSERT command.", target_table=self.TABLE_NAME)
+                    cur.execute(upsert_sql)
+                    upserted_count = cur.rowcount
+                    conn.commit()
+                    self.log.debug("Commit successful after UPSERT.")
+
+                    duration = py_time.monotonic() - start_time
+                    self.log.info(
+                        "Upsert completed successfully for main table.",
+                        record_count=record_count,
+                        initial_copy_failures=copy_failed_records,
+                        affected_rows_upsert=upserted_count,
+                        duration_sec=f"{duration:.3f}"
+                    )
 
         except Exception as e:
             if conn: conn.rollback()
@@ -877,20 +896,23 @@ class PipedriveRepository(DataRepositoryPort):
 
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                query = sql.SQL("""
-                    SELECT id FROM {table}
-                    WHERE {conditions}
-                    ORDER BY add_time ASC
-                    LIMIT %s
-                """).format(
-                    table=sql.Identifier(self.TABLE_NAME),
-                    conditions=where_clause
-                )
-                cur.execute(query, (limit,))
-                deal_ids = [row[0] for row in cur.fetchall()]
-                self.log.info("Fetched deal IDs needing history backfill", count=len(deal_ids), limit=limit)
-                return deal_ids
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="get_deals_needing_history_backfill").time():
+                with conn.cursor() as cur:
+                    query = sql.SQL("""
+                        SELECT id FROM {table}
+                        WHERE {conditions}
+                        ORDER BY add_time ASC
+                        LIMIT %s
+                    """).format(
+                        table=sql.Identifier(self.TABLE_NAME),
+                        conditions=where_clause
+                    )
+                    cur.execute(query, (limit,))
+                    deal_ids = [row[0] for row in cur.fetchall()]
+                    self.log.info("Fetched deal IDs needing history backfill", count=len(deal_ids), limit=limit)
+                    return deal_ids
         except Exception as e:
             self.log.error("Failed to get deals for history backfill", exc_info=True)
             return []
@@ -934,44 +956,47 @@ class PipedriveRepository(DataRepositoryPort):
 
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                for stage_column, column_updates in updates_by_column.items():
-                    if not column_updates: continue
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="update_stage_history").time():
+                with conn.cursor() as cur:
+                    for stage_column, column_updates in updates_by_column.items():
+                        if not column_updates: continue
 
-                    column_id = sql.Identifier(stage_column)
-                    table_id = sql.Identifier(self.TABLE_NAME)
+                        column_id = sql.Identifier(stage_column)
+                        table_id = sql.Identifier(self.TABLE_NAME)
 
-                    values_tuples = [(upd[0], upd[1]) for upd in column_updates]
+                        values_tuples = [(upd[0], upd[1]) for upd in column_updates]
 
-                    update_sql = sql.SQL("""
-                        UPDATE {table} AS t
-                        SET {column_to_update} = v.ts
-                        FROM (VALUES %s) AS v(id, ts)
-                        WHERE t.id = v.id
-                        AND t.{column_to_update} IS NULL
-                    """).format(
-                        table=table_id,
-                        column_to_update=column_id
+                        update_sql = sql.SQL("""
+                            UPDATE {table} AS t
+                            SET {column_to_update} = v.ts
+                            FROM (VALUES %s) AS v(id, ts)
+                            WHERE t.id = v.id
+                            AND t.{column_to_update} IS NULL
+                        """).format(
+                            table=table_id,
+                            column_to_update=column_id
+                        )
+
+                        try:
+                            extras.execute_values(cur, update_sql.as_string(cur), values_tuples)
+                            updated_count += cur.rowcount
+                            self.log.debug(f"Executed batch update for column '{stage_column}'", records_in_batch=len(values_tuples), affected_rows=cur.rowcount)
+                        except Exception as exec_err:
+                            self.log.error(f"Failed to execute batch update for column '{stage_column}'", error=str(exec_err), records_count=len(values_tuples), exc_info=True)
+                            conn.rollback() 
+                            raise exec_err 
+
+                    conn.commit()
+                    duration = py_time.monotonic() - start_time
+                    self.log.info(
+                        "Stage history update batch completed.",
+                        total_updates_processed=len(updates),
+                        total_rows_affected=updated_count,
+                        columns_updated=list(updates_by_column.keys()),
+                        duration_sec=f"{duration:.3f}s"
                     )
-
-                    try:
-                        extras.execute_values(cur, update_sql.as_string(cur), values_tuples)
-                        updated_count += cur.rowcount
-                        self.log.debug(f"Executed batch update for column '{stage_column}'", records_in_batch=len(values_tuples), affected_rows=cur.rowcount)
-                    except Exception as exec_err:
-                        self.log.error(f"Failed to execute batch update for column '{stage_column}'", error=str(exec_err), records_count=len(values_tuples), exc_info=True)
-                        conn.rollback() 
-                        raise exec_err 
-
-                conn.commit()
-                duration = py_time.monotonic() - start_time
-                self.log.info(
-                    "Stage history update batch completed.",
-                    total_updates_processed=len(updates),
-                    total_rows_affected=updated_count,
-                    columns_updated=list(updates_by_column.keys()),
-                    duration_sec=f"{duration:.3f}s"
-                )
 
         except Exception as e:
             if conn: conn.rollback()
@@ -999,18 +1024,21 @@ class PipedriveRepository(DataRepositoryPort):
 
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                query = sql.SQL("""
-                    SELECT COUNT(*) FROM {table}
-                    WHERE {conditions}
-                """).format(
-                    table=sql.Identifier(self.TABLE_NAME),
-                    conditions=where_clause
-                )
-                cur.execute(query)
-                count = cur.fetchone()[0]
-                self.log.info("Counted deals needing history backfill", count=count)
-                return count if count is not None else 0
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="count_deals_needing_backfill").time():
+                with conn.cursor() as cur:
+                    query = sql.SQL("""
+                        SELECT COUNT(*) FROM {table}
+                        WHERE {conditions}
+                    """).format(
+                        table=sql.Identifier(self.TABLE_NAME),
+                        conditions=where_clause
+                    )
+                    cur.execute(query)
+                    count = cur.fetchone()[0]
+                    self.log.info("Counted deals needing history backfill", count=count)
+                    return count if count is not None else 0
         except Exception as e:
             self.log.error("Failed to count deals for history backfill", exc_info=True)
             return -1 
@@ -1031,10 +1059,13 @@ class PipedriveRepository(DataRepositoryPort):
         conn = None
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                query = sql.SQL("SELECT id FROM {} WHERE id IN %s").format(sql.Identifier(self.TABLE_NAME))
-                cur.execute(query, (tuple(ids_to_check),))
-                existing_ids = {row[0] for row in cur.fetchall()}
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="filter_data_by_ids").time():
+                with conn.cursor() as cur:
+                    query = sql.SQL("SELECT id FROM {} WHERE id IN %s").format(sql.Identifier(self.TABLE_NAME))
+                    cur.execute(query, (tuple(ids_to_check),))
+                    existing_ids = {row[0] for row in cur.fetchall()}
 
             new_records = [rec for rec in data if str(rec.get(id_key)) not in existing_ids]
             self.log.debug("Filtered existing records.", initial_count=len(data), existing_count=len(existing_ids), new_count=len(new_records))
@@ -1054,6 +1085,8 @@ class PipedriveRepository(DataRepositoryPort):
         self.log.debug("Fetching record by ID", record_id=record_id_str)
         try:
             conn = self.db_pool.get_connection()
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
             with conn.cursor(cursor_factory=extras.DictCursor) as cur:
                 query = sql.SQL("SELECT * FROM {table} WHERE id = %s").format(
                     table=sql.Identifier(self.TABLE_NAME)
@@ -1074,27 +1107,30 @@ class PipedriveRepository(DataRepositoryPort):
         added_columns = []
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                for col in new_columns:
-                    sample_value = inferred_from_df[col].dropna().iloc[0] if not inferred_from_df[col].dropna().empty else None
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="add_columns_to_main_table").time():
+                with conn.cursor() as cur:
+                    for col in new_columns:
+                        sample_value = inferred_from_df[col].dropna().iloc[0] if not inferred_from_df[col].dropna().empty else None
 
-                    inferred_type = "TEXT"
-                    if isinstance(sample_value, (int, float, np.integer, np.floating)):
-                        inferred_type = "NUMERIC(18, 4)"
-                    elif isinstance(sample_value, (datetime, pd.Timestamp)):
-                        inferred_type = "TIMESTAMPTZ"
-                    elif isinstance(sample_value, bool):
-                        inferred_type = "BOOLEAN"
+                        inferred_type = "TEXT"
+                        if isinstance(sample_value, (int, float, np.integer, np.floating)):
+                            inferred_type = "NUMERIC(18, 4)"
+                        elif isinstance(sample_value, (datetime, pd.Timestamp)):
+                            inferred_type = "TIMESTAMPTZ"
+                        elif isinstance(sample_value, bool):
+                            inferred_type = "BOOLEAN"
 
-                    alter_sql = sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ctype}").format(
-                        table=sql.Identifier(self.TABLE_NAME),
-                        col=sql.Identifier(col),
-                        ctype=sql.SQL(inferred_type)
-                    )
-                    cur.execute(alter_sql)
-                    added_columns.append((col, inferred_type))
-                conn.commit()
-                self.log.info("Added new columns to main table dynamically.", columns=added_columns)
+                        alter_sql = sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ctype}").format(
+                            table=sql.Identifier(self.TABLE_NAME),
+                            col=sql.Identifier(col),
+                            ctype=sql.SQL(inferred_type)
+                        )
+                        cur.execute(alter_sql)
+                        added_columns.append((col, inferred_type))
+                    conn.commit()
+                    self.log.info("Added new columns to main table dynamically.", columns=added_columns)
         except Exception as e:
             if conn:
                 conn.rollback()
@@ -1119,6 +1155,8 @@ class PipedriveRepository(DataRepositoryPort):
         log_ctx = self.log.bind(lookup_table=self.LOOKUP_TABLE_STAGES)
         try:
             conn = self.db_pool.get_connection()
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
             with conn.cursor(cursor_factory=extras.DictCursor) as cur:
                 query = sql.SQL("SELECT stage_id, stage_name, normalized_name FROM {} ORDER BY stage_id").format(
                     sql.Identifier(self.LOOKUP_TABLE_STAGES)
@@ -1165,25 +1203,28 @@ class PipedriveRepository(DataRepositoryPort):
         self.log.debug("Saving configuration", config_key=key)
         try:
             conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                upsert_sql = sql.SQL("""
-                    INSERT INTO {config_table} (key, value, updated_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (key) DO UPDATE SET
-                        value = EXCLUDED.value,
-                        updated_at = EXCLUDED.updated_at;
-                """).format(config_table=config_table_id)
+            db_active_connections.set(self.db_pool.num_active())
+            db_idle_connections.set(self.db_pool.num_idle())
+            with db_operation_duration_hist.labels(operation="save_configuration").time():
+                with conn.cursor() as cur:
+                    upsert_sql = sql.SQL("""
+                        INSERT INTO {config_table} (key, value, updated_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (key) DO UPDATE SET
+                            value = EXCLUDED.value,
+                            updated_at = EXCLUDED.updated_at;
+                    """).format(config_table=config_table_id)
 
-                timestamp_str = value.get('updated_at', datetime.now(timezone.utc).isoformat())
-                try:
-                    ts_obj = datetime.fromisoformat(timestamp_str).astimezone(timezone.utc)
-                except Exception:
-                    self.log.warning("Could not parse timestamp from config value, using current time.", config_key=key, value_ts=timestamp_str)
-                    ts_obj = datetime.now(timezone.utc)
+                    timestamp_str = value.get('updated_at', datetime.now(timezone.utc).isoformat())
+                    try:
+                        ts_obj = datetime.fromisoformat(timestamp_str).astimezone(timezone.utc)
+                    except Exception:
+                        self.log.warning("Could not parse timestamp from config value, using current time.", config_key=key, value_ts=timestamp_str)
+                        ts_obj = datetime.now(timezone.utc)
 
-                cur.execute(upsert_sql, (key, json.dumps(value), ts_obj)) 
-                conn.commit()
-                self.log.info("Configuration saved successfully", config_key=key)
+                    cur.execute(upsert_sql, (key, json.dumps(value), ts_obj)) 
+                    conn.commit()
+                    self.log.info("Configuration saved successfully", config_key=key)
         except Exception as e:
             if conn: conn.rollback()
             self.log.error("Failed to save configuration", config_key=key, exc_info=True)
@@ -1194,35 +1235,44 @@ class PipedriveRepository(DataRepositoryPort):
     def get_all_ids(self) -> Set[str]:
         """Retorna todos os IDs presentes no banco."""
         conn = self.db_pool.get_connection()
+        db_active_connections.set(self.db_pool.num_active())
+        db_idle_connections.set(self.db_pool.num_idle())
         try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT id FROM {self.TABLE_NAME}")
-                return {row[0] for row in cur.fetchall()}
+            with db_operation_duration_hist.labels(operation="get_all_ids").time():
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT id FROM {self.TABLE_NAME}")
+                    return {row[0] for row in cur.fetchall()}
         finally:
             self.db_pool.release_connection(conn)
             
     def validate_date_consistency(self) -> int:
         """Verifica consistência básica de datas, retorna número de problemas."""
         conn = self.db_pool.get_connection()
+        db_active_connections.set(self.db_pool.num_active())
+        db_idle_connections.set(self.db_pool.num_idle())
         try:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    SELECT COUNT(*) FROM {self.TABLE_NAME}
-                    WHERE add_time > CURRENT_DATE 
-                        OR update_time < add_time
-                        OR (close_time IS NOT NULL AND close_time < add_time)
-                """)
-                return cur.fetchone()[0]
+            with db_operation_duration_hist.labels(operation="validate_date_consistency").time():
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        SELECT COUNT(*) FROM {self.TABLE_NAME}
+                        WHERE add_time > CURRENT_DATE 
+                            OR update_time < add_time
+                            OR (close_time IS NOT NULL AND close_time < add_time)
+                    """)
+                    return cur.fetchone()[0]
         finally:
             self.db_pool.release_connection(conn)
 
     def count_records(self) -> int:
         """Conta o total de registros na tabela."""
         conn = self.db_pool.get_connection()
+        db_active_connections.set(self.db_pool.num_active())
+        db_idle_connections.set(self.db_pool.num_idle())
         try:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM {self.TABLE_NAME}")
-                return cur.fetchone()[0]
+            with db_operation_duration_hist.labels(operation="count_records").time():
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {self.TABLE_NAME}")
+                    return cur.fetchone()[0]
         finally:
             self.db_pool.release_connection(conn)
             

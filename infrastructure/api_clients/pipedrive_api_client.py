@@ -15,7 +15,11 @@ from infrastructure.monitoring.metrics import (
     pipedrive_api_token_cost_total,
     pipedrive_api_call_total,
     pipedrive_api_cache_hit_total,
-    pipedrive_api_rate_limit_remaining
+    pipedrive_api_cache_miss_total,
+    pipedrive_api_rate_limit_remaining,
+    pipedrive_api_rate_limit_reset_seconds,
+    pipedrive_api_retries_total,
+    pipedrive_api_retry_failures_total
 )
 
 
@@ -181,7 +185,9 @@ class PipedriveAPIClient(PipedriveClientPort):
             remaining = response.headers.get('X-RateLimit-Remaining')
             if remaining and remaining.isdigit():
                 pipedrive_api_rate_limit_remaining.labels(endpoint=normalized_endpoint_label).set(int(remaining))
-
+            reset = response.headers.get('X-RateLimit-Reset')
+            if reset and reset.isdigit():
+                pipedrive_api_rate_limit_reset_seconds.labels(endpoint=normalized_endpoint_label).set(int(reset))
 
             duration = time.monotonic() - start_time
             api_request_duration_hist.labels(
@@ -194,6 +200,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             return response
 
         except requests.exceptions.Timeout as e:
+            pipedrive_api_retries_total.labels(endpoint=normalized_endpoint_label).inc()
             error_type = "timeout"
             request_log.warning("API request timed out", error=str(e))
             raise
@@ -202,6 +209,7 @@ class PipedriveAPIClient(PipedriveClientPort):
             request_log.warning("API connection error", error=str(e))
             raise
         except requests.exceptions.RequestException as e:
+            pipedrive_api_retry_failures_total.labels(endpoint=normalized_endpoint_label).inc()
             error_type = "request_exception"
             request_log.error("API request failed (RequestException)", exc_info=True)
 
@@ -279,7 +287,12 @@ class PipedriveAPIClient(PipedriveClientPort):
     def fetch_all_users_map(self) -> Dict[int, str]:
         cache_key = "pipedrive:all_users_map"
         cached = self.cache.get(cache_key)
-        pipedrive_api_cache_hit_total.labels(entity="users", source="redis").inc()
+        if cached:
+            pipedrive_api_cache_hit_total.labels(entity="users", source="redis").inc()
+            return cached
+        else:
+            pipedrive_api_cache_miss_total.labels(entity="users", source="redis").inc()
+            
         if cached and isinstance(cached, dict): self.log.info("Users map retrieved from cache.", cache_hit=True, map_size=len(cached)); return cached
         self.log.info("Fetching users map from API (V1).", cache_hit=False)
         url = f"{self.BASE_URL_V1}/users"
@@ -295,7 +308,11 @@ class PipedriveAPIClient(PipedriveClientPort):
     def fetch_all_pipelines_map(self) -> Dict[int, str]:
         cache_key = "pipedrive:all_pipelines_map"
         cached = self.cache.get(cache_key)
-        pipedrive_api_cache_hit_total.labels(entity="pipelines", source="redis").inc()
+        if cached:
+            pipedrive_api_cache_hit_total.labels(entity="pipelines", source="redis").inc()
+            return cached
+        else:
+            pipedrive_api_cache_miss_total.labels(entity="pipelines", source="redis").inc()
         if cached and isinstance(cached, dict): self.log.info("Pipelines map retrieved from cache.", cache_hit=True, map_size=len(cached)); return cached
         self.log.info("Fetching pipelines map from API (V2).", cache_hit=False)
         url = f"{self.BASE_URL_V2}/pipelines"
@@ -315,7 +332,11 @@ class PipedriveAPIClient(PipedriveClientPort):
         """
         cache_key = "pipedrive:all_persons_map"
         cached = self.cache.get(cache_key)
-        pipedrive_api_cache_hit_total.labels(entity="persons", source="redis").inc()
+        if cached:
+            pipedrive_api_cache_hit_total.labels(entity="persons", source="redis").inc()
+            return cached
+        else:
+            pipedrive_api_cache_miss_total.labels(entity="persons", source="redis").inc()
         if cached and isinstance(cached, dict):
             self.log.info("Persons map retrieved from cache.", cache_hit=True, map_size=len(cached))
             return cached
@@ -353,7 +374,11 @@ class PipedriveAPIClient(PipedriveClientPort):
         """Busca detalhes de todos os stages (necessário para nomes normalizados)."""
         cache_key = "pipedrive:all_stages_details"
         cached = self.cache.get(cache_key)
-        pipedrive_api_cache_hit_total.labels(entity="stages", source="redis").inc()
+        if cached:
+            pipedrive_api_cache_hit_total.labels(entity="stages", source="redis").inc()
+            return cached
+        else:
+            pipedrive_api_cache_miss_total.labels(entity="stages", source="redis").inc()
         if cached and isinstance(cached, list):
             self.log.info("Stage details retrieved from cache.", cache_hit=True, count=len(cached))
             return cached
@@ -375,7 +400,11 @@ class PipedriveAPIClient(PipedriveClientPort):
     def fetch_deal_fields_mapping(self) -> Dict[str, str]:
         cache_key = "pipedrive:deal_fields_mapping"; cache_ttl_seconds = 86400 # 24h
         cached = self.cache.get(cache_key)
-        pipedrive_api_cache_hit_total.labels(entity="deal_fields", source="redis").inc()
+        if cached:
+            pipedrive_api_cache_hit_total.labels(entity="deal_fields", source="redis").inc()
+            return cached
+        else:
+            pipedrive_api_cache_miss_total.labels(entity="deal_fields", source="redis").inc()
         if cached and isinstance(cached, dict): self.log.info("Deal fields mapping retrieved from cache.", cache_hit=True, map_size=len(cached)); return cached
         self.log.info("Fetching deal fields mapping from API (V1).", cache_hit=False)
         url = f"{self.BASE_URL_V1}/dealFields"
