@@ -1,3 +1,4 @@
+import io
 import time
 import random
 import csv
@@ -10,6 +11,7 @@ from decimal import Decimal
 from psycopg2 import sql, pool, extras
 import pandas as pd 
 import numpy as np
+import psycopg2
 import structlog
 
 from application.ports.data_repository_port import DataRepositoryPort
@@ -162,180 +164,191 @@ class PipedriveDataRepository(DataRepositoryPort):
          return str_value.replace('\\', '\\\\').replace('|', '\\|').replace('\n', '\\n').replace('\r', '\\r')
 
 
-    def save_data_upsert(self, data: List[Dict[str, Any]]):
-        """Saves data using staging table, COPY, dynamic columns, and cached types."""
+    def save_data_upsert(self, data: List[Dict[str, Any]], table_name: str) -> Dict[str, int]:
+        """
+        Saves a batch of data using a staging table and UPSERT (INSERT ON CONFLICT).
+        Handles schema evolution by adding missing columns.
+        """
         if not data:
-            self.log.debug("No data provided to save_data_upsert, skipping.")
-            return
+            return {"copied": 0, "upserted": 0, "failed": 0}
 
         start_time = time.monotonic()
-        record_count = len(data)
-        log_ctx = self.log.bind(record_count=record_count, target_table=self.TABLE_NAME)
-
-        all_keys_in_batch = set()
-        for record in data:
-            all_keys_in_batch.update(record.keys())
-        if 'id' not in all_keys_in_batch:
-             log_ctx.error("Input data for upsert is missing the 'id' key.")
-             raise ValueError("Upsert data must contain the 'id' key.")
-        final_columns_for_batch = sorted(list(all_keys_in_batch))
-
-        try:
-            schema_changed = self.schema_manager.ensure_columns_exist(self.TABLE_NAME, all_keys_in_batch)
-            if schema_changed or self._cached_target_column_types is None:
-                if not self._refresh_column_type_cache():
-                     raise RuntimeError(f"Failed to refresh column types for {self.TABLE_NAME} after schema change.")
-        except Exception as schema_update_err:
-            log_ctx.error("Failed operation related to ensuring columns exist", columns=final_columns_for_batch, error=str(schema_update_err))
-            raise
-
-        target_column_types = self._cached_target_column_types
-        if not target_column_types: 
-             log_ctx.error("Target column type cache is not populated. Aborting UPSERT.")
-             raise RuntimeError(f"Column type cache unavailable for table {self.TABLE_NAME}")
+        log_ctx = log.bind(repository=self.__class__.__name__, record_count=len(data), target_table=table_name)
 
         conn = None
-        staging_table_name = f"{self.STAGING_TABLE_PREFIX}{int(time.time())}_{random.randint(1000, 9999)}"
+        cur = None
+        staging_table_name = f"staging_{table_name}_{int(time.time())}_{int(time.time_ns() % 10000)}"
         staging_table_id = sql.Identifier(staging_table_name)
-        target_table_id = sql.Identifier(self.TABLE_NAME)
-        log_ctx = log_ctx.bind(staging_table=staging_table_name)
+        target_table_id = sql.Identifier(table_name)
+        copied_count = 0
+        upserted_count = 0
+        copy_failed_records = 0
 
         try:
-            conn = self.db_pool.get_connection()
-            with conn.cursor() as cur:
-                staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in final_columns_for_batch]
-                create_staging_sql = sql.SQL("CREATE UNLOGGED TABLE {staging_table} ({columns})").format(
-                    staging_table=staging_table_id, columns=sql.SQL(', ').join(staging_col_defs)
-                )
-                log_ctx.debug("Creating dynamic staging table", columns=final_columns_for_batch)
-                cur.execute(create_staging_sql)
+            conn = self.get_connection()
+            conn.autocommit = False
+            cur = conn.cursor()
 
-                buffer = StringIO()
-                copy_failed_records = 0
-                try:
-                    writer = csv.writer(buffer, delimiter='|', quoting=csv.QUOTE_MINIMAL, lineterminator='\n', escapechar='\\', doublequote=False)
-                    for i, record in enumerate(data):
-                        row = []
-                        try:
-                            for field in final_columns_for_batch:
-                                value = record.get(field)
-                                formatted_value = self._format_value_for_csv(value)
-                                row.append(formatted_value)
-                            writer.writerow(row)
-                        except Exception as row_err:
-                            copy_failed_records += 1
-                            log_ctx.error("Error preparing record for COPY", record_index=i, error=str(row_err), record_id=record.get('id', 'N/A'), exc_info=True)
-                    buffer.seek(0)
+            # 1. Identify all unique keys present in the current batch
+            all_keys_in_batch = set(key for record in data for key in record.keys())
+            target_column_types = self.schema_manager.get_column_types(table_name)
+            existing_columns = set(target_column_types.keys())
 
-                    if copy_failed_records > 0:
-                        log_ctx.warning("Some records failed CSV preparation", failed_count=copy_failed_records)
+            # 2. Determine columns for staging and target tables
+            columns_to_ensure = list(all_keys_in_batch)
+            schema_changed = self.schema_manager.ensure_columns_exist(table_name, columns_to_ensure, target_column_types)
+            if schema_changed:
+                log_ctx.debug("Schema changed, refreshing target column types.")
+                target_column_types = self.schema_manager.get_column_types(table_name) 
+                existing_columns = set(target_column_types.keys())
 
-                    copy_sql = sql.SQL("COPY {staging_table} ({fields}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N', ENCODING 'UTF8')").format(
-                        staging_table=staging_table_id,
-                        fields=sql.SQL(', ').join(map(sql.Identifier, final_columns_for_batch))
-                    )
-                    log_ctx.debug("Executing COPY to staging table.")
-                    cur.copy_expert(copy_sql, buffer)
-                    copy_row_count = cur.rowcount
-                    log_ctx.debug("COPY command executed", copied_rows=copy_row_count, expected_rows=record_count - copy_failed_records)
+            final_columns_for_batch = sorted([col for col in all_keys_in_batch if col in existing_columns])
 
-                finally:
-                    buffer.close()
+            # 3. Create Staging Table (all columns as TEXT)
+            staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in final_columns_for_batch]
+            create_staging_sql = sql.SQL("CREATE UNLOGGED TABLE {} ({})").format(
+                staging_table_id, sql.SQL(', ').join(staging_col_defs)
+            )
+            log_ctx.debug("Creating dynamic staging table", columns=final_columns_for_batch, staging_table=staging_table_name)
+            cur.execute(create_staging_sql)
 
-                # 5. Execute UPSERT with dynamic columns and CASTING
-                target_column_types = self.schema_manager._get_table_column_types(self.TABLE_NAME) 
-                if not target_column_types:
-                     log_ctx.error("Could not fetch target column types for casting. Aborting UPSERT.")
-                     raise RuntimeError(f"Failed to get column types for table {self.TABLE_NAME}")
+            # 4. Prepare data for COPY using csv.writer for proper escaping
+            buffer = io.StringIO()
+            writer = csv.writer(buffer, delimiter='|', quotechar='"', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
 
-                insert_fields = sql.SQL(', ').join(map(sql.Identifier, final_columns_for_batch))
-                update_assignments_list = []
-                select_expressions = []
+            for record in data:
+                row = []
+                for field in final_columns_for_batch:
+                    value = record.get(field)
+                    formatted_value = self._format_value_for_copy(value)
+                    row.append(formatted_value)
+                writer.writerow(row) 
 
-                for col in final_columns_for_batch:
-                    # Build UPDATE SET assignments
-                    if col != 'id': # Don't update the primary key
-                         if col == 'add_time':
-                             update_assignments_list.append(
-                                 sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
-                                     col=sql.Identifier(col), target=target_table_id
-                                 )
-                             )
-                         else:
-                             update_assignments_list.append(sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(col)))
+            buffer.seek(0)
 
-                    # Build SELECT with CASTING logic
-                    target_type = target_column_types.get(col, "TEXT").upper()
-                    base_pg_type = target_type.split('(')[0] #
+            # 5. Copy data to Staging Table
+            copy_sql = sql.SQL(
+                "COPY {} ({}) FROM STDIN WITH (FORMAT CSV, DELIMITER '|', NULL '\\N', ENCODING 'UTF8', QUOTE '\"')" # Added QUOTE '\"'
+            ).format(
+                staging_table_id, sql.SQL(', ').join(map(sql.Identifier, final_columns_for_batch))
+            )
 
-                    if base_pg_type in ('INTEGER', 'BIGINT', 'NUMERIC', 'DECIMAL', 'REAL', 'DOUBLE PRECISION', 'SMALLINT'):
-                         # Try to cast numeric types, handle empty strings as NULL
-                         select_expressions.append(
-                             sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
-                                 col=sql.Identifier(col), type=sql.SQL(base_pg_type)
-                             )
-                         )
-                    elif base_pg_type in ('TIMESTAMP', 'TIMESTAMPTZ', 'DATE', 'TIME'):
-                         # Try to cast date/time types, handle empty strings as NULL
-                         select_expressions.append(
-                             sql.SQL("NULLIF(TRIM({col}), '')::{type}").format(
-                                 col=sql.Identifier(col), type=sql.SQL(base_pg_type)
-                             )
-                         )
-                    elif base_pg_type == 'BOOLEAN':
-                        # Handle 't'/'f' from COPY
-                        select_expressions.append(
-                            sql.SQL("CASE WHEN TRIM(LOWER({col})) = 't' THEN TRUE WHEN TRIM(LOWER({col})) = 'f' THEN FALSE ELSE NULL END").format(
-                                col=sql.Identifier(col)
-                            )
-                        )
-                    elif base_pg_type == 'JSONB':
-                         # Try casting to JSONB, handle empty/invalid as NULL
-                         select_expressions.append(
-                             sql.SQL("(CASE WHEN TRIM({col}) = '' THEN NULL ELSE NULLIF(TRIM({col}), '')::JSONB END)").format(
-                                col=sql.Identifier(col)
-                             )
-                         )
-                    else: # TEXT, VARCHAR, etc.
-                        # Trim whitespace but keep empty strings if they are meaningful
-                        select_expressions.append(sql.SQL("TRIM({col})").format(col=sql.Identifier(col)))
+            log_ctx.debug("Executing COPY to staging table.")
+            try:
+                cur.copy_expert(copy_sql, buffer)
+                copied_count = cur.rowcount if cur.rowcount is not None else len(data) 
+                log_ctx.debug("COPY command executed", copied_rows=copied_count, expected_rows=len(data))
+            except psycopg2.Error as copy_err:
+                log_ctx.error("COPY to staging table failed", error=str(copy_err))
+                copy_failed_records = len(data)
+                conn.rollback()
+                raise copy_err
 
-                update_assignments = sql.SQL(', ').join(update_assignments_list)
-                select_clause = sql.SQL(', ').join(select_expressions)
+            # 6. Upsert from Staging Table to Target Table with CASTING
+            insert_fields = sql.SQL(', ').join(map(sql.Identifier, final_columns_for_batch))
 
-                upsert_sql = sql.SQL("""
-                    INSERT INTO {target_table} ({insert_fields})
-                    SELECT {select_clause} FROM {staging_table}
-                    ON CONFLICT (id) DO UPDATE SET {update_assignments}
-                    WHERE {target_table}.update_time IS NULL OR EXCLUDED.update_time >= {target_table}.update_time
-                """).format(
-                    target_table=target_table_id, insert_fields=insert_fields, select_clause=select_clause,
-                    staging_table=staging_table_id, update_assignments=update_assignments
-                )
-                log_ctx.debug("Executing UPSERT from staging table.")
-                cur.execute(upsert_sql)
-                upserted_count = cur.rowcount
-                conn.commit()
-                duration = time.monotonic() - start_time
-                log_ctx.info("Upsert completed successfully", affected_rows=upserted_count, duration_sec=f"{duration:.3f}s")
+            # --- Build SELECT clause with explicit CAST ---
+            select_expressions = []
+            for col in final_columns_for_batch:
+                target_type = target_column_types.get(col, 'TEXT')
+                col_id = sql.Identifier(col)
 
-        except Exception as e:
-            if conn: conn.rollback()
-            log_ctx.error("Upsert failed", error=str(e), exc_info=True)
-            raise 
-        finally:
-            # 6. Drop staging table and release connection
+                base_expr = sql.SQL("NULLIF(TRIM({col_id}), '')").format(col_id=col_id)
+
+                if target_type.upper() != 'TEXT':
+                    pg_cast_type = sql.SQL(target_type)
+                    select_expressions.append(sql.SQL("{}::{}").format(base_expr, pg_cast_type))
+                else:
+                    select_expressions.append(base_expr)
+
+            select_clause = sql.SQL(', ').join(select_expressions)
+
+            # Build assignments for ON CONFLICT clause
+            update_assignments_list = []
+            for col in final_columns_for_batch:
+                 if col != 'id': 
+                    col_id = sql.Identifier(col)
+                    target_type = target_column_types.get(col, 'TEXT')
+                    if 'timestamp' in target_type.lower():
+                         update_assignments_list.append(sql.SQL("{col} = COALESCE({target}.{col}, EXCLUDED.{col})").format(
+                             col=col_id, target=target_table_id))
+                    else:
+                        update_assignments_list.append(sql.SQL("{col} = EXCLUDED.{col}").format(col=col_id))
+
+            update_assignments = sql.SQL(', ').join(update_assignments_list)
+
+            upsert_sql = sql.SQL("""
+                INSERT INTO {target_table} ({insert_fields})
+                SELECT {select_clause} FROM {staging_table}
+                ON CONFLICT (id) DO UPDATE SET {update_assignments}
+                WHERE {target_table}.update_time IS NULL OR EXCLUDED.update_time >= {target_table}.update_time
+            """).format(
+                target_table=target_table_id,
+                insert_fields=insert_fields,
+                select_clause=select_clause, 
+                staging_table=staging_table_id,
+                update_assignments=update_assignments
+            )
+
+            log_ctx.debug("Executing UPSERT from staging table.")
+            cur.execute(upsert_sql)
+            upserted_count = cur.rowcount
+            conn.commit()
+            log_ctx.info("Upsert successful", upserted_rows=upserted_count, duration_sec=f"{time.monotonic() - start_time:.3f}")
+
+        except psycopg2.Error as e:
             if conn:
+                conn.rollback()
+            log_ctx.error("Upsert failed", error=str(e))
+            upserted_count = 0 
+            raise e
+        except Exception as e:
+             if conn:
+                conn.rollback()
+             log_ctx.exception("An unexpected error occurred during upsert")
+             upserted_count = 0
+             raise e
+
+        finally:
+            if cur:
                 try:
-                    with conn.cursor() as final_cur:
-                        drop_sql = sql.SQL("DROP TABLE IF EXISTS {staging_table}").format(staging_table=staging_table_id)
-                        log_ctx.debug("Dropping staging table.")
-                        final_cur.execute(drop_sql)
-                    conn.commit() 
-                except Exception as drop_err:
-                    log_ctx.error("Failed to drop staging table", error=str(drop_err))
+                    log_ctx.debug("Dropping staging table.", staging_table=staging_table_name)
+                    if cur.closed:
+                        if conn and not conn.closed:
+                            cur = conn.cursor()
+                        else: 
+                           cur = None
+                    if cur:
+                         cur.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(staging_table_id))
+                         conn.commit()
+                except psycopg2.Error as drop_err:
+                    log_ctx.warning("Failed to drop staging table", staging_table=staging_table_name, error=str(drop_err))
+                except Exception as drop_exc:
+                     log_ctx.warning("Unexpected error dropping staging table", staging_table=staging_table_name, error=str(drop_exc))
                 finally:
-                     self.db_pool.release_connection(conn) 
+                    if cur and not cur.closed:
+                        cur.close()
+            if conn:
+                self.db_connection.release_connection(conn)
+
+            log_ctx.info("Upsert batch finished.", copied=copied_count, upserted=upserted_count, failed=copy_failed_records + (len(data) - copied_count) )
+
+        return {"copied": copied_count, "upserted": upserted_count, "failed": copy_failed_records + (len(data) - copied_count) }
+
+    def _format_value_for_copy(self, value: Any) -> Optional[str]:
+        """Formats Python values into strings suitable for PostgreSQL COPY FROM STDIN."""
+        if value is None:
+            return None
+        elif isinstance(value, (datetime, date)):
+            if isinstance(value, datetime) and value.tzinfo is None:
+                 value = value.replace(tzinfo=timezone.utc)
+            return value.isoformat()
+        elif isinstance(value, bool):
+            return str(value) 
+        elif isinstance(value, (Decimal, float, int)):
+            return str(value)
+        else:
+             return str(value)
 
 
     # --- Implementações dos outros métodos da interface ---
