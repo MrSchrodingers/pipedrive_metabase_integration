@@ -308,7 +308,7 @@ def backfill_stage_history_flow(
             flow_log.info(f"Backfill batch completed. Processed so far today: {total_processed_today}/{daily_deal_limit}")
             time.sleep(2)
 
-        flow_log.info("Backfill flow processing loop finished for today.", final_status=final_status, total_processed=total_processed_today)
+        flow_log.info("Backfill flow processing loop finished for today, final status: {final_status}, total processed: {total_processed_today}")
 
         final_remaining_count = data_repo.count_deals_needing_backfill()
         if final_remaining_count == 0 and final_status == "completed":
