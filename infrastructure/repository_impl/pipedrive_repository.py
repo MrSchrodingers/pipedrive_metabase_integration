@@ -41,8 +41,7 @@ MAIN_TABLE_INDEXES = {
     "idx_pipedrive_data_owner_id": "owner_id",
     "idx_pipedrive_data_creator_user_id": "creator_user_id",
     "idx_pipedrive_data_status": "status",
-    "idx_pipedrive_data_add_time": "add_time DESC",
-    "idx_pipedrive_data_active_deals_update": "(update_time DESC) WHERE status NOT IN ('Ganho', 'Perdido', 'Deletado')"
+    "idx_pipedrive_data_add_time": "add_time DESC"
 }
 
 class PipedriveDataRepository(DataRepositoryPort):
