@@ -415,8 +415,11 @@ class ETLService:
         if enriched_batch:
             try:
                 with etl_db_operation_duration_seconds.labels(operation='upsert_deals').time():
-                    self.data_repository.save_data_upsert(enriched_batch)
-                batch_results["loaded"] = len(enriched_batch)
+                    self.data_repository.save_data_upsert(
+                        data=enriched_batch,
+                        table_name=self.data_repository.TABLE_NAME 
+                    )
+                    batch_results["loaded"] = len(enriched_batch)
                 etl_records_loaded_total.labels(flow_type=flow_type).inc(len(enriched_batch))
             except Exception as load_err:
                 batch_results["load_failed"] = len(enriched_batch)
