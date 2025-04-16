@@ -34,7 +34,7 @@ class ConfigRepository:
         conn = None
         log_ctx = self.log.bind(config_key=key)
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 config_table_id = sql.Identifier(self.TABLE_NAME)
                 upsert_sql = sql.SQL("""
@@ -65,14 +65,14 @@ class ConfigRepository:
             raise
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def get_configuration(self, config_key: str) -> Optional[Dict[str, Any]]:
         """Retrieves a configuration value (JSONB) from the database."""
         conn = None
         log_ctx = self.log.bind(config_key=config_key)
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor(cursor_factory=extras.DictCursor) as cur:
                 query = sql.SQL("SELECT value, updated_at FROM {config_table} WHERE key = %s LIMIT 1").format(
                     config_table=sql.Identifier(self.TABLE_NAME)
@@ -90,4 +90,4 @@ class ConfigRepository:
             return None
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)

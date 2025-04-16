@@ -202,7 +202,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         log_ctx = log_ctx.bind(staging_table=staging_table_name)
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 staging_col_defs = [sql.SQL("{} TEXT").format(sql.Identifier(col)) for col in final_columns_for_batch]
                 create_staging_sql = sql.SQL("CREATE UNLOGGED TABLE {staging_table} ({columns})").format(
@@ -336,7 +336,7 @@ class PipedriveDataRepository(DataRepositoryPort):
                 except Exception as drop_err:
                     log_ctx.error("Failed to drop staging table", error=str(drop_err))
                 finally:
-                     self.db_pool.putconn(conn) 
+                     self.db_pool.release_connection(conn) 
 
 
     # --- Implementações dos outros métodos da interface ---
@@ -345,7 +345,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         conn = None
         log_ctx = self.log.bind(deal_id=record_id)
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor(cursor_factory=extras.DictCursor) as cur:
                 # Select all columns currently in the table dynamically
                 cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s;", (self.TABLE_NAME,))
@@ -367,14 +367,14 @@ class PipedriveDataRepository(DataRepositoryPort):
             log_ctx.error("Failed to get record by ID", error=str(e), exc_info=True)
             return None
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def get_all_ids(self) -> Set[str]:
         """Returns a set of all existing deal IDs."""
         conn = None
         ids = set()
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 cur.execute(sql.SQL("SELECT id FROM {table}").format(table=sql.Identifier(self.TABLE_NAME)))
                 while True:
@@ -387,13 +387,13 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error("Failed to get all IDs", error=str(e), exc_info=True)
             return set() 
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def count_records(self) -> int:
         """Counts the total number of records in the main data table."""
         conn = None
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 cur.execute(sql.SQL("SELECT COUNT(*) FROM {table}").format(table=sql.Identifier(self.TABLE_NAME)))
                 count = cur.fetchone()[0]
@@ -403,7 +403,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error("Failed to count records", error=str(e), exc_info=True)
             return -1 
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def get_deals_needing_history_backfill(self, limit: int) -> List[str]:
         """Finds deal IDs potentially needing stage history backfill."""
@@ -417,7 +417,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         where_clause = sql.SQL(" OR ").join(where_conditions)
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 query = sql.SQL("""
                     SELECT id FROM {table}
@@ -436,7 +436,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error("Failed to get deals for history backfill", error=str(e), exc_info=True)
             return []
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def update_stage_history(self, updates: List[Dict[str, Any]]) -> None:
         """Applies stage history timestamp updates using UPDATE FROM VALUES."""
@@ -468,7 +468,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             updates_by_column[stage_column].append((deal_id, timestamp_val))
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 for stage_column, column_updates in updates_by_column.items():
                     if not column_updates: continue
@@ -514,7 +514,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error("Failed to update stage history", error=str(e), total_updates=len(updates), exc_info=True)
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def count_deals_needing_backfill(self) -> int:
         """Counts how many deals potentially need backfill."""
@@ -528,7 +528,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         where_clause = sql.SQL(" OR ").join(where_conditions)
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 query = sql.SQL("SELECT COUNT(*) FROM {table} WHERE {conditions}").format(
                     table=sql.Identifier(self.TABLE_NAME),
@@ -542,13 +542,13 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error("Failed to count deals for history backfill", error=str(e), exc_info=True)
             return -1
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def validate_date_consistency(self) -> int:
          """Checks basic date consistency, returns number of issues."""
          conn = None
          try:
-             conn = self.db_pool.getconn()
+             conn = self.db_pool.get_connection()
              with conn.cursor() as cur:
                  cur.execute(sql.SQL("""
                      SELECT COUNT(*) FROM {table}
@@ -566,4 +566,4 @@ class PipedriveDataRepository(DataRepositoryPort):
              self.log.error("Failed to validate date consistency", error=str(e), exc_info=True)
              return -1
          finally:
-             if conn: self.db_pool.putconn(conn)
+             if conn: self.db_pool.release_connection(conn)

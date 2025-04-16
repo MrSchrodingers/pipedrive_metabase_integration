@@ -88,7 +88,7 @@ def initialize_components() -> Tuple[
         config_repo.initialize_schema()
         task_log.info("Database schemas initialized.")
     except Exception as schema_err:
-         task_log.error("Failed during schema initialization", error=str(schema_err), exc_info=True)
+         task_log.error("Failed during schema initialization", exc_info=schema_err)
          raise RuntimeError("Database schema initialization failed") from schema_err
 
     optimal_batch_size = DEFAULT_OPTIMAL_BATCH_SIZE

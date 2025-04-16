@@ -471,7 +471,7 @@ class ConfigRepository:
         conn = None
         log_ctx = self.log.bind(config_key=key)
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 config_table_id = sql.Identifier(self.TABLE_NAME)
                 upsert_sql = sql.SQL(\"\"\"
@@ -502,14 +502,14 @@ class ConfigRepository:
             raise
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def get_configuration(self, config_key: str) -> Optional[Dict[str, Any]]:
         \"\"\"Retrieves a configuration value (JSONB) from the database.\"\"\"
         conn = None
         log_ctx = self.log.bind(config_key=config_key)
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor(cursor_factory=extras.DictCursor) as cur:
                 query = sql.SQL(\"SELECT value, updated_at FROM {config_table} WHERE key = %s LIMIT 1\").format(
                     config_table=sql.Identifier(self.TABLE_NAME)
@@ -527,7 +527,7 @@ class ConfigRepository:
             return None
         finally:
             if conn:
-                self.db_pool.putconn(conn)"}
+                self.db_pool.release_connection(conn)"}
 ,
 {"path": "infrastructure/repository_impl/base_lookup_repository.py", "encoding": "utf-8", "content": "from typing import List, Dict, Optional, Set, Any
 from psycopg2 import sql, pool, extras
@@ -592,7 +592,7 @@ class BaseLookupRepository:
              return 0
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 table_id = sql.Identifier(self.TABLE_NAME)
                 col_ids = sql.SQL(', ').join(map(sql.Identifier, valid_data_columns))
@@ -641,7 +641,7 @@ class BaseLookupRepository:
             raise 
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def get_name_map_for_ids(self, ids: Set[int]) -> Dict[int, str]:
         \"\"\"
@@ -657,7 +657,7 @@ class BaseLookupRepository:
         conn = None
         start_time = time.monotonic()
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 query = sql.SQL(\"SELECT {id_col}, {name_col} FROM {table} WHERE {id_col} = ANY(%s)\").format(
                     id_col=sql.Identifier(self.ID_COLUMN),
@@ -674,7 +674,7 @@ class BaseLookupRepository:
             return {}
         finally:
             if conn:
-                self.db_pool.putconn(conn)"}
+                self.db_pool.release_connection(conn)"}
 ,
 {"path": "infrastructure/repository_impl/lookup_repositories.py", "encoding": "utf-8", "content": "from typing import List, Dict, Any
 
@@ -1087,7 +1087,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         log_ctx = log_ctx.bind(staging_table=staging_table_name)
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 staging_col_defs = [sql.SQL(\"{} TEXT\").format(sql.Identifier(col)) for col in final_columns_for_batch]
                 create_staging_sql = sql.SQL(\"CREATE UNLOGGED TABLE {staging_table} ({columns})\").format(
@@ -1221,7 +1221,7 @@ class PipedriveDataRepository(DataRepositoryPort):
                 except Exception as drop_err:
                     log_ctx.error(\"Failed to drop staging table\", error=str(drop_err))
                 finally:
-                     self.db_pool.putconn(conn) 
+                     self.db_pool.release_connection(conn) 
 
 
     # --- Implementa\u00e7\u00f5es dos outros m\u00e9todos da interface ---
@@ -1230,7 +1230,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         conn = None
         log_ctx = self.log.bind(deal_id=record_id)
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor(cursor_factory=extras.DictCursor) as cur:
                 # Select all columns currently in the table dynamically
                 cur.execute(\"SELECT column_name FROM information_schema.columns WHERE table_name = %s;\", (self.TABLE_NAME,))
@@ -1252,14 +1252,14 @@ class PipedriveDataRepository(DataRepositoryPort):
             log_ctx.error(\"Failed to get record by ID\", error=str(e), exc_info=True)
             return None
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def get_all_ids(self) -> Set[str]:
         \"\"\"Returns a set of all existing deal IDs.\"\"\"
         conn = None
         ids = set()
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 cur.execute(sql.SQL(\"SELECT id FROM {table}\").format(table=sql.Identifier(self.TABLE_NAME)))
                 while True:
@@ -1272,13 +1272,13 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error(\"Failed to get all IDs\", error=str(e), exc_info=True)
             return set() 
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def count_records(self) -> int:
         \"\"\"Counts the total number of records in the main data table.\"\"\"
         conn = None
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 cur.execute(sql.SQL(\"SELECT COUNT(*) FROM {table}\").format(table=sql.Identifier(self.TABLE_NAME)))
                 count = cur.fetchone()[0]
@@ -1288,7 +1288,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error(\"Failed to count records\", error=str(e), exc_info=True)
             return -1 
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def get_deals_needing_history_backfill(self, limit: int) -> List[str]:
         \"\"\"Finds deal IDs potentially needing stage history backfill.\"\"\"
@@ -1302,7 +1302,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         where_clause = sql.SQL(\" OR \").join(where_conditions)
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 query = sql.SQL(\"\"\"
                     SELECT id FROM {table}
@@ -1321,7 +1321,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error(\"Failed to get deals for history backfill\", error=str(e), exc_info=True)
             return []
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def update_stage_history(self, updates: List[Dict[str, Any]]) -> None:
         \"\"\"Applies stage history timestamp updates using UPDATE FROM VALUES.\"\"\"
@@ -1353,7 +1353,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             updates_by_column[stage_column].append((deal_id, timestamp_val))
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 for stage_column, column_updates in updates_by_column.items():
                     if not column_updates: continue
@@ -1399,7 +1399,7 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error(\"Failed to update stage history\", error=str(e), total_updates=len(updates), exc_info=True)
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def count_deals_needing_backfill(self) -> int:
         \"\"\"Counts how many deals potentially need backfill.\"\"\"
@@ -1413,7 +1413,7 @@ class PipedriveDataRepository(DataRepositoryPort):
         where_clause = sql.SQL(\" OR \").join(where_conditions)
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 query = sql.SQL(\"SELECT COUNT(*) FROM {table} WHERE {conditions}\").format(
                     table=sql.Identifier(self.TABLE_NAME),
@@ -1427,13 +1427,13 @@ class PipedriveDataRepository(DataRepositoryPort):
             self.log.error(\"Failed to count deals for history backfill\", error=str(e), exc_info=True)
             return -1
         finally:
-            if conn: self.db_pool.putconn(conn)
+            if conn: self.db_pool.release_connection(conn)
 
     def validate_date_consistency(self) -> int:
          \"\"\"Checks basic date consistency, returns number of issues.\"\"\"
          conn = None
          try:
-             conn = self.db_pool.getconn()
+             conn = self.db_pool.get_connection()
              with conn.cursor() as cur:
                  cur.execute(sql.SQL(\"\"\"
                      SELECT COUNT(*) FROM {table}
@@ -1451,7 +1451,7 @@ class PipedriveDataRepository(DataRepositoryPort):
              self.log.error(\"Failed to validate date consistency\", error=str(e), exc_info=True)
              return -1
          finally:
-             if conn: self.db_pool.putconn(conn)"}
+             if conn: self.db_pool.release_connection(conn)"}
 ,
 {"path": "infrastructure/db/db_pool.py", "encoding": "utf-8", "content": "import psycopg2.pool
 
@@ -1489,7 +1489,7 @@ class SchemaManager:
         conn = None
         locked = False
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 cur.execute(\"SELECT pg_advisory_lock(%s)\", (self.SCHEMA_LOCK_ID,))
                 locked = True
@@ -1511,7 +1511,7 @@ class SchemaManager:
                         self.log.debug(\"Released schema lock\", lock_id=self.SCHEMA_LOCK_ID)
                     except Exception as unlock_err:
                          self.log.error(\"Failed to release schema lock\", error=str(unlock_err))
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def ensure_table_exists(
         self,
@@ -1576,7 +1576,7 @@ class SchemaManager:
         \"\"\"Helper to get column types for casting during UPSERT.\"\"\"
         conn = None
         try:
-             conn = self.db_pool.getconn()
+             conn = self.db_pool.get_connection()
              with conn.cursor() as cur:
                  cur.execute(\"\"\"
                      SELECT column_name, data_type
@@ -1588,7 +1588,7 @@ class SchemaManager:
             self.log.error(\"Failed to get column types\", table_name=table_name, error=str(e))
             return {}
         finally:
-             if conn: self.db_pool.putconn(conn)
+             if conn: self.db_pool.release_connection(conn)
 
 
     def _create_table(self, cur, table_id: sql.Identifier, column_definitions: List[Tuple[str, str]], primary_key: Optional[str]):

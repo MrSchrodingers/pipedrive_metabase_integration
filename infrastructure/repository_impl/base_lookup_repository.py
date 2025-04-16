@@ -61,7 +61,7 @@ class BaseLookupRepository:
              return 0
 
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 table_id = sql.Identifier(self.TABLE_NAME)
                 col_ids = sql.SQL(', ').join(map(sql.Identifier, valid_data_columns))
@@ -110,7 +110,7 @@ class BaseLookupRepository:
             raise 
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def get_name_map_for_ids(self, ids: Set[int]) -> Dict[int, str]:
         """
@@ -126,7 +126,7 @@ class BaseLookupRepository:
         conn = None
         start_time = time.monotonic()
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 query = sql.SQL("SELECT {id_col}, {name_col} FROM {table} WHERE {id_col} = ANY(%s)").format(
                     id_col=sql.Identifier(self.ID_COLUMN),
@@ -143,4 +143,4 @@ class BaseLookupRepository:
             return {}
         finally:
             if conn:
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)

@@ -15,7 +15,7 @@ class SchemaManager:
         conn = None
         locked = False
         try:
-            conn = self.db_pool.getconn()
+            conn = self.db_pool.get_connection()
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_advisory_lock(%s)", (self.SCHEMA_LOCK_ID,))
                 locked = True
@@ -37,7 +37,7 @@ class SchemaManager:
                         self.log.debug("Released schema lock", lock_id=self.SCHEMA_LOCK_ID)
                     except Exception as unlock_err:
                          self.log.error("Failed to release schema lock", error=str(unlock_err))
-                self.db_pool.putconn(conn)
+                self.db_pool.release_connection(conn)
 
     def ensure_table_exists(
         self,
@@ -102,7 +102,7 @@ class SchemaManager:
         """Helper to get column types for casting during UPSERT."""
         conn = None
         try:
-             conn = self.db_pool.getconn()
+             conn = self.db_pool.get_connection()
              with conn.cursor() as cur:
                  cur.execute("""
                      SELECT column_name, data_type
@@ -114,7 +114,7 @@ class SchemaManager:
             self.log.error("Failed to get column types", table_name=table_name, error=str(e))
             return {}
         finally:
-             if conn: self.db_pool.putconn(conn)
+             if conn: self.db_pool.release_connection(conn)
 
 
     def _create_table(self, cur, table_id: sql.Identifier, column_definitions: List[Tuple[str, str]], primary_key: Optional[str]):
