@@ -476,13 +476,12 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
 @task(name="Calculate and Save Optimal Batch Size")
 def calculate_and_save_optimal_batch(
     results: List[Dict],
-    repository: PipedriveRepository,
-    logger: logging.Logger
 ) -> int:
     """
     Calcula o tamanho ótimo de batch com base nas métricas e salva na config do DB.
     Retorna o tamanho ótimo calculado.
     """
+    _, repository, _ = initialize_components_no_maps()
     flow_log = get_run_logger()
     # dentro de tasks, o contexto é TaskRunContext, sem .flow_run, então extraímos via task_run
     ctx = context.get_run_context()
@@ -631,7 +630,7 @@ def batch_size_experiment_flow(
             time.sleep(5)
 
         # 4. Análise e Persistência do Tamanho Ótimo
-        optimal_size = calculate_and_save_optimal_batch(results, repository, flow_log)
+        optimal_size = calculate_and_save_optimal_batch(results)
 
         return {
             "status": "completed",
