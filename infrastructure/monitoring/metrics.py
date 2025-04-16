@@ -17,11 +17,6 @@ log = structlog.get_logger(__name__)
 PUSHGATEWAY_ADDRESS = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
 push_log = structlog.get_logger("push_metrics")
 
-# --- Register default collectors ---
-REGISTRY.register(PROCESS_COLLECTOR)
-REGISTRY.register(GC_COLLECTOR)
-REGISTRY.register(PLATFORM_COLLECTOR)
-
 # --- Counters ---
 etl_counter = Counter("pipedrive_etl_runs_total", "Total ETL executions initiated", ["flow_type"])
 etl_failure_counter = Counter("pipedrive_etl_failures_total", "Total ETL executions that failed critically", ["flow_type"])
