@@ -95,7 +95,13 @@ pipedrive_api_calls_per_batch_hist = Histogram(
     ["flow_type"],
     buckets=API_CALL_COUNT_BUCKETS
 )
-
+pipedrive_etl_duration_seconds = Histogram(
+    "pipedrive_etl_duration_seconds", 
+    "Histogram of total ETL flow processing time in seconds",
+    ["flow_type"],
+    # Buckets em segundos: (10s, 30s, 1m, 2m, 5m, 10m, 30m, 1h, 2h, 3h)
+    buckets=[10, 30, 60, 120, 300, 600, 1800, 3600, 7200, 10800]
+)
 # --- Cache Interaction Metrics ---
 pipedrive_api_cache_hit_total = Counter(
     "pipedrive_cache_hit_total",

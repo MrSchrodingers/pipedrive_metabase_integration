@@ -20,10 +20,16 @@ from application.mappers import deal_mapper
 from application.schemas.deal_schema import DealSchema
 
 from infrastructure.monitoring.metrics import (
-    etl_counter, etl_failure_counter, etl_duration_hist,
-    records_processed_counter, memory_usage_gauge, batch_size_gauge,
-    db_operation_duration_hist, etl_empty_batches_total,
-    etl_batch_validation_errors_total, etl_skipped_batches_total,
+    etl_runs_total,                         
+    etl_run_failures_total,                 
+    pipedrive_etl_duration_seconds,
+    etl_records_loaded_total,   
+    etl_process_memory_mbytes,              
+    batch_size_gauge,                        
+    etl_db_operation_duration_seconds,      
+    etl_empty_batches_total,                 
+    etl_batch_validation_errors_total,       
+    etl_skipped_batches_total       
 )
 
 log = structlog.get_logger(__name__)
@@ -143,7 +149,7 @@ class ETLService:
         run_start_time = time.monotonic()
         run_start_utc = datetime.now(timezone.utc)
         if not tracemalloc.is_tracing(): tracemalloc.start()
-        etl_counter.labels(flow_type=flow_type).inc()
+        etl_runs_total.labels(flow_type=flow_type).inc()
         run_log = self.log.bind(run_start_iso=run_start_utc.isoformat(), flow_type=flow_type)
 
         # Initialize results and counters
@@ -264,12 +270,12 @@ class ETLService:
              run_log.critical("ETL failed due to API Client error", error=str(api_err), exc_info=True)
              result["status"] = "error"
              result["message"] = f"ETL failed: API Client Error - {api_err}"
-             etl_failure_counter.labels(flow_type=flow_type).inc()
+             etl_run_failures_total.labels(flow_type=flow_type).inc()
         except Exception as e:
             run_log.critical("Critical ETL failure during run_etl", error=str(e), exc_info=True)
             result["status"] = "error"
             result["message"] = f"Critical ETL failure: {e}"
-            etl_failure_counter.labels(flow_type=flow_type).inc()
+            etl_run_failures_total.labels(flow_type=flow_type).inc()
             result["total_load_failed"] = total_load_failed + (total_fetched - total_schema_valid - total_domain_failed - total_loaded)
 
         finally:
@@ -278,7 +284,7 @@ class ETLService:
             duration = run_end_time - run_start_time
             result["duration_seconds"] = round(duration, 3)
             result["end_time"] = run_end_utc.isoformat()
-            etl_duration_hist.labels(flow_type=flow_type).observe(duration)
+            pipedrive_etl_duration_seconds.labels(flow_type=flow_type).observe(duration)
 
             # Update final counts in result
             result["total_fetched"] = total_fetched
@@ -302,7 +308,7 @@ class ETLService:
                     if tracemalloc.is_tracing(): tracemalloc.stop() ; tracemalloc.clear_traces()
             result["peak_memory_mb"] = peak_mem_mb
             if peak_mem_mb > 0:
-                 memory_usage_gauge.labels(flow_type=flow_type).set(peak_mem_mb)
+                 etl_process_memory_mbytes.labels(flow_type=flow_type).set(peak_mem_mb)
 
             log_level = run_log.info if result["status"].startswith("success") else run_log.error
             log_level("ETL run summary", **result)
@@ -392,13 +398,13 @@ class ETLService:
         # --- 5. Load to Repository ---
         if enriched_batch:
             try:
-                with db_operation_duration_hist.labels(operation='upsert_deals').time():
+                with etl_db_operation_duration_seconds.labels(operation='upsert_deals').time():
                     self.data_repository.save_data_upsert(enriched_batch)
                 batch_results["loaded"] = len(enriched_batch)
-                records_processed_counter.labels(flow_type=flow_type).inc(len(enriched_batch))
+                etl_records_loaded_total.labels(flow_type=flow_type).inc(len(enriched_batch))
             except Exception as load_err:
                 batch_results["load_failed"] = len(enriched_batch)
-                etl_failure_counter.labels(flow_type=flow_type).inc(len(enriched_batch))
+                etl_run_failures_total.labels(flow_type=flow_type).inc(len(enriched_batch))
                 batch_log.error("Repository save_data_upsert failed for batch", error=str(load_err), record_count=len(enriched_batch), exc_info=True)
         else:
              batch_log.warning("No enriched records to load for this batch (enrichment or previous steps failed).")

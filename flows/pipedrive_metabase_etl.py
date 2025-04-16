@@ -21,15 +21,13 @@ from application.mappers import deal_mapper
 # Correção: Removidas importações de métricas não definidas/genéricas
 from infrastructure.monitoring.metrics import (
     push_metrics_to_gateway,
-    # etl_counter, <--- Removido
-    # etl_failure_counter, <--- Removido
     backfill_deals_remaining_gauge,
     etl_heartbeat,
     etl_process_memory_mbytes,
     etl_process_cpu_percent,
     etl_process_thread_count,
-    etl_run_failures_total, # Métrica específica para falhas
-    etl_runs_total # Métrica específica para execuções
+    etl_run_failures_total, 
+    etl_runs_total
 )
 from infrastructure.repository_impl.pipedrive_repository import PipedriveDataRepository
 
