@@ -1,475 +1,4 @@
 [
-{"path": "pipedrive_metabase_integration.yaml", "encoding": "utf-8", "content": "apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: prefect-orion
-  labels:
-    app: prefect-orion
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: prefect-orion
-  template:
-    metadata:
-      labels:
-        app: prefect-orion
-    spec:
-      containers:
-      - name: prefect-orion
-        image: pipedrive_metabase_integration-prefect-orion:latest 
-        imagePullPolicy: Never 
-        ports:
-        - containerPort: 4200
-          name: http 
-        readinessProbe:
-          httpGet:
-            path: /api/health
-            port: http
-          initialDelaySeconds: 15
-          periodSeconds: 20
-          timeoutSeconds: 5
-          failureThreshold: 3
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: http
-          initialDelaySeconds: 60
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 5
-        env:
-        - name: APP_ROLE
-          value: \"orion\"
-        envFrom:
-        - configMapRef:
-            name: observability-config
-        resources:
-          requests:
-            memory: \"1Gi\"
-            cpu: \"500m\"
-          limits:
-            memory: \"1.5Gi\"
-            cpu: \"1.5\"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: prefect-orion
-spec:
-  selector:
-    app: prefect-orion
-  ports:
-  - protocol: TCP
-    port: 4200
-    targetPort: http 
-  type: ClusterIP 
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: metrics
-  labels:
-    app: metrics
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: metrics
-  template:
-    metadata:
-      labels:
-        app: metrics
-      annotations: 
-         prometheus.io/scrape: 'true'
-         prometheus.io/port: '8082' 
-         prometheus.io/path: '/metrics' 
-    spec:
-      containers:
-      - name: metrics
-        envFrom:
-        - secretRef:
-            name: app-secrets
-        - secretRef:
-            name: db-secrets
-        image: pipedrive_metabase_integration-etl:latest 
-        imagePullPolicy: Never
-        ports:
-        - containerPort: 8082
-          name: metrics-port
-        readinessProbe:
-          httpGet:
-            path: /metrics
-            port: metrics-port
-          initialDelaySeconds: 5
-          periodSeconds: 15
-        livenessProbe:
-          tcpSocket: 
-            port: metrics-port
-          initialDelaySeconds: 30
-          periodSeconds: 30
-        resources:
-          requests:
-            memory: \"64Mi\"
-            cpu: \"50m\"
-          limits:
-            memory: \"128Mi\"
-            cpu: \"100m\"
-        env:
-          - name: APP_ROLE
-            value: \"metrics\"
-          - name: APP_METRICS_PORT 
-            value: \"8082\"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: metrics
-spec:
-  selector:
-    app: metrics
-  ports:
-  - protocol: TCP
-    port: 8082
-    targetPort: metrics-port 
-  type: ClusterIP 
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: metrics-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: metrics
-  minReplicas: 1
-  maxReplicas: 3
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-  labels:
-    app: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-      - name: redis
-        image: redis:7-alpine 
-        ports:
-        - containerPort: 6379
-          name: redis-port 
-        readinessProbe:
-          tcpSocket:
-            port: redis-port
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          exec:
-            command: [\"redis-cli\", \"ping\"] 
-          initialDelaySeconds: 30
-          periodSeconds: 30
-          timeoutSeconds: 5
-        resources:
-          requests:
-            memory: \"128Mi\"
-            cpu: \"100m\"
-          limits:
-            memory: \"512Mi\"
-            cpu: \"500m\"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-spec:
-  selector:
-    app: redis
-  ports:
-  - protocol: TCP
-    port: 6379
-    targetPort: redis-port
-  type: ClusterIP
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: db
-  labels:
-    app: db
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: db
-  template:
-    metadata:
-      labels:
-        app: db
-    spec:
-      containers:
-      - name: db
-        image: postgres:14-alpine 
-        ports:
-        - containerPort: 5432
-          name: pgsql 
-        envFrom:
-          - secretRef:
-              name: db-secrets
-        volumeMounts:
-        - name: pgdata
-          mountPath: /var/lib/postgresql/data
-        readinessProbe:
-          tcpSocket:
-              port: pgsql 
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        livenessProbe:
-          tcpSocket:
-            port: pgsql 
-          initialDelaySeconds: 60
-          periodSeconds: 30
-        resources:
-          requests:
-            memory: \"1Gi\"
-            cpu: \"500m\"
-          limits:
-            memory: \"1.5Gi\"
-            cpu: \"1.5\"
-      volumes:
-      - name: pgdata
-        persistentVolumeClaim:
-          claimName: pgdata-pvc
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: db
-spec:
-  selector:
-    app: db
-  ports:
-  - protocol: TCP
-    port: 5432
-    targetPort: pgsql 
-  type: ClusterIP
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: grafana
-  labels:
-    app: grafana
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: grafana
-  template:
-    metadata:
-      labels:
-        app: grafana
-    spec:
-      containers:
-      - name: grafana
-        image: grafana/grafana-oss:latest 
-        ports:
-        - containerPort: 3015
-          name: http
-        env:
-        - name: GF_SERVER_HTTP_PORT
-          value: \"3015\"
-        readinessProbe:
-          httpGet:
-            path: /api/health
-            port: http 
-          initialDelaySeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: http 
-          initialDelaySeconds: 60 
-          periodSeconds: 30
-        resources:
-          requests:
-            memory: \"256Mi\"
-            cpu: \"100m\"
-          limits:
-            memory: \"1Gi\"
-            cpu: \"500m\"
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: grafana
-spec:
-  selector:
-    app: grafana
-  ports:
-  - protocol: TCP
-    port: 3015
-    targetPort: http 
-  type: ClusterIP 
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: prefect-agent
-  labels:
-    app: prefect-agent
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: prefect-agent
-  template:
-    metadata:
-      labels:
-        app: prefect-agent
-    spec:
-      containers:
-      - name: agent
-        image: pipedrive_metabase_integration-etl:latest
-        imagePullPolicy: Never 
-        command: [\"prefect\", \"worker\", \"start\", \"--pool\", \"kubernetes-pool\"]
-        envFrom: 
-        - secretRef:
-            name: app-secrets
-        - secretRef:
-            name: db-secrets
-        env:
-          - name: PREFECT_API_URL
-            value: \"http://prefect-orion:4200/api\"
-        resources:
-          requests:
-            memory: \"512Mi\"
-            cpu: \"200m\"
-          limits:
-            memory: \"1Gi\"
-            cpu: \"500m\"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: metabase
-  labels:
-    app: metabase
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: metabase
-  template:
-    metadata:
-      labels:
-        app: metabase
-    spec:
-      containers:
-      - name: metabase
-        image: metabase/metabase:latest 
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 3000
-          name: http 
-        readinessProbe:
-          httpGet:
-            path: /api/health # Endpoint de health do Metabase
-            port: http
-          initialDelaySeconds: 45 # Metabase pode demorar um pouco mais para carregar JVM/etc
-          periodSeconds: 20
-          timeoutSeconds: 10
-          failureThreshold: 6 
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: http
-          initialDelaySeconds: 180
-          periodSeconds: 30
-          failureThreshold: 5
-        resources:
-          requests:
-            memory: \"1.5Gi\"
-            cpu: \"500m\"
-          limits:
-            memory: \"2Gi\"
-            cpu: \"1.5\" 
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: metabase
-spec:
-  selector:
-    app: metabase
-  ports:
-  - protocol: TCP
-    port: 3000       
-    targetPort: http 
-  type: ClusterIP"}
-,
-{"path": "create_secret_block.py", "encoding": "utf-8", "content": "import sys
-from prefect.blocks.system import Secret
-import argparse
-import os
-
-# --- Configuration ---
-default_block_name = \"github-access-token\"
-
-# --- Argument Parser ---
-parser = argparse.ArgumentParser(description=\"Cria ou atualiza um Bloco Prefect do tipo Secret.\")
-parser.add_argument(\"-n\", \"--name\", default=default_block_name,
-                    help=f\"Nome para o Bloco Secret (padr\u00e3o: {default_block_name})\")
-parser.add_argument(\"token\", help=\"O valor do token secreto a ser armazenado\")
-
-args = parser.parse_args()
-
-block_name = args.name
-secret_value = args.token
-
-print(f\"Tentando criar/atualizar Bloco Secret chamado '{block_name}'...\")
-
-try:
-    secret_block = Secret(value=secret_value)
-
-    block_doc_id = secret_block.save(name=block_name, overwrite=True)
-
-    print(f\"Bloco Secret '{block_name}' salvo com sucesso!\")
-    print(f\"ID do Documento do Bloco: {block_doc_id}\")
-
-    print(\"\n--- Pr\u00f3ximo Passo ---\")
-    print(\"Verifique se o seu arquivo 'prefect.yaml' est\u00e1 referenciando o nome de bloco correto:\")
-    print(f\"access_token: '{{{{ prefect.blocks.secret.{block_name} }}}}'\")
-    print(\"Certifique-se de que esta linha est\u00e1 correta em TODOS os deployments que precisam do token.\")
-
-
-except Exception as e:
-    print(f\"\nErro ao salvar o bloco: {e}\")
-    print(\"\nPoss\u00edveis causas:\")
-    print(\"- O servidor Prefect Orion n\u00e3o est\u00e1 acess\u00edvel.\")
-    print(\"- A vari\u00e1vel de ambiente PREFECT_API_URL n\u00e3o est\u00e1 definida ou est\u00e1 incorreta.\")
-    print(\"  (Certifique-se que aponta para: http://localhost:4200/api)\")
-    sys.exit(1)"}
-,
 {"path": "Dockerfile", "encoding": "utf-8", "content": "# ---- Etapa 1: Builder ----
     FROM python:3.12-slim as builder
 
@@ -538,194 +67,6 @@ except Exception as e:
     # Comando de entrada
     CMD [\"/app/entrypoint.sh\"]
     "}
-,
-{"path": "observability-config.yaml", "encoding": "utf-8", "content": "apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: observability-config
-data:
-  LOG_LEVEL: \"INFO\"
-  METRICS_ENDPOINT: \"/metrics\" "}
-,
-{"path": "prometheus.yml", "encoding": "utf-8", "content": "---
-# --- 1. ConfigMap com prometheus.yml ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-  labels:
-    app: prometheus
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 15s # Intervalo padr\u00e3o de coleta
-      evaluation_interval: 15s
-
-    scrape_configs:
-      # Coleta m\u00e9tricas do pr\u00f3prio Prometheus
-      - job_name: 'prometheus'
-        static_configs:
-          - targets: ['localhost:9090']
-
-      - job_name: 'pushgateway'
-        honor_labels: true # Importante para manter labels do job que fez o push
-        static_configs:
-          - targets: ['pushgateway:9091']
-
-      # Coleta m\u00e9tricas de servi\u00e7os Kubernetes que possuem anota\u00e7\u00f5es espec\u00edficas
-      - job_name: 'kubernetes-services'
-        kubernetes_sd_configs:
-          - role: service # Descobre servi\u00e7os
-        relabel_configs:
-          # Seleciona apenas servi\u00e7os com a anota\u00e7\u00e3o prometheus.io/scrape=true
-          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
-            action: keep
-            regex: true
-          # (Opcional) Usa a anota\u00e7\u00e3o prometheus.io/path se definida, sen\u00e3o usa /metrics
-          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
-            action: replace
-            target_label: __metrics_path__
-            regex: (.+)
-          # Usa a anota\u00e7\u00e3o prometheus.io/port se definida, sen\u00e3o usa a porta do servi\u00e7o
-          - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
-            action: replace
-            target_label: __address__
-            regex: ([^:]+)(?::\d+)?;(\d+)
-            replacement: $1:$2
-          # Define o label 'job' como o nome do servi\u00e7o
-          - source_labels: [__meta_kubernetes_service_name]
-            action: replace
-            target_label: job
-          # Define o label 'instance' como o IP:Porta do pod/endpoint
-          # (Pode ser mais \u00fatil mudar role para 'pod' ou 'endpoints' para ter labels de pod)
-          # Para simplificar, vamos manter o servi\u00e7o por enquanto.
-          # - source_labels: [__address__]
-          #   action: replace
-          #   target_label: instance
-
----
-# --- 2. RBAC: Service Account, ClusterRole, ClusterRoleBinding ---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: prometheus-sa
-  labels:
-    app: prometheus
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: prometheus-cr
-rules:
-- apiGroups: [\"\"]
-  resources:
-  - nodes
-  - nodes/metrics
-  - services
-  - endpoints
-  - pods
-  verbs: [\"get\", \"list\", \"watch\"]
-- apiGroups: [\"extensions\", \"networking.k8s.io\"]
-  resources:
-  - ingresses
-  verbs: [\"get\", \"list\", \"watch\"]
-- nonResourceURLs: [\"/metrics\"]
-  verbs: [\"get\"]
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: prometheus-crb
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: prometheus-cr
-subjects:
-- kind: ServiceAccount
-  name: prometheus-sa
-  namespace: default
-
----
-# --- 3. PersistentVolumeClaim ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: prometheus-pvc
-  labels:
-    app: prometheus
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 8Gi 
-      memory: \"1Gi\"  
-      cpu: \"500m\"   
-    limits:
-      memory: \"2Gi\"  
-      cpu: \"1\"     
-
----
-# --- 4. Deployment do Prometheus Server ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: prometheus-deployment
-  labels:
-    app: prometheus
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: prometheus
-  template:
-    metadata:
-      labels:
-        app: prometheus
-    spec:
-      serviceAccountName: prometheus-sa
-      containers:
-        - name: prometheus
-          image: prom/prometheus:latest 
-          args:
-            - \"--config.file=/etc/prometheus/prometheus.yml\"
-            - \"--storage.tsdb.path=/prometheus/\"
-            - \"--web.console.libraries=/usr/share/prometheus/console_libraries\"
-            - \"--web.console.templates=/usr/share/prometheus/consoles\"
-            - \"--web.enable-lifecycle\"
-          ports:
-            - containerPort: 9090
-          volumeMounts:
-            - name: config-volume
-              mountPath: /etc/prometheus/
-            - name: storage-volume
-              mountPath: /prometheus/
-      volumes:
-        - name: config-volume
-          configMap:
-            name: prometheus-config
-        - name: storage-volume
-          persistentVolumeClaim:
-            claimName: prometheus-pvc 
-
----
-# --- 5. Service para expor o Prometheus internamente ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: prometheus-service 
-  labels:
-    app: prometheus
-spec:
-  selector:
-    app: prometheus 
-  ports:
-    - protocol: TCP
-      port: 9090      
-      targetPort: 9090  
-  type: ClusterIP "}
 ,
 {"path": "infrastructure/monitoring/metrics_server.py", "encoding": "utf-8", "content": "from prometheus_client import start_http_server
 import time
@@ -1093,13 +434,6 @@ settings = Settings()
 "}
 ,
 {"path": "infrastructure/config/__init__.py", "encoding": "base64", "content": ""}
-,
-{"path": "infrastructure/db.py", "encoding": "utf-8", "content": "import psycopg2
-from infrastructure.config.settings import settings
-
-def get_db_connection():
-    return psycopg2.connect(f\"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}\")
-"}
 ,
 {"path": "infrastructure/repository_impl/config_repository.py", "encoding": "utf-8", "content": "from typing import Dict, Any, Optional
 from psycopg2 import sql, pool, extras
@@ -2352,6 +1686,850 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 CMD [\"prefect\", \"server\", \"start\", \"--host\", \"0.0.0.0\"]
 "}
 ,
+{"path": "infrastructure/k8s/pipedrive_metabase_integration.yaml", "encoding": "utf-8", "content": "apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prefect-orion
+  labels:
+    app: prefect-orion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prefect-orion
+  template:
+    metadata:
+      labels:
+        app: prefect-orion
+    spec:
+      containers:
+      - name: prefect-orion
+        image: pipedrive_metabase_integration-prefect-orion:latest 
+        imagePullPolicy: Never 
+        ports:
+        - containerPort: 4200
+          name: http 
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        env:
+        - name: APP_ROLE
+          value: \"orion\"
+        envFrom:
+        - configMapRef:
+            name: observability-config
+        resources:
+          requests:
+            memory: \"1Gi\"
+            cpu: \"500m\"
+          limits:
+            memory: \"1.5Gi\"
+            cpu: \"1.5\"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prefect-orion
+spec:
+  selector:
+    app: prefect-orion
+  ports:
+  - protocol: TCP
+    port: 4200
+    targetPort: http 
+  type: ClusterIP 
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics
+  labels:
+    app: metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics
+  template:
+    metadata:
+      labels:
+        app: metrics
+      annotations: 
+         prometheus.io/scrape: 'true'
+         prometheus.io/port: '8082' 
+         prometheus.io/path: '/metrics' 
+    spec:
+      containers:
+      - name: metrics
+        envFrom:
+        - secretRef:
+            name: app-secrets
+        - secretRef:
+            name: db-secrets
+        image: pipedrive_metabase_integration-etl:latest 
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8082
+          name: metrics-port
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: metrics-port
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        livenessProbe:
+          tcpSocket: 
+            port: metrics-port
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests:
+            memory: \"64Mi\"
+            cpu: \"50m\"
+          limits:
+            memory: \"128Mi\"
+            cpu: \"100m\"
+        env:
+          - name: APP_ROLE
+            value: \"metrics\"
+          - name: APP_METRICS_PORT 
+            value: \"8082\"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics
+spec:
+  selector:
+    app: metrics
+  ports:
+  - protocol: TCP
+    port: 8082
+    targetPort: metrics-port 
+  type: ClusterIP 
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: metrics-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metrics
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine 
+        ports:
+        - containerPort: 6379
+          name: redis-port 
+        readinessProbe:
+          tcpSocket:
+            port: redis-port
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          exec:
+            command: [\"redis-cli\", \"ping\"] 
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: \"128Mi\"
+            cpu: \"100m\"
+          limits:
+            memory: \"512Mi\"
+            cpu: \"500m\"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  selector:
+    app: redis
+  ports:
+  - protocol: TCP
+    port: 6379
+    targetPort: redis-port
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  labels:
+    app: db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:14-alpine 
+        ports:
+        - containerPort: 5432
+          name: pgsql 
+        envFrom:
+          - secretRef:
+              name: db-secrets
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          tcpSocket:
+              port: pgsql 
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          tcpSocket:
+            port: pgsql 
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          requests:
+            memory: \"1Gi\"
+            cpu: \"500m\"
+          limits:
+            memory: \"1.5Gi\"
+            cpu: \"1.5\"
+      volumes:
+      - name: pgdata
+        persistentVolumeClaim:
+          claimName: pgdata-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+spec:
+  selector:
+    app: db
+  ports:
+  - protocol: TCP
+    port: 5432
+    targetPort: pgsql 
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana-oss:latest 
+        ports:
+        - containerPort: 3015
+          name: http
+        env:
+        - name: GF_SERVER_HTTP_PORT
+          value: \"3015\"
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http 
+          initialDelaySeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http 
+          initialDelaySeconds: 60 
+          periodSeconds: 30
+        resources:
+          requests:
+            memory: \"256Mi\"
+            cpu: \"100m\"
+          limits:
+            memory: \"1Gi\"
+            cpu: \"500m\"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+  - protocol: TCP
+    port: 3015
+    targetPort: http 
+  type: ClusterIP 
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prefect-agent
+  labels:
+    app: prefect-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prefect-agent
+  template:
+    metadata:
+      labels:
+        app: prefect-agent
+    spec:
+      containers:
+      - name: agent
+        image: pipedrive_metabase_integration-etl:latest
+        imagePullPolicy: Never 
+        command: [\"prefect\", \"worker\", \"start\", \"--pool\", \"kubernetes-pool\"]
+        envFrom: 
+        - secretRef:
+            name: app-secrets
+        - secretRef:
+            name: db-secrets
+        env:
+          - name: PREFECT_API_URL
+            value: \"http://prefect-orion:4200/api\"
+        resources:
+          requests:
+            memory: \"512Mi\"
+            cpu: \"200m\"
+          limits:
+            memory: \"1Gi\"
+            cpu: \"500m\"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metabase
+  labels:
+    app: metabase
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metabase
+  template:
+    metadata:
+      labels:
+        app: metabase
+    spec:
+      containers:
+      - name: metabase
+        image: metabase/metabase:latest 
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http 
+        readinessProbe:
+          httpGet:
+            path: /api/health # Endpoint de health do Metabase
+            port: http
+          initialDelaySeconds: 45 # Metabase pode demorar um pouco mais para carregar JVM/etc
+          periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 6 
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          failureThreshold: 5
+        resources:
+          requests:
+            memory: \"1.5Gi\"
+            cpu: \"500m\"
+          limits:
+            memory: \"2Gi\"
+            cpu: \"1.5\" 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metabase
+spec:
+  selector:
+    app: metabase
+  ports:
+  - protocol: TCP
+    port: 3000       
+    targetPort: http 
+  type: ClusterIP"}
+,
+{"path": "infrastructure/k8s/observability-config.yaml", "encoding": "utf-8", "content": "apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-config
+data:
+  LOG_LEVEL: \"INFO\"
+  METRICS_ENDPOINT: \"/metrics\" "}
+,
+{"path": "infrastructure/k8s/prometheus.yml", "encoding": "utf-8", "content": "---
+# --- 1. ConfigMap com prometheus.yml ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  labels:
+    app: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s # Intervalo padr\u00e3o de coleta
+      evaluation_interval: 15s
+
+    scrape_configs:
+      # Coleta m\u00e9tricas do pr\u00f3prio Prometheus
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      - job_name: 'pushgateway'
+        honor_labels: true # Importante para manter labels do job que fez o push
+        static_configs:
+          - targets: ['pushgateway:9091']
+
+      # Coleta m\u00e9tricas de servi\u00e7os Kubernetes que possuem anota\u00e7\u00f5es espec\u00edficas
+      - job_name: 'kubernetes-services'
+        kubernetes_sd_configs:
+          - role: service # Descobre servi\u00e7os
+        relabel_configs:
+          # Seleciona apenas servi\u00e7os com a anota\u00e7\u00e3o prometheus.io/scrape=true
+          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          # (Opcional) Usa a anota\u00e7\u00e3o prometheus.io/path se definida, sen\u00e3o usa /metrics
+          - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Usa a anota\u00e7\u00e3o prometheus.io/port se definida, sen\u00e3o usa a porta do servi\u00e7o
+          - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+          # Define o label 'job' como o nome do servi\u00e7o
+          - source_labels: [__meta_kubernetes_service_name]
+            action: replace
+            target_label: job
+          # Define o label 'instance' como o IP:Porta do pod/endpoint
+          # (Pode ser mais \u00fatil mudar role para 'pod' ou 'endpoints' para ter labels de pod)
+          # Para simplificar, vamos manter o servi\u00e7o por enquanto.
+          # - source_labels: [__address__]
+          #   action: replace
+          #   target_label: instance
+
+---
+# --- 2. RBAC: Service Account, ClusterRole, ClusterRoleBinding ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-sa
+  labels:
+    app: prometheus
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-cr
+rules:
+- apiGroups: [\"\"]
+  resources:
+  - nodes
+  - nodes/metrics
+  - services
+  - endpoints
+  - pods
+  verbs: [\"get\", \"list\", \"watch\"]
+- apiGroups: [\"extensions\", \"networking.k8s.io\"]
+  resources:
+  - ingresses
+  verbs: [\"get\", \"list\", \"watch\"]
+- nonResourceURLs: [\"/metrics\"]
+  verbs: [\"get\"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-cr
+subjects:
+- kind: ServiceAccount
+  name: prometheus-sa
+  namespace: default
+
+---
+# --- 3. PersistentVolumeClaim ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+  labels:
+    app: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi 
+      memory: \"1Gi\"  
+      cpu: \"500m\"   
+    limits:
+      memory: \"2Gi\"  
+      cpu: \"1\"     
+
+---
+# --- 4. Deployment do Prometheus Server ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-deployment
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus-sa
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest 
+          args:
+            - \"--config.file=/etc/prometheus/prometheus.yml\"
+            - \"--storage.tsdb.path=/prometheus/\"
+            - \"--web.console.libraries=/usr/share/prometheus/console_libraries\"
+            - \"--web.console.templates=/usr/share/prometheus/consoles\"
+            - \"--web.enable-lifecycle\"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/prometheus/
+            - name: storage-volume
+              mountPath: /prometheus/
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-config
+        - name: storage-volume
+          persistentVolumeClaim:
+            claimName: prometheus-pvc 
+
+---
+# --- 5. Service para expor o Prometheus internamente ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service 
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus 
+  ports:
+    - protocol: TCP
+      port: 9090      
+      targetPort: 9090  
+  type: ClusterIP "}
+,
+{"path": "infrastructure/k8s/pushgateway.yaml", "encoding": "utf-8", "content": "apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pushgateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pushgateway
+  template:
+    metadata:
+      labels:
+        app: pushgateway
+    spec:
+      containers:
+      - name: pushgateway
+        image: prom/pushgateway:latest 
+        ports:
+        - containerPort: 9091
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pushgateway
+  labels:
+    app: pushgateway
+  annotations:
+     prometheus.io/scrape: 'true'
+     prometheus.io/port: '9091'
+spec:
+  selector:
+    app: pushgateway
+  ports:
+  - protocol: TCP
+    port: 9091
+    targetPort: 9091"}
+,
+{"path": "infrastructure/k8s/persistent-volume-claim.yaml", "encoding": "utf-8", "content": "apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgdata-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+"}
+,
+{"path": "infrastructure/k8s/prefect.yaml", "encoding": "utf-8", "content": "# yaml-language-server: $schema=https://raw.githubusercontent.com/PrefectHQ/prefect/main/src/prefect/server/schemas/core/deployment.json
+prefect-version: 3.3.2
+
+name: pipedrive-etl
+
+deployments:
+# --- Main ETL Flow ---
+- name: Pipedrive Sync
+  version: '2.0'
+  tags:
+  - pipedrive
+  - sync
+  - etl
+  - main
+  description: Sincroniza deals recentes do Pipedrive com o banco de dados, usando
+    lookups no DB.
+  entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/default-k8s-job
+  concurrency_limit: 1
+  schedules:
+  - interval: 1800.0
+    anchor_date: '2025-04-10T12:00:00+00:00'
+    timezone: America/Sao_Paulo
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: v2_implementation
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+- name: Pipedrive Backfill Stage History
+  version: '1.0'
+  tags:
+  - pipedrive
+  - backfill
+  - history
+  description: Preenche o hist\u00f3rico de stages para deals antigos.
+  entrypoint: flows/pipedrive_metabase_etl.py:backfill_stage_history_flow
+  parameters:
+    daily_deal_limit: 10000
+    db_batch_size: 1000
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/default-k8s-job
+  schedules: []
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: v2_implementation
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+- name: Batch Size Experiment
+  version: '1.0'
+  tags:
+  - experiment
+  - batch-size
+  - optimization
+  description: Testa diferentes tamanhos de batch, calcula e salva o \u00f3timo na config.
+  entrypoint: flows/pipedrive_metabase_etl.py:batch_size_experiment_flow
+  parameters:
+    batch_sizes:
+    - 300
+    - 500
+    - 750
+    - 1000
+    - 1500
+    test_data_size: 10000
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/experiment-k8s-job
+  schedules: []
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: v2_implementation
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+- name: Sync Pipedrive Users
+  version: '1.0'
+  tags:
+  - pipedrive
+  - sync
+  - aux
+  - users
+  description: Sincroniza a tabela pipedrive_users com a API.
+  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_users_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/light-sync-k8s-job
+  schedules:
+  - cron: 0 3 * * *
+    timezone: America/Sao_Paulo
+    day_or: true
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: v2_implementation
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+- name: Sync Pipedrive Persons and Orgs
+  version: '1.0'
+  tags:
+  - pipedrive
+  - sync
+  - aux
+  - persons
+  - orgs
+  description: Sincroniza as tabelas pipedrive_persons e pipedrive_organizations.
+  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_persons_orgs_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/default-k8s-job
+  schedules:
+  - interval: 14400.0
+    anchor_date: '2025-04-10T12:00:00+00:00'
+    timezone: America/Sao_Paulo
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: v2_implementation
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+- name: Sync Pipedrive Stages and Pipelines
+  version: '1.0'
+  tags:
+  - pipedrive
+  - sync
+  - aux
+  - stages
+  - pipelines
+  description: Sincroniza as tabelas pipedrive_stages e pipedrive_pipelines.
+  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_stages_pipelines_flow
+  parameters: {}
+  work_pool:
+    name: kubernetes-pool
+    work_queue_name: kubernetes
+    job_variables: {}
+  infrastructure:
+    type: kubernetes-job
+    block: kubernetes-job/light-sync-k8s-job
+  schedules:
+  - cron: 0 4 * * *
+    timezone: America/Sao_Paulo
+    day_or: true
+    active: true
+  pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
+      branch: v2_implementation
+      access_token: '{{ prefect.blocks.secret.github-access-token }}'
+  concurrency_limit: 1
+"}
+,
 {"path": "infrastructure/k8s/wait-for-it.sh", "encoding": "utf-8", "content": "#!/usr/bin/env bash
 host=\"$1\"
 port=\"$2\"
@@ -3147,7 +3325,1011 @@ def setup_logging(level=logging.INFO, force_json=False):
     logger = structlog.get_logger(__name__)
     logger.info(\"Logging configurado com sucesso\", level=level)"}
 ,
-{"path": "create_or_update_core_blocks.py", "encoding": "utf-8", "content": "import os
+{"path": ".gitignore", "encoding": "utf-8", "content": "# Ignorar todos os diret\u00f3rios __pycache__
+**/__pycache__/
+/__pycache/
+
+# Ignorar arquivos espec\u00edficos
+.qodo
+.env
+
+db-secrets.yaml
+kubectl*
+
+"}
+,
+{"path": "flows/pipedrive_sync_aux.py", "encoding": "utf-8", "content": "from typing import Any, Generator, List, Dict, Optional, Tuple
+import structlog
+from prefect import flow, task, get_run_logger
+
+from application.ports.pipedrive_client_port import PipedriveClientPort
+from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient 
+from infrastructure.repository_impl.lookup_repositories import (
+    UserRepository, PersonRepository, StageRepository, PipelineRepository, OrganizationRepository
+)
+
+
+from flows.pipedrive_metabase_etl import initialize_components
+
+from infrastructure.monitoring.metrics import (
+    push_metrics_to_gateway,
+    sync_records_upserted_total,
+    sync_runs_total,             
+    sync_run_failures_total    
+)
+
+log = structlog.get_logger(__name__)
+
+# --- Tasks Gen\u00e9ricas de Sincroniza\u00e7\u00e3o ---
+@task(name=\"Sync Pipedrive Entity Task\", retries=2, retry_delay_seconds=60, cache_policy=None)
+def sync_entity_task(
+    entity_type: str,
+    client: PipedriveClientPort,
+    repository: (UserRepository | PersonRepository | StageRepository | PipelineRepository | OrganizationRepository)
+    ) -> int:
+    \"\"\"
+    Task gen\u00e9rica para buscar dados de uma entidade Pipedrive via stream
+    e fazer upsert no reposit\u00f3rio de lookup correspondente.
+    \"\"\"
+    logger = get_run_logger()
+    logger.info(f\"Starting sync task for entity: {entity_type}\")
+    sync_runs_total.labels(entity_type=entity_type).inc()
+    total_synced = 0
+    processed_count = 0
+    batch_size = 500 
+    data_batch: List[Dict] = []
+    stream: Optional[Generator[Dict, None, None]] = None
+    upsert_method: Optional[callable] = None
+
+    if entity_type == \"users\" and isinstance(repository, UserRepository):
+        stream = client._fetch_paginated_v1_stream_adapter(f\"{client.BASE_URL_V1}/users\")
+        upsert_method = repository.upsert_users
+    elif entity_type == \"persons\" and isinstance(repository, PersonRepository):
+        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/persons\")
+        upsert_method = repository.upsert_persons
+    elif entity_type == \"stages\" and isinstance(repository, StageRepository):
+        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/stages\")
+        upsert_method = repository.upsert_stages
+    elif entity_type == \"pipelines\" and isinstance(repository, PipelineRepository):
+        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/pipelines\")
+        upsert_method = repository.upsert_pipelines
+    elif entity_type == \"organizations\" and isinstance(repository, OrganizationRepository):
+        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/organizations\")
+        upsert_method = repository.upsert_organizations
+    else:
+        logger.error(f\"Unknown entity type or mismatched repository for sync task: {entity_type}, repo_type={type(repository).__name__}\")
+        raise ValueError(f\"Unknown entity type or repository mismatch: {entity_type}\")
+
+    if not stream or not upsert_method:
+         logger.error(f\"Stream or upsert method could not be determined for entity: {entity_type}\")
+         raise NotImplementedError(f\"Sync logic error for {entity_type}\")
+
+    upserted_in_last_batch = 0
+
+    try:
+        for item in stream:
+            data_batch.append(item)
+            processed_count += 1
+            if len(data_batch) >= batch_size:
+                logger.debug(f\"Upserting batch of {len(data_batch)} {entity_type}...\")
+                upserted_in_last_batch = upsert_method(data_batch)
+                total_synced += upserted_in_last_batch
+                sync_records_upserted_total.labels(entity_type=entity_type).inc(upserted_in_last_batch)
+                data_batch = []
+                upserted_in_last_batch = 0
+
+        if data_batch:
+            logger.debug(f\"Upserting final batch of {len(data_batch)} {entity_type}...\")
+            upserted_in_last_batch = upsert_method(data_batch)
+            total_synced += upserted_in_last_batch
+            sync_records_upserted_total.labels(entity_type=entity_type).inc(upserted_in_last_batch)
+
+        logger.info(f\"Sync task completed for {entity_type}\", total_processed=processed_count, total_upserted=total_synced)
+        return total_synced
+
+    except Exception as e:
+        logger.error(f\"Sync task failed for {entity_type}\", exc_info=True)
+        sync_run_failures_total.labels(entity_type=entity_type).inc()
+        raise e
+
+# --- Fluxos Espec\u00edficos de Sincroniza\u00e7\u00e3o ---
+
+def _initialize_and_get_repo(entity_type: str, logger: structlog.BoundLoggerBase) -> Tuple[PipedriveAPIClient, Any]:
+    logger.info(f\"Initializing components for {entity_type} sync using main initialize_components...\")
+    try:
+        components: Tuple = initialize_components()
+
+        # Mapeia o entity_type para o \u00edndice correto na tupla retornada por initialize_components
+        # (client, data_repo, etl_service, user_repo, person_repo, stage_repo, pipeline_repo, org_repo, config_repo)
+        # \u00cdndices:   0        1          2            3          4            5           6             7           8
+        repo_map = {
+            \"users\": 3,
+            \"persons\": 4,
+            \"stages\": 5,
+            \"pipelines\": 6,
+            \"organizations\": 7
+        }
+        repo_index = repo_map.get(entity_type)
+
+        if repo_index is None:
+            raise ValueError(f\"Entity type '{entity_type}' not mapped to a known repository index.\")
+
+        client = components[0]      
+        repository = components[repo_index]
+
+        logger.info(f\"Components initialized for {entity_type}. Using repository: {type(repository).__name__}\")
+        return client, repository
+    except Exception as init_err:
+        logger.critical(f\"Failed to initialize components for {entity_type}\", error=str(init_err), exc_info=True)
+        raise
+
+@flow(name=\"Sync Pipedrive Users\", log_prints=True)
+def sync_pipedrive_users_flow():
+    logger = get_run_logger()
+    entity_type = \"users\"
+    logger.info(f\"Starting Pipedrive {entity_type} sync flow...\")
+    flow_run_id = getattr(logger, \"extra\", {}).get(\"flow_run_id\", f\"local_sync_{entity_type}\")
+    try:
+        client, repository = _initialize_and_get_repo(entity_type, logger)
+        sync_entity_task(entity_type=entity_type, client=client, repository=repository)
+        logger.info(f\"Pipedrive {entity_type} sync flow finished successfully.\")
+    except Exception as e:
+         logger.critical(f\"Pipedrive {entity_type} sync flow failed at the flow level. Check previous logs.\")
+    finally:
+        logger.info(f\"Pushing metrics to Pushgateway for {entity_type} sync flow.\")
+        push_metrics_to_gateway(job_name=f\"pipedrive_sync_{entity_type}\", grouping_key={'flow_run_id': str(flow_run_id)})
+
+
+@flow(name=\"Sync Pipedrive Persons and Orgs\", log_prints=True)
+def sync_pipedrive_persons_orgs_flow():
+    logger = get_run_logger()
+    logger.info(\"Starting Pipedrive Persons & Orgs sync flow...\")
+    flow_run_id = get_run_logger().extra.get(\"flow_run_id\", \"local_sync_persons_orgs\")
+    success = True 
+    try:
+        # Persons
+        entity_type_person = \"persons\"
+        logger.info(f\"--- Starting {entity_type_person} sync part ---\")
+        try:
+            client_p, repo_p = _initialize_and_get_repo(entity_type_person, logger)
+            sync_entity_task(entity_type=entity_type_person, client=client_p, repository=repo_p)
+            logger.info(f\"--- Finished {entity_type_person} sync part successfully ---\")
+        except Exception as e_p:
+            logger.error(f\"--- Failed {entity_type_person} sync part ---\", error=str(e_p))
+            success = False 
+
+        # Organizations
+        entity_type_org = \"organizations\"
+        logger.info(f\"--- Starting {entity_type_org} sync part ---\")
+        try:
+            client_o, repo_o = _initialize_and_get_repo(entity_type_org, logger)
+            sync_entity_task(entity_type=entity_type_org, client=client_o, repository=repo_o)
+            logger.info(f\"--- Finished {entity_type_org} sync part successfully ---\")
+        except Exception as e_o:
+            logger.error(f\"--- Failed {entity_type_org} sync part ---\", error=str(e_o))
+            success = False 
+
+        if success:
+             logger.info(\"Pipedrive Persons & Orgs sync flow finished successfully.\")
+        else:
+             logger.warning(\"Pipedrive Persons & Orgs sync flow finished with one or more errors.\")
+
+    except Exception as e: 
+         logger.critical(\"Pipedrive Persons & Orgs sync flow failed unexpectedly at flow level.\", exc_info=True)
+         success = False
+    finally:
+        logger.info(\"Pushing metrics to Pushgateway for Persons & Orgs sync flow.\")
+        push_metrics_to_gateway(job_name=\"pipedrive_sync_persons_orgs\", grouping_key={'flow_run_id': str(flow_run_id)})
+
+
+@flow(name=\"Sync Pipedrive Stages and Pipelines\", log_prints=True)
+def sync_pipedrive_stages_pipelines_flow():
+    logger = get_run_logger()
+    logger.info(\"Starting Pipedrive Stages & Pipelines sync flow...\")
+    flow_run_id = get_run_logger().extra.get(\"flow_run_id\", \"local_sync_stages_pipelines\")
+    success = True 
+    try:
+        # Stages
+        entity_type_stage = \"stages\"
+        logger.info(f\"--- Starting {entity_type_stage} sync part ---\")
+        try:
+            client_s, repo_s = _initialize_and_get_repo(entity_type_stage, logger)
+            sync_entity_task(entity_type=entity_type_stage, client=client_s, repository=repo_s)
+            logger.info(f\"--- Finished {entity_type_stage} sync part successfully ---\")
+        except Exception as e_s:
+             logger.error(f\"--- Failed {entity_type_stage} sync part ---\", error=str(e_s))
+             success = False
+
+        # Pipelines
+        entity_type_pipe = \"pipelines\"
+        logger.info(f\"--- Starting {entity_type_pipe} sync part ---\")
+        try:
+            client_pl, repo_pl = _initialize_and_get_repo(entity_type_pipe, logger)
+            sync_entity_task(entity_type=entity_type_pipe, client=client_pl, repository=repo_pl)
+            logger.info(f\"--- Finished {entity_type_pipe} sync part successfully ---\")
+        except Exception as e_pl:
+             logger.error(f\"--- Failed {entity_type_pipe} sync part ---\", error=str(e_pl))
+             success = False
+
+        if success:
+            logger.info(\"Pipedrive Stages & Pipelines sync flow finished successfully.\")
+        else:
+            logger.warning(\"Pipedrive Stages & Pipelines sync flow finished with one or more errors.\")
+
+    except Exception as e: 
+         logger.critical(\"Pipedrive Stages & Pipelines sync flow failed unexpectedly at flow level.\", exc_info=True)
+         success = False
+    finally:
+        logger.info(\"Pushing metrics to Pushgateway for Stages & Pipelines sync flow.\")
+        push_metrics_to_gateway(job_name=\"pipedrive_sync_stages_pipelines\", grouping_key={'flow_run_id': str(flow_run_id)})"}
+,
+{"path": "flows/pipedrive_metabase_etl.py", "encoding": "utf-8", "content": "import datetime
+import time
+import tracemalloc
+from typing import Any, Dict, List, Tuple
+import pandas as pd
+from prefect import flow, get_run_logger, task, context
+from prefect.blocks.system import JSON
+import psutil # Importa\u00e7\u00e3o de psutil est\u00e1 correta
+
+from application.services.etl_service import ETLService
+from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
+from infrastructure.cache import RedisCache
+from infrastructure.db.db_pool import DBConnectionPool
+from infrastructure.db.schema_manager import SchemaManager
+from infrastructure.repository_impl.lookup_repositories import (
+    UserRepository, PersonRepository, StageRepository, PipelineRepository, OrganizationRepository
+)
+from infrastructure.repository_impl.config_repository import ConfigRepository
+from application.mappers import deal_mapper
+
+# Corre\u00e7\u00e3o: Removidas importa\u00e7\u00f5es de m\u00e9tricas n\u00e3o definidas/gen\u00e9ricas
+from infrastructure.monitoring.metrics import (
+    push_metrics_to_gateway,
+    # etl_counter, <--- Removido
+    # etl_failure_counter, <--- Removido
+    backfill_deals_remaining_gauge,
+    etl_heartbeat,
+    etl_process_memory_mbytes,
+    etl_process_cpu_percent,
+    etl_process_thread_count,
+    etl_run_failures_total, # M\u00e9trica espec\u00edfica para falhas
+    etl_runs_total # M\u00e9trica espec\u00edfica para execu\u00e7\u00f5es
+)
+from infrastructure.repository_impl.pipedrive_repository import PipedriveDataRepository
+
+DEFAULT_MAIN_FLOW_TIMEOUT = 9000
+DEFAULT_BACKFILL_FLOW_TIMEOUT = 10800
+BACKFILL_DAILY_LIMIT = 2000
+BACKFILL_DB_BATCH_SIZE = 1000
+DEFAULT_TASK_RETRIES = 3
+DEFAULT_TASK_RETRY_DELAY = 60
+DEFAULT_OPTIMAL_BATCH_SIZE = 1000
+
+@task(name=\"Initialize ETL Components\", retries=2, retry_delay_seconds=30)
+def initialize_components() -> Tuple[
+    PipedriveAPIClient, PipedriveDataRepository, ETLService,
+    UserRepository, PersonRepository, StageRepository, PipelineRepository, OrganizationRepository,
+    ConfigRepository
+]:
+    task_log = get_run_logger()
+    task_log.info(\"Initializing ETL components...\")
+
+    try:
+        postgres_config = JSON.load(\"postgres-pool\").value
+        redis_config = JSON.load(\"redis-cache\").value
+    except Exception as block_err:
+        task_log.error(\"Failed to load Prefect Blocks (JSON/Secret)\", error=str(block_err))
+        raise RuntimeError(\"Missing required Prefect Blocks (postgres-pool, redis-cache)\") from block_err
+
+    db_pool = DBConnectionPool(
+        minconn=postgres_config.get(\"minconn\", 1),
+        maxconn=postgres_config.get(\"maxconn\", 10),
+        dsn=postgres_config[\"dsn\"]
+    )
+    redis_cache = RedisCache(connection_string=redis_config[\"connection_string\"])
+    pipedrive_client = PipedriveAPIClient(cache=redis_cache)
+
+    schema_manager = SchemaManager(db_pool=db_pool)
+
+    all_stages = pipedrive_client.fetch_all_stages_details()
+    if not all_stages:
+         task_log.warning(\"Fetched stage details list is empty during initialization!\")
+
+    data_repo = PipedriveDataRepository(db_pool, schema_manager, all_stages)
+    user_repo = UserRepository(db_pool, schema_manager)
+    person_repo = PersonRepository(db_pool, schema_manager)
+    stage_repo = StageRepository(db_pool, schema_manager)
+    pipeline_repo = PipelineRepository(db_pool, schema_manager)
+    org_repo = OrganizationRepository(db_pool, schema_manager)
+    config_repo = ConfigRepository(db_pool, schema_manager)
+
+    try:
+        task_log.info(\"Initializing database schemas...\")
+        data_repo.initialize_schema()
+        user_repo.initialize_schema()
+        person_repo.initialize_schema()
+        stage_repo.initialize_schema()
+        pipeline_repo.initialize_schema()
+        org_repo.initialize_schema()
+        config_repo.initialize_schema()
+        task_log.info(\"Database schemas initialized.\")
+    except Exception as schema_err:
+         task_log.error(\"Failed during schema initialization\", error=str(schema_err), exc_info=True)
+         raise RuntimeError(\"Database schema initialization failed\") from schema_err
+
+    optimal_batch_size = DEFAULT_OPTIMAL_BATCH_SIZE
+    try:
+        config_val = config_repo.get_configuration(\"optimal_batch_size\")
+        if config_val and isinstance(config_val.get(\"value\"), int) and config_val[\"value\"] > 0:
+             optimal_batch_size = config_val[\"value\"]
+             task_log.info(f\"Using optimal batch size from config: {optimal_batch_size}\")
+        else:
+             task_log.warning(f\"Optimal batch size not found/invalid in config, using default: {optimal_batch_size}\")
+    except Exception as config_err:
+         task_log.warning(f\"Failed to read optimal batch size config, using default: {optimal_batch_size}\", error=str(config_err))
+
+
+    etl_service = ETLService(
+        client=pipedrive_client,
+        data_repository=data_repo,
+        user_repository=user_repo,
+        person_repository=person_repo,
+        stage_repository=stage_repo,
+        pipeline_repository=pipeline_repo,
+        org_repository=org_repo,
+        mapper_module=deal_mapper,
+        batch_size=optimal_batch_size
+    )
+
+    task_log.info(\"ETL components initialized successfully.\")
+    return pipedrive_client, data_repo, etl_service, user_repo, person_repo, stage_repo, pipeline_repo, org_repo, config_repo
+
+@flow(
+    name=\"Pipedrive to Database ETL Flow (Main Sync)\",
+    log_prints=True,
+    timeout_seconds=DEFAULT_MAIN_FLOW_TIMEOUT
+)
+def main_etl_flow():
+    flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = str(flow_run_ctx.id) if flow_run_ctx else \"local_main_sync\"
+    flow_type = \"sync\"
+    flow_log.info(f\"Starting flow run '{flow_run_ctx.name if flow_run_ctx else 'main_etl_flow'}'...\", extra={\"flow_run_id\": flow_run_id})
+    # Corre\u00e7\u00e3o: Usar a m\u00e9trica espec\u00edfica etl_runs_total
+    etl_runs_total.labels(flow_type=flow_type).inc()
+
+    result = {}
+    if not tracemalloc.is_tracing(): # Iniciar tracemalloc se n\u00e3o estiver ativo
+        tracemalloc.start()
+
+    try:
+        _, _, etl_service, _, _, _, _, _, _ = initialize_components()
+        result = etl_service.run_etl(flow_type=flow_type)
+
+        if result.get(\"status\", \"error\") not in (\"success\", \"success_no_new_data\"):
+            message = result.get(\"message\", \"Unknown error in ETL service\")
+            flow_log.error(f\"ETL Service reported failure/errors: {message}\", etl_result=result)
+            # Incrementar falha aqui se o servi\u00e7o indicar erro, mesmo sem exce\u00e7\u00e3o
+            etl_run_failures_total.labels(flow_type=flow_type).inc()
+            raise RuntimeError(f\"ETL task failed: {message}\")
+
+        flow_log.info(\"Main ETL flow completed.\", status=result.get(\"status\"))
+
+    except Exception as e:
+        flow_log.critical(f\"Main ETL flow failed critically: {str(e)}\", exc_info=True)
+        # Corre\u00e7\u00e3o: Remover chamada para etl_failure_counter
+        # etl_failure_counter.labels(flow_type=flow_type).inc() <-- Removido
+        # Corre\u00e7\u00e3o: Usar a m\u00e9trica espec\u00edfica etl_run_failures_total
+        etl_run_failures_total.labels(flow_type=flow_type).inc()
+        raise
+
+    finally:
+        peak_mem_mb = 0
+        cpu_perc = 0
+        thread_cnt = 0
+
+        try:
+            p = psutil.Process()
+            with p.oneshot(): # Otimiza\u00e7\u00e3o para m\u00faltiplas chamadas psutil
+                cpu_perc = p.cpu_percent(interval=None)
+                thread_cnt = p.num_threads()
+
+            # Usar tracemalloc para PICO de mem\u00f3ria
+            if tracemalloc.is_tracing():
+                try:
+                    current_mem, peak_mem = tracemalloc.get_traced_memory()
+                    peak_mem_mb = round(peak_mem / 1e6, 2)
+                    tracemalloc.stop()
+                    tracemalloc.clear_traces()
+                    flow_log.debug(f\"Mem\u00f3ria (tracemalloc): Pico={peak_mem_mb:.2f}MB\")
+                except Exception as trace_err:
+                    flow_log.error(\"Erro ao obter/parar tracemalloc\", error=str(trace_err))
+                    if tracemalloc.is_tracing(): tracemalloc.stop(); tracemalloc.clear_traces()
+
+            # Adiciona m\u00e9tricas de recurso ao dict de resultado, se desejar
+            if isinstance(result, dict):
+                result[\"peak_memory_mb\"] = peak_mem_mb
+                result[\"cpu_percent_final\"] = cpu_perc
+                result[\"thread_count_final\"] = thread_cnt
+            else: # Caso result n\u00e3o seja um dict (ex: falha antes da inicializa\u00e7\u00e3o)
+                 flow_log.warning(\"Resultado do fluxo n\u00e3o \u00e9 um dicion\u00e1rio, n\u00e3o \u00e9 poss\u00edvel adicionar m\u00e9tricas de recurso.\")
+
+            # Define as m\u00e9tricas Gauge
+            if peak_mem_mb > 0:
+                etl_process_memory_mbytes.labels(flow_type=flow_type).set(peak_mem_mb)
+            if cpu_perc >= 0:
+                etl_process_cpu_percent.labels(flow_type=flow_type).set(cpu_perc)
+            if thread_cnt > 0:
+                etl_process_thread_count.labels(flow_type=flow_type).set(thread_cnt)
+
+            flow_log.debug(\"M\u00e9tricas de recursos coletadas\",
+                           memory_peak_mb=peak_mem_mb,
+                           cpu_percent=cpu_perc,
+                           threads=thread_cnt)
+
+        except Exception as psutil_err:
+            flow_log.error(\"Falha ao coletar m\u00e9tricas de recursos com psutil/tracemalloc\", error=str(psutil_err))
+
+        etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
+        flow_log.info(\"Pushing metrics to Pushgateway for main sync flow.\")
+        push_metrics_to_gateway(job_name=\"pipedrive_sync_job\", grouping_key={'flow_run_id': flow_run_id})
+
+@task(name=\"Get Deals for Backfill Task\", retries=1)
+def get_deals_for_backfill_task(data_repo: PipedriveDataRepository, limit: int) -> List[str]:
+    task_log = get_run_logger()
+    task_log.info(f\"Fetching up to {limit} deal IDs for history backfill.\")
+    ids = data_repo.get_deals_needing_history_backfill(limit=limit)
+    task_log.info(f\"Found {len(ids)} deals for this backfill batch.\")
+    return ids
+
+@task(name=\"Get Backfill Remaining Count Task\", retries=1)
+def get_initial_backfill_count_task(data_repo: PipedriveDataRepository) -> int:
+    task_log = get_run_logger()
+    task_log.info(\"Counting total deals needing history backfill.\")
+    count = data_repo.count_deals_needing_backfill()
+    if count >= 0:
+        task_log.info(f\"Estimated {count} deals remaining for backfill.\")
+        backfill_deals_remaining_gauge.set(count)
+    else:
+        task_log.warning(\"Failed to get backfill remaining count.\")
+        backfill_deals_remaining_gauge.set(-1)
+    return count
+
+@task(
+    name=\"Run Backfill Batch Task\",
+    retries=DEFAULT_TASK_RETRIES,
+    retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY,
+    log_prints=True,
+)
+def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
+    task_log = get_run_logger()
+    if not deal_ids:
+        task_log.info(\"No deals in this batch to backfill.\")
+        return {\"status\": \"skipped\", \"processed_deals\": 0}
+
+    task_log.info(f\"Running backfill for {len(deal_ids)} deals.\")
+    result = etl_service.run_retroactive_backfill(deal_ids)
+    task_log.info(\"Backfill batch finished.\", extra=result)
+    return result
+
+@flow(
+    name=\"Pipedrive Stage History Backfill Flow\",
+    log_prints=True,
+    timeout_seconds=DEFAULT_BACKFILL_FLOW_TIMEOUT
+)
+def backfill_stage_history_flow(
+    daily_deal_limit: int = BACKFILL_DAILY_LIMIT,
+    db_batch_size: int = BACKFILL_DB_BATCH_SIZE
+):
+    flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = str(flow_run_ctx.id) if flow_run_ctx else \"local_backfill\"
+    flow_type = \"backfill\"
+    flow_log.info(f\"Starting {flow_run_ctx.name if flow_run_ctx else 'backfill_flow'}\", extra={\"flow_run_id\": flow_run_id})
+    flow_log.info(f\"Daily limit: {daily_deal_limit}, DB fetch batch size: {db_batch_size}\")
+    # Corre\u00e7\u00e3o: Remover etl_counter e usar etl_runs_total
+    # etl_counter.labels(flow_type=flow_type).inc() # <--- Removido
+    etl_runs_total.labels(flow_type=flow_type).inc()
+
+    total_processed_today = 0
+    final_status = \"completed\"
+    backfill_completed_successfully = False
+    result_payload = {}
+    if not tracemalloc.is_tracing(): # Iniciar tracemalloc
+        tracemalloc.start()
+
+    try:
+        _, data_repo, etl_service, _, _, _, _, _, _ = initialize_components()
+        initial_count = get_initial_backfill_count_task(data_repo=data_repo)
+
+        while total_processed_today < daily_deal_limit:
+            remaining_limit = daily_deal_limit - total_processed_today
+            current_batch_limit = min(db_batch_size, remaining_limit)
+            if current_batch_limit <= 0:
+                flow_log.info(\"Daily limit reached.\")
+                break
+
+            flow_log.info(f\"Attempting to fetch next batch of deals (limit: {current_batch_limit}).\")
+            deal_ids_batch = get_deals_for_backfill_task(data_repo=data_repo, limit=current_batch_limit)
+
+            if not deal_ids_batch:
+                flow_log.info(\"No more deals found needing backfill.\")
+                backfill_deals_remaining_gauge.set(0)
+                backfill_completed_successfully = True
+                break
+
+            batch_result = run_backfill_batch_task(etl_service=etl_service, deal_ids=deal_ids_batch)
+            processed_in_batch = batch_result.get(\"processed_deals\", 0)
+            total_processed_today += processed_in_batch
+
+            if batch_result.get(\"status\") != \"success\" and batch_result.get(\"status\") != \"skipped\":
+                 final_status = \"completed_with_errors\"
+                 # Considerar incrementar falha se um batch falhar, mesmo que o fluxo continue
+                 # etl_run_failures_total.labels(flow_type=flow_type).inc() # Opcional aqui
+
+            if initial_count >= 0:
+                 current_remaining = max(0, initial_count - total_processed_today)
+                 backfill_deals_remaining_gauge.set(current_remaining)
+
+            flow_log.info(f\"Backfill batch completed. Processed so far today: {total_processed_today}/{daily_deal_limit}\")
+            time.sleep(2)
+
+        flow_log.info(\"Backfill flow processing loop finished for today.\", final_status=final_status, total_processed=total_processed_today)
+
+        final_remaining_count = data_repo.count_deals_needing_backfill()
+        if final_remaining_count == 0 and final_status == \"completed\":
+             backfill_completed_successfully = True
+        elif final_remaining_count < 0:
+             final_status = \"completed_with_errors\" # Erro ao contar no final
+
+        result_payload = {
+            \"status\": final_status,
+            \"total_processed_deals\": total_processed_today,
+            \"backfill_complete\": backfill_completed_successfully,
+            \"estimated_remaining\": final_remaining_count
+        }
+        flow_log.info(\"Final backfill run result\", **result_payload)
+
+        # Incrementar falha apenas se o status final n\u00e3o for 'completed' E o backfill n\u00e3o estiver completo
+        if final_status != \"completed\" and not backfill_completed_successfully:
+             # Corre\u00e7\u00e3o: Remover etl_failure_counter
+             # etl_failure_counter.labels(flow_type=flow_type).inc() # <--- Removido
+             # J\u00e1 incrementado no except principal
+             pass # A falha cr\u00edtica \u00e9 capturada no except abaixo
+
+    except Exception as e:
+        # Corre\u00e7\u00e3o: Remover etl_failure_counter
+        # etl_failure_counter.labels(flow_type=flow_type).inc() # <--- Removido
+        etl_run_failures_total.labels(flow_type=flow_type).inc() # Correto usar este
+        flow_log.critical(\"Backfill flow failed critically.\", exc_info=True)
+        final_status = \"failed\"
+        result_payload = {\"status\": final_status, \"error\": str(e)}
+        raise
+
+    finally:
+        peak_mem_mb = 0
+        cpu_perc = 0
+        thread_cnt = 0
+
+        try:
+            p = psutil.Process()
+            with p.oneshot():
+                cpu_perc = p.cpu_percent(interval=None)
+                thread_cnt = p.num_threads()
+
+            if tracemalloc.is_tracing():
+                try:
+                    current_mem, peak_mem = tracemalloc.get_traced_memory()
+                    peak_mem_mb = round(peak_mem / 1e6, 2)
+                    tracemalloc.stop()
+                    tracemalloc.clear_traces()
+                    flow_log.debug(f\"Mem\u00f3ria (tracemalloc): Pico={peak_mem_mb:.2f}MB\")
+                except Exception as trace_err:
+                    flow_log.error(\"Erro ao obter/parar tracemalloc\", error=str(trace_err))
+                    if tracemalloc.is_tracing(): tracemalloc.stop(); tracemalloc.clear_traces()
+
+            # Adiciona ao payload final, se existir
+            if isinstance(result_payload, dict):
+                result_payload[\"peak_memory_mb\"] = peak_mem_mb
+                result_payload[\"cpu_percent_final\"] = cpu_perc
+                result_payload[\"thread_count_final\"] = thread_cnt
+
+            if peak_mem_mb > 0:
+                etl_process_memory_mbytes.labels(flow_type=flow_type).set(peak_mem_mb)
+            if cpu_perc >= 0:
+                etl_process_cpu_percent.labels(flow_type=flow_type).set(cpu_perc)
+            if thread_cnt > 0:
+                etl_process_thread_count.labels(flow_type=flow_type).set(thread_cnt)
+
+            flow_log.debug(\"M\u00e9tricas de recursos coletadas\",
+                           memory_peak_mb=peak_mem_mb,
+                           cpu_percent=cpu_perc,
+                           threads=thread_cnt)
+
+        except Exception as psutil_err:
+            flow_log.error(\"Falha ao coletar m\u00e9tricas de recursos com psutil/tracemalloc\", error=str(psutil_err))
+
+        etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
+        flow_log.info(\"Pushing metrics to Pushgateway for backfill flow.\")
+        push_metrics_to_gateway(job_name=\"pipedrive_backfill_job\", grouping_key={'flow_run_id': flow_run_id})
+
+@flow(
+    name=\"Batch Size Experiment Flow\",
+    log_prints=True,
+    timeout_seconds=10800
+)
+def batch_size_experiment_flow(
+    batch_sizes: List[int] = [300, 500, 750, 1000, 1500, 2000],
+    test_data_size: int = 5000
+):
+    flow_log = get_run_logger()
+    flow_run_ctx = context.get_run_context().flow_run
+    flow_run_id = str(flow_run_ctx.id) if flow_run_ctx else \"local_batch_experiment\"
+    flow_type=\"experiment\" # Definir flow_type aqui
+    flow_log.info(\"Starting batch size experiment flow.\", extra={\"flow_run_id\": flow_run_id})
+
+    results = []
+    optimal_size = DEFAULT_OPTIMAL_BATCH_SIZE
+    etl_runs_total.labels(flow_type=flow_type).inc()
+    if not tracemalloc.is_tracing(): # Iniciar tracemalloc
+        tracemalloc.start()
+
+    try:
+        # Corre\u00e7\u00e3o: Obter todos os componentes necess\u00e1rios, incluindo config_repo
+        client, data_repo, etl_service, user_repo, person_repo, stage_repo, pipeline_repo, org_repo, config_repo = initialize_components()
+
+        flow_log.info(f\"Fetching up to {test_data_size} recent deals for testing...\")
+        # Usar 'client' obtido de initialize_components
+        test_data = list(client.fetch_all_deals_stream(items_limit=test_data_size))
+        if not test_data:
+            raise ValueError(f\"No test data ({test_data_size} deals) could be fetched.\")
+        flow_log.info(f\"Fetched {len(test_data)} deals for experiment.\")
+
+        for size in batch_sizes:
+            batch_log = flow_log.bind(batch_size=size)
+            batch_log.info(f\"Starting experiment run with batch size: {size}\")
+            # Criar um novo ETLService com o batch_size espec\u00edfico para este teste
+            experiment_etl_service = ETLService(
+                 client, data_repo, user_repo, person_repo, stage_repo, pipeline_repo, org_repo,
+                 deal_mapper, batch_size=size # Usar 'size' aqui
+            )
+            run_result = {}
+            try:
+                run_result = experiment_etl_service.run_etl_with_data(
+                    data=test_data,
+                    batch_size=size, # Passar size para o m\u00e9todo tamb\u00e9m
+                    flow_type=flow_type
+                )
+                metrics = {
+                    'batch_size': size,
+                    'status': run_result.get(\"status\", \"error\"),
+                    'duration': run_result.get(\"duration_seconds\"),
+                    'total_loaded': run_result.get(\"total_loaded\"),
+                    'total_failed': (run_result.get(\"total_schema_failed\", 0) +
+                                     run_result.get(\"total_domain_failed\", 0) +
+                                     run_result.get(\"total_load_failed\", 0)),
+                    'memory_peak': run_result.get(\"peak_memory_mb\"),
+                    'data_quality_issues': (run_result.get(\"total_schema_failed\", 0) +
+                                            run_result.get(\"total_domain_failed\", 0))
+                }
+                results.append(metrics)
+                batch_log.info(\"Experiment run completed.\", extra=metrics)
+
+            except Exception as exp_err:
+                batch_log.error(\"Experiment run failed\", error=str(exp_err), exc_info=True)
+                results.append({
+                     'batch_size': size, 'status': 'critical_error', 'duration': None,
+                     'total_loaded': 0, 'total_failed': len(test_data), 'memory_peak': None,
+                     'data_quality_issues': len(test_data)
+                })
+
+            time.sleep(5) # Pausa entre os testes
+
+        # --- Calculate Optimal Size ---
+        if not results:
+             flow_log.warning(\"No results collected from experiments.\")
+        else:
+            df = pd.DataFrame(results)
+            flow_log.info(\"Experiment Results Summary:\n\" + df.to_string())
+            valid_df = df[
+                 (df['status'] == 'success') &
+                 df['duration'].notna() & (df['duration'] > 0) &
+                 df['memory_peak'].notna() & (df['memory_peak'] >= 0) &
+                 df['data_quality_issues'].notna()
+            ].copy()
+
+            if valid_df.empty:
+                 flow_log.error(\"No valid successful runs found to calculate optimal batch size.\")
+            else:
+                 # Score: Higher throughput (loaded/duration) is better, lower memory is better
+                 valid_df['throughput'] = valid_df['total_loaded'] / valid_df['duration']
+                 max_throughput = valid_df['throughput'].max()
+                 max_memory = valid_df['memory_peak'].max()
+                 valid_df['norm_throughput'] = valid_df['throughput'] / max_throughput if max_throughput > 0 else 0
+                 valid_df['norm_memory'] = valid_df['memory_peak'] / max_memory if max_memory > 0 else 0
+                 valid_df['score'] = (0.6 * valid_df['norm_throughput']) + (0.4 * (1 - valid_df['norm_memory']))
+
+                 best_run = valid_df.loc[valid_df['score'].idxmax()]
+                 optimal_size = int(best_run['batch_size'])
+                 flow_log.info(f\"Optimal batch size calculated: {optimal_size} (Score: {best_run['score']:.3f})\")
+                 flow_log.info(\"Best Run Details:\n\" + best_run.to_string())
+
+                 # --- Save Optimal Size to Config ---
+                 try:
+                     config_value = {'value': optimal_size, 'source': 'experiment', 'run_id': flow_run_id, 'calculation_time': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                     # Usar config_repo obtido de initialize_components
+                     config_repo.save_configuration(key=\"optimal_batch_size\", value=config_value)
+                     flow_log.info(f\"Saved optimal batch size {optimal_size} to configuration.\")
+                 except Exception as save_err:
+                      flow_log.error(\"Failed to save optimal batch size configuration\", error=str(save_err), exc_info=True)
+
+    except Exception as e:
+        etl_run_failures_total.labels(flow_type=flow_type).inc()
+        flow_log.critical(\"Batch size experiment flow failed critically.\", exc_info=True)
+        raise
+    finally:
+        peak_mem_mb = 0
+        cpu_perc = 0
+        thread_cnt = 0
+        final_result_payload = {\"status\": \"unknown\"} # Payload para o resultado final do fluxo
+
+        try:
+            p = psutil.Process()
+            with p.oneshot():
+                cpu_perc = p.cpu_percent(interval=None)
+                thread_cnt = p.num_threads()
+
+            if tracemalloc.is_tracing():
+                try:
+                    current_mem, peak_mem = tracemalloc.get_traced_memory()
+                    peak_mem_mb = round(peak_mem / 1e6, 2)
+                    tracemalloc.stop()
+                    tracemalloc.clear_traces()
+                    flow_log.debug(f\"Mem\u00f3ria (tracemalloc): Pico={peak_mem_mb:.2f}MB\")
+                except Exception as trace_err:
+                    flow_log.error(\"Erro ao obter/parar tracemalloc\", error=str(trace_err))
+                    if tracemalloc.is_tracing(): tracemalloc.stop(); tracemalloc.clear_traces()
+
+            # Tenta adicionar ao payload final
+            final_result_payload = {\"status\": \"completed\", \"optimal_batch_size_calculated\": optimal_size, \"results\": results}
+            final_result_payload[\"peak_memory_mb\"] = peak_mem_mb
+            final_result_payload[\"cpu_percent_final\"] = cpu_perc
+            final_result_payload[\"thread_count_final\"] = thread_cnt
+
+            if peak_mem_mb > 0:
+                etl_process_memory_mbytes.labels(flow_type=flow_type).set(peak_mem_mb)
+            if cpu_perc >= 0:
+                etl_process_cpu_percent.labels(flow_type=flow_type).set(cpu_perc)
+            if thread_cnt > 0:
+                etl_process_thread_count.labels(flow_type=flow_type).set(thread_cnt)
+
+            flow_log.debug(\"M\u00e9tricas de recursos coletadas\",
+                           memory_peak_mb=peak_mem_mb,
+                           cpu_percent=cpu_perc,
+                           threads=thread_cnt)
+
+        except Exception as psutil_err:
+            flow_log.error(\"Falha ao coletar m\u00e9tricas de recursos com psutil/tracemalloc\", error=str(psutil_err))
+
+        flow_log.info(\"Pushing metrics to Pushgateway for batch experiment flow.\")
+        push_metrics_to_gateway(job_name=\"batch_experiment\", grouping_key={'flow_run_id': flow_run_id})
+
+    # Retorna o resultado final do fluxo
+    return final_result_payload"}
+,
+{"path": "flows/utils/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "flows/utils/flows_utils.py", "encoding": "utf-8", "content": "from datetime import datetime, timezone
+import random
+from typing import Any, Dict, List
+import pandas as pd
+import structlog
+from prefect.utilities.hashing import hash_objects
+
+from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
+
+log = structlog.get_logger(__name__)
+
+def validate_loaded_data(
+    repository: PipedriveRepository,
+    source_data: List[Dict],
+    batch_size: int
+) -> Dict[str, Any]:
+    \"\"\"Valida\u00e7\u00e3o completa dos dados carregados.\"\"\"
+    validation_log = structlog.get_logger().bind(batch_size=batch_size)
+    issues = 0
+    validated = 0
+    
+    try:
+        # 1. Verificar contagem b\u00e1sica
+        expected_count = len(source_data)
+        actual_count = repository.count_records()
+        count_match = expected_count == actual_count
+        
+        # 2. Verificar IDs ausentes
+        source_ids = {str(item['id']) for item in source_data if 'id' in item}
+        db_ids = set(repository.get_all_ids())
+        
+        missing_ids = source_ids - db_ids
+        extra_ids = db_ids - source_ids
+        
+        # 3. Amostragem de valida\u00e7\u00e3o detalhada
+        sample_size = min(100, len(source_data))
+        sample_records = random.sample(source_data, sample_size)
+        detailed_issues = []
+        
+        for record in sample_records:
+            db_data = repository.get_record_by_id(record['id'])
+            if not db_data:
+                detailed_issues.append(f\"Missing record {record['id']}\")
+                continue
+                
+            # Verificar campos cr\u00edticos
+            critical_fields = ['value', 'currency', 'status', 'stage_name']
+            for field in critical_fields:
+                source_val = record.get(field)
+                db_val = db_data.get(field)
+                
+                if source_val != db_val:
+                    detailed_issues.append(
+                        f\"Field mismatch {field}: {source_val} vs {db_val}\"
+                    )
+                    issues += 1
+        
+        # 4. Verificar consist\u00eancia de datas
+        date_issues = repository.validate_date_consistency()
+        
+        return {
+            \"data_quality_issues\": issues + len(missing_ids) + len(extra_ids) + date_issues,
+            \"count_match\": count_match,
+            \"missing_ids_count\": len(missing_ids),
+            \"extra_ids_count\": len(extra_ids),
+            \"detailed_issues_sample\": detailed_issues[:5],
+            \"date_issues\": date_issues
+        }
+        
+    except Exception as e:
+        validation_log.error(\"Data validation failed\", error=str(e))
+        return {\"data_quality_issues\": -1, \"error\": str(e)}
+
+def calculate_optimal_batch_size(results: List[Dict]) -> int:
+    \"\"\"Calcula o tamanho ideal de batch com base nas m\u00e9tricas coletadas, ignorando falhas.\"\"\"
+    default_batch_size = 1000 
+
+    if not results:
+        print(f\"WARN: No results provided, returning default batch size {default_batch_size}\")
+        return default_batch_size
+
+    df = pd.DataFrame(results)
+
+    valid_df = df[
+        (df['data_quality_issues'] != -1) &
+        df['duration'].notna() & (df['duration'] > 0) &
+        df['memory_peak'].notna() & (df['memory_peak'] >= 0)
+    ].copy() 
+
+    if valid_df.empty:
+        print(f\"WARN: No valid results after filtering, returning default batch size {default_batch_size}\")
+        print(\"Original results head:\n\", df.head())
+        return default_batch_size
+
+    # --- Normaliza\u00e7\u00e3o e C\u00e1lculo do Score (apenas em dados v\u00e1lidos) ---
+    max_duration = valid_df['duration'].max()
+    max_memory = valid_df['memory_peak'].max()
+    max_quality_issues = valid_df['data_quality_issues'].max() 
+
+    valid_df['norm_duration'] = valid_df['duration'] / max_duration if max_duration > 0 else 0
+    valid_df['norm_memory'] = valid_df['memory_peak'] / max_memory if max_memory > 0 else 0
+
+    if max_quality_issues > 0:
+         valid_df['norm_quality'] = 1 - (valid_df['data_quality_issues'] / max_quality_issues)
+    else:
+         valid_df['norm_quality'] = 1.0 
+
+    valid_df.fillna(0, inplace=True)
+
+    weights = {
+        'duration': 0.4,  # Menor dura\u00e7\u00e3o \u00e9 melhor (1 - norm_duration)
+        'memory': 0.4,    # Menor mem\u00f3ria \u00e9 melhor (1 - norm_memory)
+        'quality': 0.2    # Maior qualidade \u00e9 melhor (norm_quality)
+    }
+
+    valid_df['score'] = (
+        weights['duration'] * (1 - valid_df['norm_duration']) +
+        weights['memory'] * (1 - valid_df['norm_memory']) +
+        weights['quality'] * valid_df['norm_quality']
+    )
+
+    best_idx = valid_df['score'].idxmax()
+    best = valid_df.loc[best_idx]
+
+    optimal_size = int(best['batch_size'])
+    print(f\"INFO: Optimal batch size calculated: {optimal_size} based on score {best['score']:.3f}\")
+    print(\"INFO: Scores per batch size (valid runs):\n\", valid_df[['batch_size', 'score', 'duration', 'memory_peak', 'data_quality_issues']])
+
+    return optimal_size
+
+def update_optimal_batch_config(repository: PipedriveRepository, optimal_size: int):
+    \"\"\"Atualiza a configura\u00e7\u00e3o do tamanho \u00f3timo de batch no banco de dados.\"\"\"
+    config_key = \"optimal_batch_size\"
+    logger = log.bind(config_key=config_key, optimal_size=optimal_size)
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        config_value = {'value': optimal_size, 'updated_at': now_iso }
+        repository.save_configuration(key=config_key, value=config_value)
+        logger.info(\"Optimal batch size configuration updated in DB.\")
+    except Exception as e:
+        logger.error(\"Failed to update optimal batch size config in DB\", exc_info=True)
+        
+def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 1000) -> int:
+    \"\"\"Busca o tamanho \u00f3timo de batch da configura\u00e7\u00e3o do banco de dados.\"\"\"
+    config_key = \"optimal_batch_size\"
+    logger = log.bind(config_key=config_key)
+    try:
+        config = repository.get_configuration(config_key)
+        if config and isinstance(config.get(\"value\"), int) and config[\"value\"] > 0:
+             size = int(config[\"value\"])
+             logger.info(f\"Retrieved optimal batch size from config: {size}\")
+             return size
+        else:
+             logger.warning(f\"Optimal batch size not found or invalid in config. Using default: {default_size}\", config_value=config)
+             return default_size
+    except Exception as e:
+        logger.error(\"Failed to get optimal batch size from config. Using default.\", error=str(e), default_size=default_size, exc_info=True)
+        return default_size
+    
+def backfill_cache_key_from_deal_ids(_, arguments: Dict[str, Any]) -> str:
+    deal_ids = arguments.get(\"deal_ids\", [])
+    return hash_objects(sorted(deal_ids))
+"}
+,
+{"path": "flows/__init__.py", "encoding": "base64", "content": ""}
+,
+{"path": "scripts/create_secret_block.py", "encoding": "utf-8", "content": "import sys
+from prefect.blocks.system import Secret
+import argparse
+import os
+
+# --- Configuration ---
+default_block_name = \"github-access-token\"
+
+# --- Argument Parser ---
+parser = argparse.ArgumentParser(description=\"Cria ou atualiza um Bloco Prefect do tipo Secret.\")
+parser.add_argument(\"-n\", \"--name\", default=default_block_name,
+                    help=f\"Nome para o Bloco Secret (padr\u00e3o: {default_block_name})\")
+parser.add_argument(\"token\", help=\"O valor do token secreto a ser armazenado\")
+
+args = parser.parse_args()
+
+block_name = args.name
+secret_value = args.token
+
+print(f\"Tentando criar/atualizar Bloco Secret chamado '{block_name}'...\")
+
+try:
+    secret_block = Secret(value=secret_value)
+
+    block_doc_id = secret_block.save(name=block_name, overwrite=True)
+
+    print(f\"Bloco Secret '{block_name}' salvo com sucesso!\")
+    print(f\"ID do Documento do Bloco: {block_doc_id}\")
+
+    print(\"\n--- Pr\u00f3ximo Passo ---\")
+    print(\"Verifique se o seu arquivo 'prefect.yaml' est\u00e1 referenciando o nome de bloco correto:\")
+    print(f\"access_token: '{{{{ prefect.blocks.secret.{block_name} }}}}'\")
+    print(\"Certifique-se de que esta linha est\u00e1 correta em TODOS os deployments que precisam do token.\")
+
+
+except Exception as e:
+    print(f\"\nErro ao salvar o bloco: {e}\")
+    print(\"\nPoss\u00edveis causas:\")
+    print(\"- O servidor Prefect Orion n\u00e3o est\u00e1 acess\u00edvel.\")
+    print(\"- A vari\u00e1vel de ambiente PREFECT_API_URL n\u00e3o est\u00e1 definida ou est\u00e1 incorreta.\")
+    print(\"  (Certifique-se que aponta para: http://localhost:4200/api)\")
+    sys.exit(1)"}
+,
+{"path": "scripts/create_or_update_core_blocks.py", "encoding": "utf-8", "content": "import os
 from prefect.blocks.system import Secret, JSON
 from prefect_kubernetes.jobs import KubernetesJob
 from dotenv import load_dotenv
@@ -3345,1050 +4527,7 @@ except Exception as e:
 print(\"--- Cria\u00e7\u00e3o/Atualiza\u00e7\u00e3o de Blocos Prefect Conclu\u00edda ---\")
 "}
 ,
-{"path": ".gitignore", "encoding": "utf-8", "content": "# Ignorar todos os diret\u00f3rios __pycache__
-**/__pycache__/
-/__pycache/
-
-# Ignorar arquivos espec\u00edficos
-.qodo
-.env
-
-db-secrets.yaml
-kubectl*
-
-"}
-,
-{"path": "flows/pipedrive_deployments.py", "encoding": "utf-8", "content": "import os
-from datetime import timedelta
-from prefect.deployments import Deployment
-from prefect.server.schemas.schedules import IntervalSchedule, CronSchedule
-from prefect_kubernetes.jobs import KubernetesJob
-
-# Importar TODOS os fluxos
-from flows.pipedrive_metabase_etl import (
-    main_etl_flow,
-    backfill_stage_history_flow,
-    batch_size_experiment_flow
-)
-# Importar novos fluxos de sync
-from flows.pipedrive_sync_aux import (
-    sync_pipedrive_users_flow,
-    sync_pipedrive_persons_orgs_flow,
-    sync_pipedrive_stages_pipelines_flow
-)
-
-# --- Configura\u00e7\u00e3o Comum da Infraestrutura K8s Job ---
-K8S_IMAGE_NAME = \"pipedrive_metabase_integration-etl:latest\"
-K8S_NAMESPACE = \"default\" 
-WORK_QUEUE_NAME = \"kubernetes\" 
-
-# Definir recursos padr\u00e3o para os jobs de fluxo
-DEFAULT_JOB_RESOURCES = {
-    \"requests\": {\"memory\": \"1Gi\", \"cpu\": \"500m\"},
-    \"limits\": {\"memory\": \"4Gi\", \"cpu\": \"2\"}
-}
-
-# Definir Init Containers padr\u00e3o para aguardar depend\u00eancias
-DEFAULT_INIT_CONTAINERS = [
-    {
-        \"name\": \"wait-for-db\",
-        \"image\": \"busybox:1.36\",
-        \"command\": ['sh', '-c', 'echo Waiting for db service...; while ! nc -z -w 1 db 5432; do sleep 2; done; echo DB ready.'],
-    },
-    {
-        \"name\": \"wait-for-redis\",
-        \"image\": \"busybox:1.36\",
-        \"command\": ['sh', '-c', 'echo Waiting for redis service...; while ! nc -z -w 1 redis 6379; do sleep 2; done; echo Redis ready.'],
-    },
-     {
-        \"name\": \"wait-for-orion\",
-        \"image\": \"curlimages/curl:latest\", 
-        \"command\": ['sh', '-c', 'echo Waiting for orion service...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n \".\"; sleep 3; done; echo Orion ready.'],
-    }
-]
-
-# Definir vari\u00e1veis de ambiente e secrets comuns
-DEFAULT_ENV_FROM = [
-    {\"secretRef\": {\"name\": \"app-secrets\"}},
-    {\"secretRef\": {\"name\": \"db-secrets\"}},
-]
-PUSHGATEWAY_SVC_ADDRESS = os.getenv(\"PUSHGATEWAY_ADDRESS\", \"pushgateway:9091\")
-
-DEFAULT_ENV = {
-    \"PUSHGATEWAY_ADDRESS\": PUSHGATEWAY_SVC_ADDRESS,
-    \"PREFECT_API_URL\": \"http://prefect-orion:4200/api\"
-}
-
-k8s_job_infra = KubernetesJob(
-    image=K8S_IMAGE_NAME,
-    namespace=K8S_NAMESPACE,
-    job=KubernetesJob.job_template(
-        metadata={
-            \"labels\": {\"app.kubernetes.io/created-by\": \"prefect\"}
-        },
-        spec={
-            \"template\": {
-                \"spec\": {
-                    \"initContainers\": DEFAULT_INIT_CONTAINERS,
-                    \"containers\": [
-                        {
-                            \"name\": \"prefect-job\", 
-                            \"resources\": DEFAULT_JOB_RESOURCES,
-                            \"envFrom\": DEFAULT_ENV_FROM,       
-                            \"env\": [ {\"name\": k, \"value\": v} for k, v in DEFAULT_ENV.items() ], 
-                        }
-                    ],
-                }
-            }
-        }
-    ),
-    # Timeout para esperar o Job K8s INICIAR (n\u00e3o completar)
-    job_watch_timeout_seconds=120,
-)
-
-# --- Deployment para Main Sync ---
-main_sync_deployment = Deployment.build_from_flow(
-    flow=main_etl_flow, 
-    name=\"Pipedrive Sync\",
-    description=\"Sincroniza deals recentes do Pipedrive com o banco de dados, usando lookups no DB.\",
-    version=\"2.0\", 
-    tags=[\"pipedrive\", \"sync\", \"etl\", \"main\"],
-    # schedule=IntervalSchedule(interval=timedelta(minutes=30)), 
-    parameters={}, 
-    infrastructure=k8s_job_infra,
-    work_queue_name=WORK_QUEUE_NAME,
-    concurrency_limit=1
-)
-
-# --- Deployment para Backfill ---
-backfill_deployment = Deployment.build_from_flow(
-    flow=backfill_stage_history_flow,
-    name=\"Pipedrive Backfill Stage History\",
-    description=\"Preenche o hist\u00f3rico de stages para deals antigos.\",
-    version=\"1.0\",
-    tags=[\"pipedrive\", \"backfill\", \"history\"],
-    # SEM schedule inicial, ser\u00e1 disparado por automa\u00e7\u00e3o
-    schedule=None,
-    # Par\u00e2metros padr\u00e3o para este deployment
-    parameters={\"daily_deal_limit\": 10000, \"db_batch_size\": 1000},
-    infrastructure=k8s_job_infra,
-    work_queue_name=WORK_QUEUE_NAME,
-)
-
-# Sync Users
-users_sync_deployment = Deployment.build_from_flow(
-    flow=sync_pipedrive_users_flow,
-    name=\"Sync Pipedrive Users\",
-    description=\"Sincroniza a tabela pipedrive_users com a API.\",
-    version=\"1.0\",
-    tags=[\"pipedrive\", \"sync\", \"aux\", \"users\"],
-    schedule=CronSchedule(cron=\"0 3 * * *\", timezone=\"America/Sao_Paulo\"), 
-    parameters={},
-    infrastructure=k8s_job_infra.duplicate(update={ 
-         \"job\": KubernetesJob.job_template(
-             spec={ \"template\": { \"spec\": {
-                 \"initContainers\": DEFAULT_INIT_CONTAINERS,
-                 \"containers\": [{
-                     \"name\": \"prefect-job\",
-                     \"resources\": {
-                         \"requests\": {\"memory\": \"512Mi\", \"cpu\": \"250m\"},
-                         \"limits\": {\"memory\": \"1Gi\", \"cpu\": \"500m\"}
-                     },
-                     \"envFrom\": DEFAULT_ENV_FROM, \"env\": [ {\"name\": k, \"value\": v} for k, v in DEFAULT_ENV.items() ]
-                 }]
-             }}}
-         )
-    }),
-    work_queue_name=WORK_QUEUE_NAME,
-    concurrency_limit=1
-)
-
-# Sync Persons & Orgs
-persons_orgs_sync_deployment = Deployment.build_from_flow(
-    flow=sync_pipedrive_persons_orgs_flow,
-    name=\"Sync Pipedrive Persons and Orgs\",
-    description=\"Sincroniza as tabelas pipedrive_persons e pipedrive_organizations.\",
-    version=\"1.0\",
-    tags=[\"pipedrive\", \"sync\", \"aux\", \"persons\", \"orgs\"],
-    schedule=IntervalSchedule(interval=timedelta(hours=4)),
-    parameters={},
-    infrastructure=k8s_job_infra, 
-    work_queue_name=WORK_QUEUE_NAME,
-    concurrency_limit=1
-)
-
-# Sync Stages & Pipelines
-stages_pipelines_sync_deployment = Deployment.build_from_flow(
-    flow=sync_pipedrive_stages_pipelines_flow,
-    name=\"Sync Pipedrive Stages and Pipelines\",
-    description=\"Sincroniza as tabelas pipedrive_stages e pipedrive_pipelines.\",
-    version=\"1.0\",
-    tags=[\"pipedrive\", \"sync\", \"aux\", \"stages\", \"pipelines\"],
-     schedule=CronSchedule(cron=\"0 4 * * *\", timezone=\"America/Sao_Paulo\"),
-    parameters={},
-    infrastructure=users_sync_deployment.infrastructure,
-    work_queue_name=WORK_QUEUE_NAME,
-    concurrency_limit=1
-)
-
-
-batch_experiment_deployment = Deployment.build_from_flow(
-    flow=batch_size_experiment_flow,
-    name=\"Batch Size Experiment\",
-    description=\"Testa diferentes tamanhos de batch para otimiza\u00e7\u00e3o de performance.\",
-    version=\"1.0\",
-    tags=[\"experiment\", \"batch-size\", \"optimization\"],
-    schedule=None,
-    parameters={
-        \"batch_sizes\": [300, 500, 750, 1000, 1500],
-        \"test_data_size\": 10000
-    },
-    infrastructure=k8s_job_infra.duplicate(
-        update={
-            \"job\": KubernetesJob.job_template(
-                metadata={
-                    \"labels\": {\"app.kubernetes.io/created-by\": \"prefect\"}
-                },
-                spec={
-                    \"template\": {
-                        \"spec\": {
-                            \"initContainers\": DEFAULT_INIT_CONTAINERS,
-                            \"containers\": [
-                                {
-                                    \"name\": \"prefect-job\",
-                                    \"resources\": {
-                                        \"requests\": {\"memory\": \"2Gi\", \"cpu\": \"1\"},
-                                        \"limits\": {\"memory\": \"8Gi\", \"cpu\": \"2\"}
-                                    },
-                                    \"envFrom\": DEFAULT_ENV_FROM,
-                                    \"env\": [{\"name\": k, \"value\": v} for k, v in DEFAULT_ENV.items()],
-                                }
-                            ],
-                        }
-                    }
-                }
-            )
-        }
-    ),
-    work_queue_name=WORK_QUEUE_NAME,
-)
-
-# Bloco para aplicar os deployments
-if __name__ == \"__main__\":
-    print(\"Applying Pipedrive Sync deployment...\")
-    main_sync_deployment.apply()
-
-    print(\"Applying Backfill deployment...\")
-    backfill_deployment.apply()
-
-    print(\"Applying Batch Experiment deployment...\")
-    batch_experiment_deployment.apply()
-
-    print(\"Applying Users Sync deployment...\")
-    users_sync_deployment.apply()
-
-    print(\"Applying Persons & Orgs Sync deployment...\")
-    persons_orgs_sync_deployment.apply()
-
-    print(\"Applying Stages & Pipelines Sync deployment...\")
-    stages_pipelines_sync_deployment.apply()
-
-    print(\"\nDeployments aplicados com sucesso!\")
-    print(f\"Garanta que um agente Prefect esteja rodando e escutando a fila '{WORK_QUEUE_NAME}'.\")
-    print(f\"Exemplo: prefect agent start -q {WORK_QUEUE_NAME}\")
-    print(\"Configure as Automa\u00e7\u00f5es na UI do Prefect para orquestrar os fluxos.\")"}
-,
-{"path": "flows/pipedrive_sync_aux.py", "encoding": "utf-8", "content": "from typing import Generator, List, Dict, Optional
-import structlog
-from prefect import flow, task, get_run_logger
-
-from application.ports.pipedrive_client_port import PipedriveClientPort
-from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
-from flows.pipedrive_metabase_etl import initialize_components_no_maps
-from infrastructure.monitoring.metrics import (
-  push_metrics_to_gateway, records_synced_counter, sync_counter, sync_failure_counter,
-)
-
-log = structlog.get_logger(__name__)
-
-# --- Tasks Gen\u00e9ricas de Sincroniza\u00e7\u00e3o ---
-@task(name=\"Sync Pipedrive Entity Task\", retries=2, retry_delay_seconds=60, cache_policy=None)
-def sync_entity_task(
-    entity_type: str,
-    client: PipedriveClientPort,
-    repository: PipedriveRepository
-    ) -> int:
-    \"\"\"
-    Task gen\u00e9rica para buscar dados de uma entidade Pipedrive via stream
-    e fazer upsert no reposit\u00f3rio.
-    \"\"\"
-    logger = get_run_logger()
-    logger.info(f\"Starting sync task for entity: {entity_type}\")
-    sync_counter.labels(entity_type=entity_type).inc()
-    total_synced = 0
-    processed_count = 0
-    batch_size = 500
-    data_batch: List[Dict] = []
-    stream: Optional[Generator[Dict, None, None]] = None
-    upsert_method: Optional[callable] = None
-
-    # Determinar o m\u00e9todo de stream e upsert baseado no entity_type
-    if entity_type == \"users\":
-        stream = client._fetch_paginated_v1_stream_adapter(f\"{client.BASE_URL_V1}/users\") 
-        upsert_method = repository.upsert_users
-    elif entity_type == \"persons\":
-        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/persons\")
-        upsert_method = repository.upsert_persons
-    elif entity_type == \"stages\":
-        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/stages\")
-        upsert_method = repository.upsert_stages
-    elif entity_type == \"pipelines\":
-        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/pipelines\") 
-        upsert_method = repository.upsert_pipelines
-    elif entity_type == \"organizations\":
-        stream = client._fetch_paginated_v2_stream(f\"{client.BASE_URL_V2}/organizations\") 
-        upsert_method = repository.upsert_organizations
-    else:
-        logger.error(f\"Unknown entity type for sync task: {entity_type}\")
-        raise ValueError(f\"Unknown entity type: {entity_type}\")
-
-    if not stream or not upsert_method:
-         logger.error(f\"Stream or upsert method not defined for entity: {entity_type}\")
-         raise NotImplementedError(f\"Sync not implemented for {entity_type}\")
-
-    try:
-        for item in stream:
-            data_batch.append(item)
-            processed_count += 1
-            if len(data_batch) >= batch_size:
-                logger.debug(f\"Upserting batch of {len(data_batch)} {entity_type}...\")
-                upserted = upsert_method(data_batch)
-                total_synced += upserted
-                records_synced_counter.labels(entity_type=entity_type).inc(upserted)
-                data_batch = []
-
-        if data_batch:
-            logger.debug(f\"Upserting final batch of {len(data_batch)} {entity_type}...\")
-            upserted = upsert_method(data_batch)
-            total_synced += upserted
-            records_synced_counter.labels(entity_type=entity_type).inc(upserted)
-
-        logger.info(f\"Sync task completed for {entity_type}\")
-        return total_synced
-
-    except Exception as e:
-        logger.error(f\"Sync task failed for {entity_type}\", exc_info=True)
-        sync_failure_counter.labels(entity_type=entity_type).inc()
-        raise e
-
-# --- Fluxos Espec\u00edficos de Sincroniza\u00e7\u00e3o ---
-@flow(name=\"Sync Pipedrive Users\", log_prints=True)
-def sync_pipedrive_users_flow():
-    logger = get_run_logger()
-    logger.info(\"Starting Pipedrive Users sync flow...\")
-    flow_run_id = getattr(logger, \"extra\", {}).get(\"flow_run_id\", \"local_sync_users\")
-    try:
-        client, repository, _ = initialize_components_no_maps()
-        sync_entity_task(entity_type=\"users\", client=client, repository=repository)
-        logger.info(\"Pipedrive Users sync flow finished successfully.\")
-    except Exception as e:
-         logger.critical(f\"Pipedrive Users sync flow failed. Error: {e}\", exc_info=True)
-    finally:
-        push_metrics_to_gateway(job_name=\"pipedrive_sync_users\", grouping_key={'flow_run_id': str(flow_run_id)})
-
-
-@flow(name=\"Sync Pipedrive Persons and Orgs\", log_prints=True)
-def sync_pipedrive_persons_orgs_flow():
-    logger = get_run_logger()
-    logger.info(\"Starting Pipedrive Persons & Orgs sync flow...\")
-    flow_run_id = get_run_logger().extra.get(\"flow_run_id\", \"local_sync_persons_orgs\")
-    try:
-        client, repository, _ = initialize_components_no_maps()
-        sync_entity_task(entity_type=\"persons\", client=client, repository=repository)
-        sync_entity_task(entity_type=\"organizations\", client=client, repository=repository)
-        logger.info(\"Pipedrive Persons & Orgs sync flow finished successfully.\")
-    except Exception as e:
-         logger.critical(\"Pipedrive Persons & Orgs sync flow failed.\", exc_info=True)
-    finally:
-        push_metrics_to_gateway(job_name=\"pipedrive_sync_persons_orgs\", grouping_key={'flow_run_id': str(flow_run_id)})
-
-
-@flow(name=\"Sync Pipedrive Stages and Pipelines\", log_prints=True)
-def sync_pipedrive_stages_pipelines_flow():
-    logger = get_run_logger()
-    logger.info(\"Starting Pipedrive Stages & Pipelines sync flow...\")
-    flow_run_id = get_run_logger().extra.get(\"flow_run_id\", \"local_sync_stages_pipelines\")
-    try:
-        client, repository, _ = initialize_components_no_maps()
-        sync_entity_task(entity_type=\"stages\", client=client, repository=repository)
-        sync_entity_task(entity_type=\"pipelines\", client=client, repository=repository)
-        logger.info(\"Pipedrive Stages & Pipelines sync flow finished successfully.\")
-    except Exception as e:
-         logger.critical(\"Pipedrive Stages & Pipelines sync flow failed.\", exc_info=True)
-    finally:
-        push_metrics_to_gateway(job_name=\"pipedrive_sync_stages_pipelines\", grouping_key={'flow_run_id': str(flow_run_id)})
-"}
-,
-{"path": "flows/pipedrive_metabase_etl.py", "encoding": "utf-8", "content": "import datetime
-import time
-from typing import Any, Dict, List, Tuple
-import pandas as pd
-from prefect import flow, get_run_logger, task, context
-from prefect.blocks.system import JSON
-
-import logging
-
-from application.services.etl_service import ETLService
-from infrastructure.api_clients.pipedrive_api_client import PipedriveAPIClient
-from infrastructure.cache import RedisCache
-from infrastructure.db.db_pool import DBConnectionPool
-from infrastructure.db.schema_manager import SchemaManager
-from infrastructure.repository_impl.lookup_repositories import (
-    UserRepository, PersonRepository, StageRepository, PipelineRepository, OrganizationRepository
-)
-from infrastructure.repository_impl.config_repository import ConfigRepository
-from application.mappers import deal_mapper
-
-from infrastructure.monitoring.metrics import (
-    push_metrics_to_gateway,
-    etl_counter,
-    etl_failure_counter,
-    backfill_deals_remaining_gauge,
-    etl_heartbeat,
-)
-from infrastructure.repository_impl.pipedrive_repository import PipedriveDataRepository
-
-DEFAULT_MAIN_FLOW_TIMEOUT = 9000
-DEFAULT_BACKFILL_FLOW_TIMEOUT = 10800
-BACKFILL_DAILY_LIMIT = 2000
-BACKFILL_DB_BATCH_SIZE = 1000 
-DEFAULT_TASK_RETRIES = 3
-DEFAULT_TASK_RETRY_DELAY = 60
-DEFAULT_OPTIMAL_BATCH_SIZE = 1000 
-
-@task(name=\"Initialize ETL Components\", retries=2, retry_delay_seconds=30)
-def initialize_components() -> Tuple[
-    PipedriveAPIClient, PipedriveDataRepository, ETLService,
-    UserRepository, PersonRepository, StageRepository, PipelineRepository, OrganizationRepository,
-    ConfigRepository 
-]:
-    task_log = get_run_logger()
-    task_log.info(\"Initializing ETL components...\")
-
-    try:
-        postgres_config = JSON.load(\"postgres-pool\").value
-        redis_config = JSON.load(\"redis-cache\").value
-    except Exception as block_err:
-        task_log.error(\"Failed to load Prefect Blocks (JSON/Secret)\", error=str(block_err))
-        raise RuntimeError(\"Missing required Prefect Blocks (postgres-pool, redis-cache)\") from block_err
-
-    db_pool = DBConnectionPool(
-        minconn=postgres_config.get(\"minconn\", 1),
-        maxconn=postgres_config.get(\"maxconn\", 10),
-        dsn=postgres_config[\"dsn\"]
-    )
-    redis_cache = RedisCache(connection_string=redis_config[\"connection_string\"])
-    pipedrive_client = PipedriveAPIClient(cache=redis_cache)
-
-    schema_manager = SchemaManager(db_pool=db_pool)
-
-    all_stages = pipedrive_client.fetch_all_stages_details()
-    if not all_stages:
-         task_log.warning(\"Fetched stage details list is empty during initialization!\")
-
-    data_repo = PipedriveDataRepository(db_pool, schema_manager, all_stages)
-    user_repo = UserRepository(db_pool, schema_manager)
-    person_repo = PersonRepository(db_pool, schema_manager)
-    stage_repo = StageRepository(db_pool, schema_manager)
-    pipeline_repo = PipelineRepository(db_pool, schema_manager)
-    org_repo = OrganizationRepository(db_pool, schema_manager)
-    config_repo = ConfigRepository(db_pool, schema_manager)
-
-    try:
-        task_log.info(\"Initializing database schemas...\")
-        data_repo.initialize_schema()
-        user_repo.initialize_schema()
-        person_repo.initialize_schema()
-        stage_repo.initialize_schema()
-        pipeline_repo.initialize_schema()
-        org_repo.initialize_schema()
-        config_repo.initialize_schema()
-        task_log.info(\"Database schemas initialized.\")
-    except Exception as schema_err:
-         task_log.error(\"Failed during schema initialization\", error=str(schema_err), exc_info=True)
-         raise RuntimeError(\"Database schema initialization failed\") from schema_err
-
-    optimal_batch_size = DEFAULT_OPTIMAL_BATCH_SIZE 
-    try:
-        config_val = config_repo.get_configuration(\"optimal_batch_size\")
-        if config_val and isinstance(config_val.get(\"value\"), int) and config_val[\"value\"] > 0:
-             optimal_batch_size = config_val[\"value\"]
-             task_log.info(f\"Using optimal batch size from config: {optimal_batch_size}\")
-        else:
-             task_log.warning(f\"Optimal batch size not found/invalid in config, using default: {optimal_batch_size}\")
-    except Exception as config_err:
-         task_log.warning(f\"Failed to read optimal batch size config, using default: {optimal_batch_size}\", error=str(config_err))
-
-
-    etl_service = ETLService(
-        client=pipedrive_client,
-        data_repository=data_repo,
-        user_repository=user_repo,
-        person_repository=person_repo,
-        stage_repository=stage_repo,
-        pipeline_repository=pipeline_repo,
-        org_repository=org_repo,
-        mapper_module=deal_mapper,
-        batch_size=optimal_batch_size
-    )
-
-    task_log.info(\"ETL components initialized successfully.\")
-    return pipedrive_client, data_repo, etl_service, user_repo, person_repo, stage_repo, pipeline_repo, org_repo, config_repo
-
-@flow(
-    name=\"Pipedrive to Database ETL Flow (Main Sync)\",
-    log_prints=True,
-    timeout_seconds=DEFAULT_MAIN_FLOW_TIMEOUT
-)
-def main_etl_flow():
-    flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = str(flow_run_ctx.id) if flow_run_ctx else \"local_main_sync\"
-    flow_type = \"sync\"
-    flow_log.info(f\"Starting flow run '{flow_run_ctx.name if flow_run_ctx else 'main_etl_flow'}'...\", extra={\"flow_run_id\": flow_run_id})
-
-    result = {}
-    try:
-        _, _, etl_service, _, _, _, _, _, _ = initialize_components()
-        result = etl_service.run_etl(flow_type=flow_type)
-
-        if result.get(\"status\", \"error\") not in (\"success\", \"success_no_new_data\"):
-            message = result.get(\"message\", \"Unknown error in ETL service\")
-            flow_log.error(f\"ETL Service reported failure/errors: {message}\", etl_result=result)
-            raise RuntimeError(f\"ETL task failed: {message}\")
-
-        flow_log.info(\"Main ETL flow completed.\", status=result.get(\"status\"))
-
-    except Exception as e:
-        flow_log.critical(f\"Main ETL flow failed critically: {str(e)}\", exc_info=True)
-        if not result or result.get(\"status\", \"error\") == \"error\":
-             etl_failure_counter.labels(flow_type=flow_type).inc()
-        raise
-
-    finally:
-        etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
-        flow_log.info(\"Pushing metrics to Pushgateway for main sync flow.\")
-        push_metrics_to_gateway(job_name=\"pipedrive_sync_job\", grouping_key={'flow_run_id': flow_run_id})
-
-@task(name=\"Get Deals for Backfill Task\", retries=1)
-def get_deals_for_backfill_task(data_repo: PipedriveDataRepository, limit: int) -> List[str]:
-    task_log = get_run_logger()
-    task_log.info(f\"Fetching up to {limit} deal IDs for history backfill.\")
-    ids = data_repo.get_deals_needing_history_backfill(limit=limit)
-    task_log.info(f\"Found {len(ids)} deals for this backfill batch.\")
-    return ids
-
-@task(name=\"Get Backfill Remaining Count Task\", retries=1)
-def get_initial_backfill_count_task(data_repo: PipedriveDataRepository) -> int:
-    task_log = get_run_logger()
-    task_log.info(\"Counting total deals needing history backfill.\")
-    count = data_repo.count_deals_needing_backfill()
-    if count >= 0:
-        task_log.info(f\"Estimated {count} deals remaining for backfill.\")
-        backfill_deals_remaining_gauge.set(count)
-    else:
-        task_log.warning(\"Failed to get backfill remaining count.\")
-        backfill_deals_remaining_gauge.set(-1)
-    return count
-
-@task(
-    name=\"Run Backfill Batch Task\",
-    retries=DEFAULT_TASK_RETRIES,
-    retry_delay_seconds=DEFAULT_TASK_RETRY_DELAY,
-    log_prints=True,
-)
-def run_backfill_batch_task(etl_service: ETLService, deal_ids: List[str]) -> Dict[str, Any]:
-    task_log = get_run_logger()
-    if not deal_ids:
-        task_log.info(\"No deals in this batch to backfill.\")
-        return {\"status\": \"skipped\", \"processed_deals\": 0}
-
-    task_log.info(f\"Running backfill for {len(deal_ids)} deals.\")
-    result = etl_service.run_retroactive_backfill(deal_ids)
-    task_log.info(\"Backfill batch finished.\", extra=result)
-    return result
-
-@flow(
-    name=\"Pipedrive Stage History Backfill Flow\",
-    log_prints=True,
-    timeout_seconds=DEFAULT_BACKFILL_FLOW_TIMEOUT
-)
-def backfill_stage_history_flow(
-    daily_deal_limit: int = BACKFILL_DAILY_LIMIT,
-    db_batch_size: int = BACKFILL_DB_BATCH_SIZE 
-):
-    flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = str(flow_run_ctx.id) if flow_run_ctx else \"local_backfill\"
-    flow_type = \"backfill\"
-    flow_log.info(f\"Starting {flow_run_ctx.name if flow_run_ctx else 'backfill_flow'}\", extra={\"flow_run_id\": flow_run_id})
-    flow_log.info(f\"Daily limit: {daily_deal_limit}, DB fetch batch size: {db_batch_size}\")
-    etl_counter.labels(flow_type=flow_type).inc()
-
-    total_processed_today = 0
-    final_status = \"completed\"
-    backfill_completed_successfully = False
-    result_payload = {}
-
-    try:
-        _, data_repo, etl_service, _, _, _, _, _, _ = initialize_components()
-        initial_count = get_initial_backfill_count_task(data_repo=data_repo)
-
-        while total_processed_today < daily_deal_limit:
-            remaining_limit = daily_deal_limit - total_processed_today
-            current_batch_limit = min(db_batch_size, remaining_limit)
-            if current_batch_limit <= 0:
-                flow_log.info(\"Daily limit reached.\")
-                break
-
-            flow_log.info(f\"Attempting to fetch next batch of deals (limit: {current_batch_limit}).\")
-            deal_ids_batch = get_deals_for_backfill_task(data_repo=data_repo, limit=current_batch_limit)
-
-            if not deal_ids_batch:
-                flow_log.info(\"No more deals found needing backfill.\")
-                backfill_deals_remaining_gauge.set(0)
-                backfill_completed_successfully = True
-                break
-
-            batch_result = run_backfill_batch_task(etl_service=etl_service, deal_ids=deal_ids_batch)
-            processed_in_batch = batch_result.get(\"processed_deals\", 0)
-            total_processed_today += processed_in_batch
-
-            if batch_result.get(\"status\") != \"success\" and batch_result.get(\"status\") != \"skipped\":
-                 final_status = \"completed_with_errors\"
-
-            if initial_count >= 0:
-                 current_remaining = max(0, initial_count - total_processed_today)
-                 backfill_deals_remaining_gauge.set(current_remaining)
-
-            flow_log.info(f\"Backfill batch completed. Processed so far today: {total_processed_today}/{daily_deal_limit}\")
-            time.sleep(2) 
-
-        flow_log.info(\"Backfill flow processing loop finished for today.\", final_status=final_status, total_processed=total_processed_today)
-
-        final_remaining_count = data_repo.count_deals_needing_backfill()
-        if final_remaining_count == 0 and final_status == \"completed\":
-             backfill_completed_successfully = True
-        elif final_remaining_count < 0:
-             final_status = \"completed_with_errors\"
-
-        result_payload = {
-            \"status\": final_status,
-            \"total_processed_deals\": total_processed_today,
-            \"backfill_complete\": backfill_completed_successfully,
-            \"estimated_remaining\": final_remaining_count
-        }
-        flow_log.info(\"Final backfill run result\", **result_payload)
-
-        if final_status != \"completed\" and not backfill_completed_successfully:
-             etl_failure_counter.labels(flow_type=flow_type).inc()
-
-    except Exception as e:
-        etl_failure_counter.labels(flow_type=flow_type).inc()
-        flow_log.critical(\"Backfill flow failed critically.\", exc_info=True)
-        final_status = \"failed\"
-        result_payload = {\"status\": final_status, \"error\": str(e)}
-        raise
-
-    finally:
-        etl_heartbeat.labels(flow_type=flow_type).set_to_current_time()
-        flow_log.info(\"Pushing metrics to Pushgateway for backfill flow.\")
-        push_metrics_to_gateway(job_name=\"pipedrive_backfill_job\", grouping_key={'flow_run_id': flow_run_id})
-
-@flow(
-    name=\"Batch Size Experiment Flow\",
-    log_prints=True,
-    timeout_seconds=10800
-)
-def batch_size_experiment_flow(
-    batch_sizes: List[int] = [300, 500, 750, 1000, 1500, 2000],
-    test_data_size: int = 5000 
-):
-    flow_log = get_run_logger()
-    flow_run_ctx = context.get_run_context().flow_run
-    flow_run_id = str(flow_run_ctx.id) if flow_run_ctx else \"local_batch_experiment\"
-    flow_log.info(\"Starting batch size experiment flow.\", extra={\"flow_run_id\": flow_run_id})
-
-    results = []
-    optimal_size = DEFAULT_OPTIMAL_BATCH_SIZE
-
-    try:
-        client, data_repo, user_repo, person_repo, stage_repo, pipeline_repo, org_repo, config_repo = initialize_components()
-
-        flow_log.info(f\"Fetching up to {test_data_size} recent deals for testing...\")
-        test_data = list(client.fetch_all_deals_stream(items_limit=test_data_size))
-        if not test_data:
-            raise ValueError(f\"No test data ({test_data_size} deals) could be fetched.\")
-        flow_log.info(f\"Fetched {len(test_data)} deals for experiment.\")
-
-        for size in batch_sizes:
-            batch_log = flow_log.bind(batch_size=size)
-            batch_log.info(f\"Starting experiment run with batch size: {size}\")
-            experiment_etl_service = ETLService(
-                 client, data_repo, user_repo, person_repo, stage_repo, pipeline_repo, org_repo,
-                 deal_mapper, batch_size=size
-            )
-            run_result = {}
-            try:
-                run_result = experiment_etl_service.run_etl_with_data(
-                    data=test_data,
-                    batch_size=size, 
-                    flow_type=\"experiment\"
-                )
-                metrics = {
-                    'batch_size': size,
-                    'status': run_result.get(\"status\", \"error\"),
-                    'duration': run_result.get(\"duration_seconds\"),
-                    'total_loaded': run_result.get(\"total_loaded\"),
-                    'total_failed': (run_result.get(\"total_schema_failed\", 0) +
-                                     run_result.get(\"total_domain_failed\", 0) +
-                                     run_result.get(\"total_load_failed\", 0)),
-                    'memory_peak': run_result.get(\"peak_memory_mb\"),
-                    'data_quality_issues': (run_result.get(\"total_schema_failed\", 0) +
-                                            run_result.get(\"total_domain_failed\", 0))
-                }
-                results.append(metrics)
-                batch_log.info(\"Experiment run completed.\", extra=metrics)
-
-            except Exception as exp_err:
-                batch_log.error(\"Experiment run failed\", error=str(exp_err), exc_info=True)
-                results.append({
-                     'batch_size': size, 'status': 'critical_error', 'duration': None,
-                     'total_loaded': 0, 'total_failed': len(test_data), 'memory_peak': None,
-                     'data_quality_issues': len(test_data)
-                })
-
-            time.sleep(5)
-
-        # --- Calculate Optimal Size ---
-        if not results:
-             flow_log.warning(\"No results collected from experiments.\")
-        else:
-            df = pd.DataFrame(results)
-            flow_log.info(\"Experiment Results Summary:\n\" + df.to_string())
-            valid_df = df[
-                 (df['status'] == 'success') &
-                 df['duration'].notna() & (df['duration'] > 0) &
-                 df['memory_peak'].notna() & (df['memory_peak'] >= 0) &
-                 df['data_quality_issues'].notna()
-            ].copy()
-
-            if valid_df.empty:
-                 flow_log.error(\"No valid successful runs found to calculate optimal batch size.\")
-            else:
-                 # Score: Higher throughput (loaded/duration) is better, lower memory is better
-                 valid_df['throughput'] = valid_df['total_loaded'] / valid_df['duration']
-                 max_throughput = valid_df['throughput'].max()
-                 max_memory = valid_df['memory_peak'].max()
-                 valid_df['norm_throughput'] = valid_df['throughput'] / max_throughput if max_throughput > 0 else 0
-                 valid_df['norm_memory'] = valid_df['memory_peak'] / max_memory if max_memory > 0 else 0
-                 valid_df['score'] = (0.6 * valid_df['norm_throughput']) + (0.4 * (1 - valid_df['norm_memory']))
-
-                 best_run = valid_df.loc[valid_df['score'].idxmax()]
-                 optimal_size = int(best_run['batch_size'])
-                 flow_log.info(f\"Optimal batch size calculated: {optimal_size} (Score: {best_run['score']:.3f})\")
-                 flow_log.info(\"Best Run Details:\n\" + best_run.to_string())
-
-                 # --- Save Optimal Size to Config ---
-                 try:
-                     config_value = {'value': optimal_size, 'source': 'experiment', 'run_id': flow_run_id, 'calculation_time': datetime.now(datetime.timezone.utc).isoformat()}
-                     config_repo.save_configuration(key=\"optimal_batch_size\", value=config_value)
-                     flow_log.info(f\"Saved optimal batch size {optimal_size} to configuration.\")
-                 except Exception as save_err:
-                      flow_log.error(\"Failed to save optimal batch size configuration\", error=str(save_err), exc_info=True)
-
-    except Exception as e:
-        flow_log.critical(\"Batch size experiment flow failed critically.\", exc_info=True)
-        raise
-    finally:
-        flow_log.info(\"Pushing metrics to Pushgateway for batch experiment flow.\")
-        push_metrics_to_gateway(job_name=\"batch_experiment\", grouping_key={'flow_run_id': flow_run_id})
-
-    return {\"status\": \"completed\", \"optimal_batch_size_calculated\": optimal_size, \"results\": results}"}
-,
-{"path": "flows/utils/__init__.py", "encoding": "base64", "content": ""}
-,
-{"path": "flows/utils/flows_utils.py", "encoding": "utf-8", "content": "from datetime import datetime, timezone
-import random
-from typing import Any, Dict, List
-import pandas as pd
-import structlog
-from prefect.utilities.hashing import hash_objects
-
-from infrastructure.repository_impl.pipedrive_repository import PipedriveRepository
-
-log = structlog.get_logger(__name__)
-
-def validate_loaded_data(
-    repository: PipedriveRepository,
-    source_data: List[Dict],
-    batch_size: int
-) -> Dict[str, Any]:
-    \"\"\"Valida\u00e7\u00e3o completa dos dados carregados.\"\"\"
-    validation_log = structlog.get_logger().bind(batch_size=batch_size)
-    issues = 0
-    validated = 0
-    
-    try:
-        # 1. Verificar contagem b\u00e1sica
-        expected_count = len(source_data)
-        actual_count = repository.count_records()
-        count_match = expected_count == actual_count
-        
-        # 2. Verificar IDs ausentes
-        source_ids = {str(item['id']) for item in source_data if 'id' in item}
-        db_ids = set(repository.get_all_ids())
-        
-        missing_ids = source_ids - db_ids
-        extra_ids = db_ids - source_ids
-        
-        # 3. Amostragem de valida\u00e7\u00e3o detalhada
-        sample_size = min(100, len(source_data))
-        sample_records = random.sample(source_data, sample_size)
-        detailed_issues = []
-        
-        for record in sample_records:
-            db_data = repository.get_record_by_id(record['id'])
-            if not db_data:
-                detailed_issues.append(f\"Missing record {record['id']}\")
-                continue
-                
-            # Verificar campos cr\u00edticos
-            critical_fields = ['value', 'currency', 'status', 'stage_name']
-            for field in critical_fields:
-                source_val = record.get(field)
-                db_val = db_data.get(field)
-                
-                if source_val != db_val:
-                    detailed_issues.append(
-                        f\"Field mismatch {field}: {source_val} vs {db_val}\"
-                    )
-                    issues += 1
-        
-        # 4. Verificar consist\u00eancia de datas
-        date_issues = repository.validate_date_consistency()
-        
-        return {
-            \"data_quality_issues\": issues + len(missing_ids) + len(extra_ids) + date_issues,
-            \"count_match\": count_match,
-            \"missing_ids_count\": len(missing_ids),
-            \"extra_ids_count\": len(extra_ids),
-            \"detailed_issues_sample\": detailed_issues[:5],
-            \"date_issues\": date_issues
-        }
-        
-    except Exception as e:
-        validation_log.error(\"Data validation failed\", error=str(e))
-        return {\"data_quality_issues\": -1, \"error\": str(e)}
-
-def calculate_optimal_batch_size(results: List[Dict]) -> int:
-    \"\"\"Calcula o tamanho ideal de batch com base nas m\u00e9tricas coletadas, ignorando falhas.\"\"\"
-    default_batch_size = 1000 
-
-    if not results:
-        print(f\"WARN: No results provided, returning default batch size {default_batch_size}\")
-        return default_batch_size
-
-    df = pd.DataFrame(results)
-
-    valid_df = df[
-        (df['data_quality_issues'] != -1) &
-        df['duration'].notna() & (df['duration'] > 0) &
-        df['memory_peak'].notna() & (df['memory_peak'] >= 0)
-    ].copy() 
-
-    if valid_df.empty:
-        print(f\"WARN: No valid results after filtering, returning default batch size {default_batch_size}\")
-        print(\"Original results head:\n\", df.head())
-        return default_batch_size
-
-    # --- Normaliza\u00e7\u00e3o e C\u00e1lculo do Score (apenas em dados v\u00e1lidos) ---
-    max_duration = valid_df['duration'].max()
-    max_memory = valid_df['memory_peak'].max()
-    max_quality_issues = valid_df['data_quality_issues'].max() 
-
-    valid_df['norm_duration'] = valid_df['duration'] / max_duration if max_duration > 0 else 0
-    valid_df['norm_memory'] = valid_df['memory_peak'] / max_memory if max_memory > 0 else 0
-
-    if max_quality_issues > 0:
-         valid_df['norm_quality'] = 1 - (valid_df['data_quality_issues'] / max_quality_issues)
-    else:
-         valid_df['norm_quality'] = 1.0 
-
-    valid_df.fillna(0, inplace=True)
-
-    weights = {
-        'duration': 0.4,  # Menor dura\u00e7\u00e3o \u00e9 melhor (1 - norm_duration)
-        'memory': 0.4,    # Menor mem\u00f3ria \u00e9 melhor (1 - norm_memory)
-        'quality': 0.2    # Maior qualidade \u00e9 melhor (norm_quality)
-    }
-
-    valid_df['score'] = (
-        weights['duration'] * (1 - valid_df['norm_duration']) +
-        weights['memory'] * (1 - valid_df['norm_memory']) +
-        weights['quality'] * valid_df['norm_quality']
-    )
-
-    best_idx = valid_df['score'].idxmax()
-    best = valid_df.loc[best_idx]
-
-    optimal_size = int(best['batch_size'])
-    print(f\"INFO: Optimal batch size calculated: {optimal_size} based on score {best['score']:.3f}\")
-    print(\"INFO: Scores per batch size (valid runs):\n\", valid_df[['batch_size', 'score', 'duration', 'memory_peak', 'data_quality_issues']])
-
-    return optimal_size
-
-def update_optimal_batch_config(repository: PipedriveRepository, optimal_size: int):
-    \"\"\"Atualiza a configura\u00e7\u00e3o do tamanho \u00f3timo de batch no banco de dados.\"\"\"
-    config_key = \"optimal_batch_size\"
-    logger = log.bind(config_key=config_key, optimal_size=optimal_size)
-    try:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        config_value = {'value': optimal_size, 'updated_at': now_iso }
-        repository.save_configuration(key=config_key, value=config_value)
-        logger.info(\"Optimal batch size configuration updated in DB.\")
-    except Exception as e:
-        logger.error(\"Failed to update optimal batch size config in DB\", exc_info=True)
-        
-def get_optimal_batch_size(repository: PipedriveRepository, default_size: int = 1000) -> int:
-    \"\"\"Busca o tamanho \u00f3timo de batch da configura\u00e7\u00e3o do banco de dados.\"\"\"
-    config_key = \"optimal_batch_size\"
-    logger = log.bind(config_key=config_key)
-    try:
-        config = repository.get_configuration(config_key)
-        if config and isinstance(config.get(\"value\"), int) and config[\"value\"] > 0:
-             size = int(config[\"value\"])
-             logger.info(f\"Retrieved optimal batch size from config: {size}\")
-             return size
-        else:
-             logger.warning(f\"Optimal batch size not found or invalid in config. Using default: {default_size}\", config_value=config)
-             return default_size
-    except Exception as e:
-        logger.error(\"Failed to get optimal batch size from config. Using default.\", error=str(e), default_size=default_size, exc_info=True)
-        return default_size
-    
-def backfill_cache_key_from_deal_ids(_, arguments: Dict[str, Any]) -> str:
-    deal_ids = arguments.get(\"deal_ids\", [])
-    return hash_objects(sorted(deal_ids))
-"}
-,
-{"path": "flows/__init__.py", "encoding": "base64", "content": ""}
-,
-{"path": "scripts/register_k8s_block.py", "encoding": "utf-8", "content": "import os
-from prefect_kubernetes import KubernetesJob
-
-K8S_IMAGE_NAME = \"pipedrive_metabase_integration-etl:latest\"
-K8S_NAMESPACE = \"default\"
-PUSHGATEWAY_SVC_ADDRESS = os.getenv(\"PUSHGATEWAY_ADDRESS\", \"pushgateway:9091\")
-PREFECT_API_URL_FOR_JOB = \"http://prefect-orion:4200/api\" 
-
-# Defini\u00e7\u00e3o dos recursos e env vars 
-DEFAULT_JOB_RESOURCES = {
-    \"requests\": {\"memory\": \"1Gi\", \"cpu\": \"500m\"},
-    \"limits\": {\"memory\": \"4Gi\", \"cpu\": \"2\"}
-}
-DEFAULT_INIT_CONTAINERS = [
-    {
-        \"name\": \"wait-for-db\",
-        \"image\": \"busybox:1.36\",
-        \"command\": ['sh', '-c', 'echo Waiting for db...; while ! nc -z -w 1 db 5432; do sleep 2; done; echo DB ready.'],
-    },
-    {
-        \"name\": \"wait-for-redis\",
-        \"image\": \"busybox:1.36\",
-        \"command\": ['sh', '-c', 'echo Waiting for redis...; while ! nc -z -w 1 redis 6379; do sleep 2; done; echo Redis ready.'],
-    },
-     {
-        \"name\": \"wait-for-orion\",
-        \"image\": \"curlimages/curl:latest\",
-        \"command\": ['sh', '-c', 'echo Waiting for orion...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n \".\"; sleep 10; done; echo Orion ready.'],
-    }
-]
-DEFAULT_ENV_FROM = [
-    {\"secretRef\": {\"name\": \"app-secrets\"}},
-    {\"secretRef\": {\"name\": \"db-secrets\"}},
-]
-DEFAULT_ENV = {
-    \"PUSHGATEWAY_ADDRESS\": PUSHGATEWAY_SVC_ADDRESS,
-    \"PREFECT_API_URL\": PREFECT_API_URL_FOR_JOB,
-}
-
-k8s_job_block = KubernetesJob(
-    image=K8S_IMAGE_NAME,
-    image_pull_policy='NEVER',
-    namespace=K8S_NAMESPACE,
-    env=DEFAULT_ENV, 
-    job=KubernetesJob.job_template(
-         metadata={\"labels\": {\"app.kubernetes.io/created-by\": \"prefect\"}},
-         spec={
-             \"template\": {
-                 \"spec\": {
-                     \"initContainers\": DEFAULT_INIT_CONTAINERS,
-                     \"containers\": [{
-                         \"name\": \"prefect-job\",
-                         \"resources\": DEFAULT_JOB_RESOURCES,
-                         \"envFrom\": DEFAULT_ENV_FROM,
-                     }],
-                 }
-             }
-         }
-    ),
-    stream_output=True
-)
-
-block_name = \"k8s-job-infra-block\"
-print(f\"Salvando bloco de infraestrutura Kubernetes como '{block_name}'...\")
-k8s_job_block.save(block_name, overwrite=True)
-print(f\"Bloco '{block_name}' salvo com sucesso!\")"}
-,
 {"path": "scripts/__init__.py", "encoding": "base64", "content": ""}
-,
-{"path": "pushgateway.yaml", "encoding": "utf-8", "content": "apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: pushgateway
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: pushgateway
-  template:
-    metadata:
-      labels:
-        app: pushgateway
-    spec:
-      containers:
-      - name: pushgateway
-        image: prom/pushgateway:latest 
-        ports:
-        - containerPort: 9091
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: pushgateway
-  labels:
-    app: pushgateway
-  annotations:
-     prometheus.io/scrape: 'true'
-     prometheus.io/port: '9091'
-spec:
-  selector:
-    app: pushgateway
-  ports:
-  - protocol: TCP
-    port: 9091
-    targetPort: 9091"}
 ,
 {"path": "application/mappers/deal_mapper.py", "encoding": "utf-8", "content": "import json
 from decimal import Decimal, InvalidOperation
@@ -5691,267 +5830,6 @@ requires = [\"poetry-core>=1.0.0\"]
 build-backend = \"poetry.core.masonry.api\"
 "}
 ,
-{"path": "update.sh", "encoding": "utf-8", "content": "#!/bin/bash
-set -euo pipefail
-IFS=$'\n\t'
-
-##############################
-# Configura\u00e7\u00f5es
-##############################
-# Mapeia nomes amig\u00e1veis para detalhes dos componentes
-declare -A COMPONENTS=(
-    [\"orion\"]=\"image_base=pipedrive_metabase_integration-prefect-orion;context=./infrastructure/prefect/orion;type=Deployment;manifest_id=prefect-orion\"
-    [\"metrics\"]=\"image_base=pipedrive_metabase_integration-metrics;context=.;type=Deployment;manifest_id=metrics\"
-    [\"etl\"]=\"image_base=pipedrive_metabase_integration-etl;context=.;type=Job;manifest_id=etl\"
-    [\"redis\"]=\"image_base=redis;context=SKIP;type=Deployment;manifest_id=redis\" # SKIP build context for external images
-    [\"db\"]=\"image_base=postgres;context=SKIP;type=Deployment;manifest_id=db\"
-    [\"metabase\"]=\"image_base=metabase/metabase;context=SKIP;type=Deployment;manifest_id=metabase\"
-    [\"grafana\"]=\"image_base=grafana/grafana;context=SKIP;type=Deployment;manifest_id=grafana\"
-)
-
-# Arquivo principal de manifesto
-MANIFEST_FILE=\"pipedrive_metabase_integration.yaml\"
-# Timeout para esperar rollouts/jobs
-RESOURCE_TIMEOUT=600 # Reduzido para atualiza\u00e7\u00f5es, ajuste se necess\u00e1rio
-
-##############################
-# Fun\u00e7\u00f5es Auxiliares
-##############################
-log() {
-    local LEVEL=\"$1\"; local MESSAGE=\"$2\"
-    printf \"[%s] [%s] %s\n\" \"$(date '+%Y-%m-%d %H:%M:%S')\" \"${LEVEL^^}\" \"${MESSAGE}\"
-}
-
-fail() {
-    log \"error\" \"$1\"; exit 1;
-}
-
-check_dependencies() {
-    # (Igual ao deploy.sh)
-    declare -A DEPS=( [\"docker\"]=\"Docker\" [\"kubectl\"]=\"Kubernetes CLI\" [\"minikube\"]=\"Minikube\" [\"sed\"]=\"sed\" )
-    for cmd in \"${!DEPS[@]}\"; do
-        if ! command -v \"${cmd}\" &> /dev/null; then
-            fail \"${DEPS[$cmd]} n\u00e3o encontrado. Por favor instale primeiro.\"
-        fi
-    done
-}
-
-# Garante que estamos no ambiente docker do minikube
-setup_minikube_env() {
-    log \"info\" \"Configurando ambiente Docker do Minikube...\"
-    eval \"$(minikube -p minikube docker-env)\" || fail \"Falha ao configurar ambiente Docker do Minikube.\"
-    log \"info\" \"Verificando contexto kubectl...\"
-    kubectl config use-context minikube || fail \"Falha ao definir contexto kubectl para minikube.\"
-}
-
-##############################
-# Fun\u00e7\u00f5es de Atualiza\u00e7\u00e3o
-##############################
-
-# Constr\u00f3i uma imagem espec\u00edfica com uma nova tag
-build_component_image() {
-    local component_key=\"$1\"
-    local details=\"${COMPONENTS[$component_key]}\"
-    local new_tag=\"$2\" # Tag \u00fanica gerada
-    local image_base context type manifest_id
-
-    # Parse details string
-    eval \"$(echo \"$details\" | awk -F';' '{for(i=1;i<=NF;i++) print $i}')\"
-
-    if [[ \"$context\" == \"SKIP\" ]]; then
-        log \"info\" \"Skipping build for external image: ${component_key} ($image_base)\"
-        return 0 # Sucesso, pois n\u00e3o h\u00e1 o que construir
-    fi
-
-    local full_image_tag=\"${image_base}:${new_tag}\"
-    log \"info\" \"Construindo imagem para ${component_key}: ${full_image_tag} (Contexto: ${context})\"
-
-    export DOCKER_BUILDKIT=1 # Habilita BuildKit
-    docker build \
-        --progress=plain \
-        --build-arg BUILDKIT_INLINE_CACHE=1 \
-        # Tenta usar cache da tag 'latest' se existir
-        --cache-from \"${image_base}:latest\" \
-        -t \"${full_image_tag}\" \
-        \"${context}\" || fail \"Falha ao construir imagem para ${component_key}\"
-
-    log \"info\" \"Carregando imagem ${full_image_tag} no Minikube...\"
-    minikube image load \"${full_image_tag}\" || fail \"Falha ao carregar imagem ${full_image_tag} no Minikube\"
-
-    log \"success\" \"Imagem para ${component_key} constru\u00edda e carregada: ${full_image_tag}\"
-}
-
-# Atualiza a tag da imagem no arquivo MANIFEST_FILE usando sed (FR\u00c1GIL!)
-update_manifest_image_tag() {
-    local component_key=\"$1\"
-    local details=\"${COMPONENTS[$component_key]}\"
-    local new_tag=\"$2\"
-    local image_base context type manifest_id
-
-    eval \"$(echo \"$details\" | awk -F';' '{for(i=1;i<=NF;i++) print $i}')\"
-
-    local full_image_base=\"${image_base}\" # Assume que image_base j\u00e1 cont\u00e9m o nome completo at\u00e9 o ':'
-
-    log \"warning\" \"Tentando atualizar tag da imagem para ${manifest_id} em ${MANIFEST_FILE} para ${new_tag} usando sed.\"
-    log \"warning\" \"Este m\u00e9todo \u00e9 FR\u00c1GIL! Mudan\u00e7as na formata\u00e7\u00e3o do YAML podem quebr\u00e1-lo.\"
-    log \"warning\" \"Considere usar 'yq' para uma edi\u00e7\u00e3o de YAML mais robusta.\"
-    # Exemplo com yq (requer instala\u00e7\u00e3o):
-    # yq e \".spec.template.spec.containers[] |= select(.name == \\"${manifest_id}\\").image = \\"${full_image_base}:${new_tag}\\"\" -i \"${MANIFEST_FILE}\"
-
-    # Tentativa com sed: Encontra o bloco do deployment/job pelo nome e atualiza a pr\u00f3xima linha 'image:'
-    # Isso assume que 'image:' est\u00e1 logo ap\u00f3s ou perto de 'name: <manifest_id>' dentro de 'containers:'
-    # Precisamos de um padr\u00e3o mais espec\u00edfico se a estrutura for complexa.
-    # Tentativa: Encontra 'name: manifest_id', vai at\u00e9 a linha 'image:', e substitui a tag.
-    # Este sed \u00e9 complexo e pode falhar facilmente. Use com cautela.
-    # sed -i.bak \"/name: ${manifest_id}/,/image:/ s|^\(\s*image:\s*${image_base//\//\\/}:\)[\w.-]*|\1${new_tag}|\" \"${MANIFEST_FILE}\"
-
-    # Tentativa mais simples (e talvez mais perigosa): Substitui a primeira ocorr\u00eancia ap\u00f3s o nome do container
-     # Encontra a linha 'name: manifest_id', depois busca a *primeira* linha 'image:' seguinte e troca a tag.
-     # Funciona SE houver apenas um container ou se o container certo for o primeiro com essa linha 'image:'
-     sed -i.bak \"/name: ${manifest_id}/,/containers:/ { /image:/ { s|^\(\s*image:\s*${image_base//\//\\/}:\)[\w.-]*$|\1${new_tag}| ; T ; b end ; :end } ; }\" \"${MANIFEST_FILE}\" || fail \"Falha ao executar sed para atualizar ${MANIFEST_FILE}\"
-
-    # Verifica se a substitui\u00e7\u00e3o realmente aconteceu (de forma b\u00e1sica)
-    if ! grep -q \"${image_base}:${new_tag}\" \"${MANIFEST_FILE}\"; then
-         log \"error\" \"Falha ao verificar a atualiza\u00e7\u00e3o da tag no ${MANIFEST_FILE} ap\u00f3s usar sed. Verifique ${MANIFEST_FILE}.bak e corrija manualmente.\"
-         # Opcional: Restaurar backup?
-         # mv \"${MANIFEST_FILE}.bak\" \"${MANIFEST_FILE}\"
-         fail \"Atualiza\u00e7\u00e3o da tag da imagem falhou.\"
-    fi
-    log \"info\" \"Arquivo ${MANIFEST_FILE} atualizado (esperan\u00e7osamente) com a nova tag ${new_tag} para ${component_key}.\"
-    rm -f \"${MANIFEST_FILE}.bak\" # Remove backup se tudo parece ok
-}
-
-# Aplica as mudan\u00e7as e espera o rollout (ou job)
-apply_and_wait() {
-    local component_key=\"$1\"
-    local details=\"${COMPONENTS[$component_key]}\"
-    local image_base context type manifest_id
-
-    eval \"$(echo \"$details\" | awk -F';' '{for(i=1;i<=NF;i++) print $i}')\"
-
-    if [[ \"$type\" == \"Job\" ]]; then
-        log \"info\" \"Deletando Job ${manifest_id} anterior (se existir)...\"
-        kubectl delete job \"${manifest_id}\" --ignore-not-found=true || log \"warning\" \"Falha ao deletar job ${manifest_id} anterior, pode j\u00e1 n\u00e3o existir.\"
-        # Pequena pausa antes de aplicar o novo
-        sleep 3
-    fi
-
-    log \"info\" \"Aplicando mudan\u00e7as do manifesto ${MANIFEST_FILE}...\"
-    kubectl apply -f \"${MANIFEST_FILE}\" || fail \"Falha ao aplicar ${MANIFEST_FILE}\"
-
-    if [[ \"$type\" == \"Deployment\" ]]; then
-        log \"info\" \"Aguardando rollout do deployment/${manifest_id}...\"
-        kubectl rollout status \"deployment/${manifest_id}\" \
-            --timeout=\"${RESOURCE_TIMEOUT}s\" \
-            --watch=true || fail \"Timeout ou erro aguardando rollout do deployment/${manifest_id}\"
-        log \"success\" \"Rollout do deployment/${manifest_id} conclu\u00eddo.\"
-    elif [[ \"$type\" == \"Job\" ]]; then
-        log \"info\" \"Aguardando conclus\u00e3o do job/${manifest_id}...\"
-        kubectl wait --for=condition=complete \
-            --timeout=\"${RESOURCE_TIMEOUT}s\" \
-            job/\"${manifest_id}\" || log \"warning\" \"Job ${manifest_id} n\u00e3o completou dentro do timeout ou falhou. Verifique os logs do job.\"
-        # Verifica status ap\u00f3s o wait
-        JOB_STATUS=$(kubectl get job \"${manifest_id}\" -o jsonpath='{.status.conditions[?(@.type==\"Complete\")].status}')
-        if [[ \"$JOB_STATUS\" == \"True\" ]]; then
-            log \"success\" \"Job ${manifest_id} conclu\u00eddo com sucesso.\"
-            log \"info\" \"Coletando m\u00e9tricas de execu\u00e7\u00e3o do Job ${manifest_id}...\"
-            kubectl logs \"job/${manifest_id}\" --tail=100 | grep \"ETL_COMPLETION_METRICS\" || true
-        else
-            JOB_FAILED_STATUS=$(kubectl get job \"${manifest_id}\" -o jsonpath='{.status.conditions[?(@.type==\"Failed\")].status}')
-            if [[ \"$JOB_FAILED_STATUS\" == \"True\" ]]; then
-                 log \"error\" \"Job ${manifest_id} falhou. Verifique os logs: kubectl logs job/${manifest_id}\"
-            else
-                 log \"warning\" \"Status final do Job ${manifest_id} incerto ap\u00f3s timeout.\"
-            fi
-        fi
-    fi
-}
-
-##############################
-# Fluxo Principal do Update
-##############################
-
-check_dependencies
-setup_minikube_env
-
-log \"info\" \"Componentes dispon\u00edveis para atualiza\u00e7\u00e3o:\"
-COMPONENT_KEYS=(\"${!COMPONENTS[@]}\") # Array com as chaves
-for i in \"${!COMPONENT_KEYS[@]}\"; do
-    key=\"${COMPONENT_KEYS[$i]}\"
-    details=\"${COMPONENTS[$key]}\"
-    eval \"$(echo \"$details\" | awk -F';' '{for(i=1;i<=NF;i++) print $i}')\" # Parse para obter 'type'
-    printf \"  %d) %s (%s)\n\" \"$((i+1))\" \"$key\" \"$type\"
-done
-echo \"  A) Todos os componentes com build (exceto imagens externas)\"
-echo \"  N) Nenhum (Sair)\"
-
-read -rp \"Digite os n\u00fameros dos componentes a atualizar (separados por espa\u00e7o), 'A' para Todos, ou 'N' para Sair: \" -a SELECTIONS
-
-declare -a COMPONENTS_TO_UPDATE=()
-
-if [[ \" ${SELECTIONS[@]} \" =~ \" A \" ]] || [[ \" ${SELECTIONS[@]} \" =~ \" a \" ]]; then
-    log \"info\" \"Selecionado: Todos os componentes aplic\u00e1veis.\"
-    for key in \"${COMPONENT_KEYS[@]}\"; do
-        details=\"${COMPONENTS[$key]}\"
-        eval \"$(echo \"$details\" | awk -F';' '{for(i=1;i<=NF;i++) print $i}')\"
-        if [[ \"$context\" != \"SKIP\" ]]; then # Apenas os que t\u00eam build context
-            COMPONENTS_TO_UPDATE+=(\"$key\")
-        else
-             log \"info\" \"Skipping ${key} (imagem externa) da sele\u00e7\u00e3o 'Todos'.\"
-        fi
-    done
-elif [[ \" ${SELECTIONS[@]} \" =~ \" N \" ]] || [[ \" ${SELECTIONS[@]} \" =~ \" n \" ]]; then
-    log \"info\" \"Saindo sem atualiza\u00e7\u00f5es.\"
-    exit 0
-else
-    # Valida sele\u00e7\u00f5es num\u00e9ricas
-    for sel in \"${SELECTIONS[@]}\"; do
-        if [[ \"$sel\" =~ ^[0-9]+$ ]] && (( sel > 0 && sel <= ${#COMPONENT_KEYS[@]} )); then
-            COMPONENTS_TO_UPDATE+=(\"${COMPONENT_KEYS[$((sel-1))]}\")
-        else
-            log \"warning\" \"Sele\u00e7\u00e3o inv\u00e1lida ignorada: ${sel}\"
-        fi
-    done
-    # Remove duplicados se houver
-    COMPONENTS_TO_UPDATE=($(printf \"%s\n\" \"${COMPONENTS_TO_UPDATE[@]}\" | sort -u))
-fi
-
-if [[ ${#COMPONENTS_TO_UPDATE[@]} -eq 0 ]]; then
-    log \"error\" \"Nenhum componente v\u00e1lido selecionado para atualiza\u00e7\u00e3o.\"
-    exit 1
-fi
-
-echo # Linha em branco
-log \"info\" \"Componentes selecionados para atualiza\u00e7\u00e3o:\"
-for comp in \"${COMPONENTS_TO_UPDATE[@]}\"; do
-    echo \"  - $comp\"
-done
-echo # Linha em branco
-
-read -rp \"Confirma a atualiza\u00e7\u00e3o destes componentes? (s/N): \" CONFIRM
-if [[ ! \"$CONFIRM\" =~ ^[Ss]$ ]]; then
-    log \"info\" \"Atualiza\u00e7\u00e3o cancelada.\"
-    exit 0
-fi
-
-# Gera uma tag \u00fanica para esta atualiza\u00e7\u00e3o
-NEW_IMAGE_TAG=$(date +%Y%m%d%H%M%S)
-log \"info\" \"Usando a tag de imagem \u00fanica para esta atualiza\u00e7\u00e3o: ${NEW_IMAGE_TAG}\"
-
-# Processa cada componente selecionado
-for comp_key in \"${COMPONENTS_TO_UPDATE[@]}\"; do
-    log \"info\" \"--- Iniciando atualiza\u00e7\u00e3o para: ${comp_key} ---\"
-    build_component_image \"$comp_key\" \"$NEW_IMAGE_TAG\"
-    update_manifest_image_tag \"$comp_key\" \"$NEW_IMAGE_TAG\"
-    apply_and_wait \"$comp_key\"
-    log \"info\" \"--- Atualiza\u00e7\u00e3o para ${comp_key} conclu\u00edda (ou tentativa feita) ---\"
-    echo 
-done
-
-log \"success\" \"\u2705 Processo de atualiza\u00e7\u00e3o conclu\u00eddo para os componentes selecionados!\"
-log \"info\" \"Verifique os logs e o status dos pods/jobs.\"
-"}
-,
 {"path": "core_domain/entities/deal.py", "encoding": "utf-8", "content": "from decimal import Decimal, InvalidOperation
 from time import timezone
 from typing import Optional, Dict, List 
@@ -6224,7 +6102,7 @@ MINIKUBE_CPUS=4
 MINIKUBE_MEMORY=10240 # 10GB
 MINIKUBE_DRIVER=docker
 CLEANUP_NAMESPACES=\"default,kube-system\"
-PREFECT_YAML_FILE=\"prefect.yaml\"
+PREFECT_YAML_FILE=\"./infrastructure/k8s/prefect.yaml\"
 
 ##############################
 # Fun\u00e7\u00f5es Auxiliares
@@ -6382,7 +6260,7 @@ deploy_prefect_flows() {
     log \"debug\" \"PREFECT_API_URL configurada como ${PREFECT_API_URL} para script Python e CLI.\"
 
     # Executa o script que agora tamb\u00e9m cria os blocos K8sJob
-    if ! python create_or_update_core_blocks.py; then
+    if ! python scripts/create_or_update_core_blocks.py; then
          fail \"Falha ao executar create_or_update_core_blocks.py. Verifique os logs do script Python acima.\"
     fi
     log \"info\" \"Blocos Prefect (incluindo K8sJob) criados/atualizados com sucesso.\"
@@ -6413,16 +6291,16 @@ deploy_prefect_flows() {
 deploy_infra() {
     log \"info\" \"Aplicando configura\u00e7\u00f5es base...\"
 
-    kubectl apply -f observability-config.yaml --server-side=true || fail \"Falha ao aplicar observability-config.yaml\"
-    kubectl apply -f db-secrets.yaml || fail \"Falha ao aplicar db-secrets.yaml\"
+    kubectl apply -f infrastructure/k8s/observability-config.yaml --server-side=true || fail \"Falha ao aplicar observability-config.yaml\"
+    kubectl apply -f infrastructure/k8s/observability-config.yaml || fail \"Falha ao aplicar db-secrets.yaml\"
     if kubectl get pvc pgdata-pvc > /dev/null 2>&1 ; then
        log \"info\" \"PVC pgdata-pvc j\u00e1 existe.\"
     else
-       kubectl apply -f persistent-volume-claim.yaml || fail \"Falha ao aplicar persistent-volume-claim.yaml\"
+       kubectl apply -f infrastructure/k8s/persistent-volume-claim.yaml || fail \"Falha ao aplicar persistent-volume-claim.yaml\"
     fi
 
-    kubectl apply -f prometheus.yml || fail \"Falha ao aplicar prometheus.yml\"
-    kubectl apply -f pushgateway.yaml || fail \"Falha ao aplicar pushgateway.yaml\"
+    kubectl apply -f infrastructure/k8s/prometheus.yml|| fail \"Falha ao aplicar prometheus.yml\"
+    kubectl apply -f infrastructure/k8s/pushgateway.yaml || fail \"Falha ao aplicar pushgateway.yaml\"
 
     log \"info\" \"Criando/Atualizando secret 'app-secrets' a partir do .env\"
     kubectl create secret generic app-secrets \
@@ -6431,7 +6309,7 @@ deploy_infra() {
         -o yaml | kubectl apply -f - || fail \"Falha ao criar/atualizar app-secrets\"
 
     log \"info\" \"Aplicando manifesto principal (sem o Job 'etl' est\u00e1tico)...\"
-    kubectl apply -f pipedrive_metabase_integration.yaml || fail \"Falha ao aplicar pipedrive_metabase_integration.yaml\"
+    kubectl apply -f infrastructure/k8s/pipedrive_metabase_integration.yaml || fail \"Falha ao aplicar pipedrive_metabase_integration.yaml\"
 }
 
 wait_for_rollout() {
@@ -6512,197 +6390,6 @@ case \"${1:-}\" in
         wait
         ;;
 esac"}
-,
-{"path": "persistent-volume-claim.yaml", "encoding": "utf-8", "content": "apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: pgdata-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
-"}
-,
-{"path": "prefect.yaml", "encoding": "utf-8", "content": "# yaml-language-server: $schema=https://raw.githubusercontent.com/PrefectHQ/prefect/main/src/prefect/server/schemas/core/deployment.json
-prefect-version: 3.3.2
-
-name: pipedrive-etl
-
-deployments:
-# --- Main ETL Flow ---
-- name: Pipedrive Sync
-  version: '2.0'
-  tags:
-  - pipedrive
-  - sync
-  - etl
-  - main
-  description: Sincroniza deals recentes do Pipedrive com o banco de dados, usando
-    lookups no DB.
-  entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
-  parameters: {}
-  work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/default-k8s-job
-  concurrency_limit: 1
-  schedules:
-  - interval: 1800.0
-    anchor_date: '2025-04-10T12:00:00+00:00'
-    timezone: America/Sao_Paulo
-    active: true
-  pull:
-  - prefect.deployments.steps.git_clone:
-      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
-      branch: main
-      access_token: '{{ prefect.blocks.secret.github-access-token }}'
-- name: Pipedrive Backfill Stage History
-  version: '1.0'
-  tags:
-  - pipedrive
-  - backfill
-  - history
-  description: Preenche o hist\u00f3rico de stages para deals antigos.
-  entrypoint: flows/pipedrive_metabase_etl.py:backfill_stage_history_flow
-  parameters:
-    daily_deal_limit: 10000
-    db_batch_size: 1000
-  work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/default-k8s-job
-  schedules: []
-  pull:
-  - prefect.deployments.steps.git_clone:
-      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
-      branch: main
-      access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit: 1
-- name: Batch Size Experiment
-  version: '1.0'
-  tags:
-  - experiment
-  - batch-size
-  - optimization
-  description: Testa diferentes tamanhos de batch, calcula e salva o \u00f3timo na config.
-  entrypoint: flows/pipedrive_metabase_etl.py:batch_size_experiment_flow
-  parameters:
-    batch_sizes:
-    - 300
-    - 500
-    - 750
-    - 1000
-    - 1500
-    test_data_size: 10000
-  work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/experiment-k8s-job
-  schedules: []
-  pull:
-  - prefect.deployments.steps.git_clone:
-      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
-      branch: main
-      access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit: 1
-- name: Sync Pipedrive Users
-  version: '1.0'
-  tags:
-  - pipedrive
-  - sync
-  - aux
-  - users
-  description: Sincroniza a tabela pipedrive_users com a API.
-  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_users_flow
-  parameters: {}
-  work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/light-sync-k8s-job
-  schedules:
-  - cron: 0 3 * * *
-    timezone: America/Sao_Paulo
-    day_or: true
-    active: true
-  pull:
-  - prefect.deployments.steps.git_clone:
-      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
-      branch: main
-      access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit: 1
-- name: Sync Pipedrive Persons and Orgs
-  version: '1.0'
-  tags:
-  - pipedrive
-  - sync
-  - aux
-  - persons
-  - orgs
-  description: Sincroniza as tabelas pipedrive_persons e pipedrive_organizations.
-  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_persons_orgs_flow
-  parameters: {}
-  work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/default-k8s-job
-  schedules:
-  - interval: 14400.0
-    anchor_date: '2025-04-10T12:00:00+00:00'
-    timezone: America/Sao_Paulo
-    active: true
-  pull:
-  - prefect.deployments.steps.git_clone:
-      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
-      branch: main
-      access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit: 1
-- name: Sync Pipedrive Stages and Pipelines
-  version: '1.0'
-  tags:
-  - pipedrive
-  - sync
-  - aux
-  - stages
-  - pipelines
-  description: Sincroniza as tabelas pipedrive_stages e pipedrive_pipelines.
-  entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_stages_pipelines_flow
-  parameters: {}
-  work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
-    job_variables: {}
-  infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/light-sync-k8s-job
-  schedules:
-  - cron: 0 4 * * *
-    timezone: America/Sao_Paulo
-    day_or: true
-    active: true
-  pull:
-  - prefect.deployments.steps.git_clone:
-      repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
-      branch: main
-      access_token: '{{ prefect.blocks.secret.github-access-token }}'
-  concurrency_limit: 1
-"}
 ,
 {"path": "tests/test_use_cases.py", "encoding": "base64", "content": ""}
 ,

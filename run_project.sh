@@ -206,7 +206,7 @@ deploy_infra() {
     log "info" "Aplicando configurações base..."
 
     kubectl apply -f infrastructure/k8s/observability-config.yaml --server-side=true || fail "Falha ao aplicar observability-config.yaml"
-    kubectl apply -f infrastructure/k8s/observability-config.yaml || fail "Falha ao aplicar db-secrets.yaml"
+    kubectl apply -f infrastructure/k8s/db-secrets.yaml || fail "Falha ao aplicar db-secrets.yaml"
     if kubectl get pvc pgdata-pvc > /dev/null 2>&1 ; then
        log "info" "PVC pgdata-pvc já existe."
     else
