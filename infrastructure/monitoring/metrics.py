@@ -54,11 +54,12 @@ etl_transformation_error_rate        = Gauge("etl_transformation_error_rate",   
 batch_size_gauge                     = Gauge("pipedrive_etl_batch_size",                    "Number of records in the current processing batch", ["flow_type"])
 
 # --- Histograms ---
-etl_duration_hist        = Histogram("pipedrive_etl_duration_seconds",     "Total ETL processing time", ["flow_type"], buckets=[10,30,60,120,300,600,1800,3600,7200,10800])
-hist_extract             = Histogram("etl_extract_seconds",              "Tempo de extração no ETL", ["flow_type"])
-hist_transform           = Histogram("etl_transform_seconds",            "Tempo de transformação no ETL", ["flow_type"])
-hist_load                = Histogram("etl_load_seconds",                 "Tempo de carga no ETL", ["flow_type"])
-db_operation_duration_hist = Histogram("pipedrive_db_operation_duration_seconds","DB operation durations", ["operation"], buckets=[0.1,0.5,1,5,10,30,60,120])
+etl_duration_hist               = Histogram("pipedrive_etl_duration_seconds",     "Total ETL processing time", ["flow_type"], buckets=[10,30,60,120,300,600,1800,3600,7200,10800])
+hist_extract                    = Histogram("etl_extract_seconds",              "Tempo de extração no ETL", ["flow_type"])
+hist_transform                  = Histogram("etl_transform_seconds",            "Tempo de transformação no ETL", ["flow_type"])
+hist_load                       = Histogram("etl_load_seconds",                 "Tempo de carga no ETL", ["flow_type"])
+db_operation_duration_hist      = Histogram("pipedrive_db_operation_duration_seconds","DB operation durations", ["operation"], buckets=[0.1,0.5,1,5,10,30,60,120])
+etl_loaded_records_per_batch    = Histogram("etl_loaded_records_per_batch", "Distribuição do número de registros carregados por batch", ["flow_type"], buckets=[0, 10, 50, 100, 200, 500, 1000, 2000])
 
 # --- Summaries ---
 transform_duration_summary = Summary("pipedrive_transform_batch_duration_seconds", "Time spent transforming a batch of data", ["flow_type"])
