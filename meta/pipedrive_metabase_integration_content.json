@@ -4093,7 +4093,6 @@ def batch_size_experiment_flow(
                     'duration': duration,
                     'throughput': records_processed / duration if duration > 0 else 0,
                     'memory_peak': result.get(\"peak_memory_mb\", 0),
-                    'success_rate': result.get(\"success_rate\", 0),
                     'data_quality_issues': result.get(\"data_quality_issues\", 0)
                 }
                 
@@ -4120,7 +4119,6 @@ def batch_size_experiment_flow(
                         \"duration\": duration,
                         \"throughput\": records_processed / duration if duration > 0 else 0,
                         \"memory_peak\": result.get(\"peak_memory_mb\", 0),
-                        \"success_rate\": result.get(\"success_rate\", 0),
                         \"data_quality_issues\": result.get(\"data_quality_issues\", 0),
                         \"validation_result\": validation_result
                     }
@@ -4364,8 +4362,6 @@ def calculate_and_save_optimal_batch(
                 valid_df[['batch_size', 'score', 'throughput', 'memory_peak', 'duration']].round(3).to_string())
     
     batch_experiment_best_score.labels(flow_run_id=flow_run_id, metric=\"score\").set(best_run[\"score\"])
-    batch_experiment_success_rate.labels(batch_size=str(optimal_size), flow_run_id=flow_run_id).set(best_run[\"success_rate\"])
-
     try:
         update_optimal_batch_config(repository, optimal_size) 
     except Exception as save_err:
