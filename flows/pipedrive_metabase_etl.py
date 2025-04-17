@@ -414,11 +414,15 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
 
             time.sleep(5)
 
-        flow_log.info("Backfill flow finished for today.",
-                       total_processed=total_processed_today,
-                       total_api_errors=total_api_errors,
-                       total_processing_errors=total_processing_errors,
-                       final_status=final_status)
+        flow_log.info(
+            "Backfill flow finished for today.",
+            extra={
+                "total_processed": total_processed_today,
+                "total_api_errors": total_api_errors,
+                "total_processing_errors": total_processing_errors,
+                "final_status": final_status
+            }
+        )
 
         final_remaining_count = -1
         try:
@@ -457,7 +461,7 @@ def backfill_stage_history_flow(daily_deal_limit: int = BACKFILL_DAILY_LIMIT, db
             "backfill_complete": backfill_completed_successfully, 
             "estimated_remaining": final_remaining_count 
         }
-        flow_log.info("Final backfill run result", **result_payload)
+        flow_log.info("Final backfill run result", extra=result_payload)
         return result_payload
 
     except Exception as e:

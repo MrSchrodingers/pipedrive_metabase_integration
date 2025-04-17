@@ -107,7 +107,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 9,
         "w": 12,
         "x": 0,
         "y": 0
@@ -187,7 +187,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 9,
         "w": 12,
         "x": 12,
         "y": 0
@@ -252,10 +252,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 9
       },
       "id": 9,
       "options": {
@@ -315,22 +315,23 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 10000
               }
             ]
-          }
+          },
+          "unit": "sishort"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 10,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 9
       },
       "id": 6,
       "options": {
-        "displayMode": "gradient",
+        "displayMode": "basic",
         "legend": {
           "calcs": [],
           "displayMode": "list",
@@ -340,8 +341,8 @@
         "maxVizHeight": 300,
         "minVizHeight": 16,
         "minVizWidth": 8,
-        "namePlacement": "auto",
-        "orientation": "auto",
+        "namePlacement": "top",
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -393,22 +394,23 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 2000
               }
             ]
-          }
+          },
+          "unit": "sishort"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 12,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 19
       },
       "id": 1,
       "options": {
-        "displayMode": "gradient",
+        "displayMode": "basic",
         "legend": {
           "calcs": [],
           "displayMode": "list",
@@ -418,8 +420,8 @@
         "maxVizHeight": 300,
         "minVizHeight": 16,
         "minVizWidth": 8,
-        "namePlacement": "auto",
-        "orientation": "auto",
+        "namePlacement": "top",
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -509,10 +511,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 12,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 19
       },
       "id": 2,
       "options": {
@@ -581,7 +583,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 24
+        "y": 31
       },
       "id": 3,
       "options": {
@@ -643,7 +645,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 24
+        "y": 31
       },
       "id": 4,
       "options": {
@@ -707,7 +709,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 31
       },
       "id": 7,
       "options": {
@@ -783,7 +785,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 39
       },
       "id": 5,
       "options": {
@@ -895,7 +897,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 39
       },
       "id": 8,
       "options": {
@@ -987,6 +989,6 @@
   "timezone": "browser",
   "title": "Pipedrive – API & DB Monitoring",
   "uid": "pipedrive-api-dashboard",
-  "version": 4,
+  "version": 5,
   "weekStart": ""
 }
