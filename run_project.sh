@@ -202,6 +202,34 @@ deploy_prefect_flows() {
     fi
 }
 
+start_deploy_pm2() {
+    log "info" "Inicializando ambiente PM2 com portas e deploy de flows..."
+
+    eval "$(minikube -p minikube docker-env)"
+    kubectl config use-context minikube
+
+    declare -A PORTS=(
+        ["port-prefect"]="kubectl port-forward svc/prefect-orion 4200:4200"
+        ["port-grafana"]="kubectl port-forward svc/grafana 3015:3015"
+        ["port-metabase"]="kubectl port-forward svc/metabase 3000:3000"
+        ["port-db"]="kubectl port-forward svc/db 5432:5432"
+    )
+
+    for PROC in "${!PORTS[@]}"; do
+        if pm2 list | grep -q "$PROC"; then
+            log "info" "Reiniciando processo PM2 existente: $PROC"
+            pm2 restart "$PROC"
+        else
+            log "info" "Criando novo processo PM2: $PROC"
+            pm2 start bash --name "$PROC" -- -c "${PORTS[$PROC]}"
+        fi
+    done
+
+    pm2 save
+
+    log "success" "Todos processos PM2 configurados. Iniciando deploy de flows Prefect..."
+}
+
 deploy_infra() {
     log "info" "Aplicando configurações base..."
 
@@ -285,22 +313,56 @@ case "${1:-}" in
     stop)
         stop_resources
         ;;
-    *)
+    port-forward)
+        setup_port_forwarding
+        ;;
+    check)
+        check_dependencies
+        ;;
+    build)
         check_dependencies
         start_minikube
         build_images
-        deploy_infra            # Aplica K8s manifests (inclui Agent)
-        wait_for_rollout        # Espera Deployments (inclui Agent)
-        setup_port_forwarding   # Habilita acesso local (ex: Orion UI)
-        deploy_prefect_flows    
-
-        log "success" "✅ Implantação da infraestrutura concluída!"
-        log "info" "Prefect Agent está rodando."
-        log "info" "Fluxos agendados (como o Sync) serão iniciados pelo agente."
-        log "info" "Fluxos sob demanda (como o Backfill inicial) precisam ser iniciados via UI/API ou Automação."
-        log "info" "Monitore em http://localhost:4200 (Orion)"
-        log "info" "Para manter port-forwards ativos, este script precisa continuar rodando ou execute os port-forwards separadamente."
-        # Mantém o script rodando para manter os port-forwards vivos (Ctrl+C para parar)
+        ;;
+    deploy-infra)
+        deploy_infra
+        ;;
+    deploy-flows)
+        deploy_prefect_flows
+        ;;
+    wait-rollout)
+        wait_for_rollout
+        ;;
+    start)
+        check_dependencies
+        start_minikube
+        build_images
+        deploy_infra
+        wait_for_rollout
+        deploy_prefect_flows
+        ;;
+    start-pm2)
+        check_dependencies
+        start_minikube
+        build_images
+        deploy_infra
+        wait_for_rollout
+        start_deploy_pm2
+        deploy_prefect_flows
+        ;;
+    full)
+        check_dependencies
+        start_minikube
+        build_images
+        deploy_infra
+        wait_for_rollout
+        port_forwarding
+        deploy_prefect_flows
+        log "success" "✅ Infraestrutura e fluxos implantados com sucesso!"
         wait
+        ;;
+    *)
+        echo "Uso: $0 {start|stop|check|build|deploy-infra|deploy-flows|wait-rollout|port-forward|full}"
+        exit 1
         ;;
 esac
