@@ -21,12 +21,6 @@
 
 ---
 
-## 📸 Demonstração
-
-> *(adicione aqui um print ou gif de um dashboard do Metabase ou Grafana)*
-
----
-
 ## 📚 Índice
 
 1. [Visão Geral](#visão-geral)  
