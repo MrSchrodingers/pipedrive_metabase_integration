@@ -1,10 +1,7 @@
 pipedrive_metabase_integration/
 .
-pipedrive_metabase_integration.yaml
 create_secret_block.py
 Dockerfile
-observability-config.yaml
-prometheus.yml
 infrastructure
 ├── monitoring
 ├── ├── metrics_server.py
@@ -18,12 +15,17 @@ infrastructure
 ├── repository_impl
 ├── ├── __init__.py
 ├── ├── pipedrive_repository.py
-├── db
 ├── cache.py
 ├── prefect
 ├── ├── orion
 ├── ├── ├── Dockerfile
 ├── k8s
+├── ├── pipedrive_metabase_integration.yaml
+├── ├── observability-config.yaml
+├── ├── prometheus.yml
+├── ├── pushgateway.yaml
+├── ├── persistent-volume-claim.yaml
+├── ├── prefect.yaml
 ├── ├── wait-for-it.sh
 ├── ├── db-secrets.yaml
 ├── ├── entrypoint.sh
@@ -46,9 +48,7 @@ flows
 scripts
 ├── register_k8s_block.py
 ├── __init__.py
-pushgateway.yaml
 application
-├── mappers
 ├── schemas
 ├── ├── deal_schema.py
 ├── services
@@ -59,7 +59,6 @@ application
 ├── ├── data_repository_port.py
 ├── ├── pipedrive_client_port.py
 ├── utils
-├── ├── data_transform.py
 ├── ├── replace_nan_with_none_recursive.py
 ├── ├── column_utils.py
 ├── ├── batch_optimizer.py
@@ -71,28 +70,16 @@ application
 README.md
 pyproject.toml
 update.sh
-core_domain
-├── events
-├── ├── data_updated.py
-├── ├── __init__.py
-├── entities
-├── ├── __init__.py
-├── ├── pipedrive_entity.py
-├── __init__.py
-├── value_objects
-├── ├── __init__.py
-├── ├── identifier.py
 run_project.sh
-persistent-volume-claim.yaml
+meta
+├── pipedrive_metabase_integration_tree.txt
+├── pipedrive_metabase_integration_content.json
 kubectl
-prefect.yaml
 tests
 ├── test_use_cases.py
 ├── __init__.py
 ├── test_infrastructure.py
 pipedrive_metabase_integration_tree.txt
+grafana_dashboard.json
 pipedrive_metabase_integration_content.json
-benchmark
-├── batch_size_optimizer.py
-├── __init__.py
 poetry.lock
