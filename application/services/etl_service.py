@@ -543,7 +543,6 @@ class ETLService:
                 "message": f"ETL completed. Fetched={total_fetched}, Validated={total_validated}, Loaded={total_loaded}, Failed={total_failed}."
             })
             
-            etl_last_successful_run_timestamp.labels(flow_type=flow_type).set(int(run_end_utc.timestamp()))
         except Exception as e:
             if result.get("status") != "error": 
                  etl_failure_counter.labels(flow_type=flow_type).inc()
@@ -557,6 +556,7 @@ class ETLService:
         finally:
             run_end_time = time.monotonic()
             run_end_utc = datetime.now(timezone.utc)
+            etl_last_successful_run_timestamp.labels(flow_type=flow_type).set(int(run_end_utc.timestamp()))
             duration = run_end_time - run_start_time
             result["duration_seconds"] = round(duration, 3)
             result["end_time"] = run_end_utc.isoformat()
