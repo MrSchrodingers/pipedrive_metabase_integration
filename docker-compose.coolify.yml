@@ -20,7 +20,15 @@ services:
     ports: ["4200:4200"]
     restart: on-failure
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "-u",
+          "${PREFECT_HEALTHCHECK_USER}:${PREFECT_HEALTHCHECK_PASSWORD}",
+          "http://localhost:4200/api/health"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
