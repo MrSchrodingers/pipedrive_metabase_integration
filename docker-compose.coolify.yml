@@ -6,28 +6,18 @@ volumes:
   metabase_data:
 
 services:
-  reverse-proxy:
-    image: nginx:alpine
-    restart: on-failure
-    ports:
-      - "80:80"
-    volumes:
-      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./infrastructure/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
-    depends_on:
-      - prefect-orion
-      - grafana
-
   prefect-orion:
     build: infrastructure/prefect/orion
     env_file: .env
     environment:
-      PREFECT_ORION_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+      PREFECT_ORION_DATABASE_CONNECTION_URL: ${DATABASE_URL}
       PREFECT_ORION_DATABASE_MIGRATE_ON_START: "true"
-      PREFECT_API_URL: http://65.108.216.235/api
-      PREFECT_UI_URL: http://65.108.216.235
-    expose:
-      - "4200"
+      PREFECT_API_URL: ${PREFECT_PUBLIC_API_URL}
+      PREFECT_UI_URL: ${PREFECT_PUBLIC_UI_URL}
+      PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
+      PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
+      PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION: "3600"
+    ports: ["4200:4200"]
     restart: on-failure
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
@@ -39,7 +29,9 @@ services:
     build: infrastructure/prefect/worker
     env_file: .env
     environment:
-      PREFECT_API_URL: http://prefect-orion:4200/api
+      PREFECT_API_URL: ${PREFECT_PUBLIC_API_URL}
+      PREFECT_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
+      PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: on-failure
