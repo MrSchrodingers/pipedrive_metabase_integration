@@ -1,55 +1,53 @@
+version: "3.9"
+
 volumes:
   pgdata:
   prom_data:
   metabase_data:
 
 services:
-  # ─── Prefect Orion ───
   prefect-orion:
     build: infrastructure/prefect/orion
-    image: pipedrive-orion:latest
-    env_file:
-      - .env
-    ports:
-      - "4200:4200"
+    env_file: .env
+    ports: ["4200:4200"]
+    restart: on-failure
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-    restart: on-failure
 
-  # ─── Prefect Worker ───
   prefect-worker:
-    image: pipedrive-orion:latest  # ou outra imagem com Prefect CLI 3.x
-    env_file:
-      - .env
+    build: infrastructure/prefect/worker
+    env_file: .env
+    environment:
+      PREFECT_API_URL: http://prefect-orion:4200/api
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: on-failure
     depends_on:
-      - prefect-orion
+      prefect-orion:
+        condition: service_healthy
     command: >
       bash -c "
-        prefect work-pool create --type docker docker-pool || true &&
+        prefect work-pool create --type docker docker-pool --overwrite &&
         prefect worker start --pool docker-pool
       "
-  # ─── Postgres ───
+
   db:
     image: postgres:14
-    env_file:
-      - .env
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+    env_file: .env
+    volumes: [pgdata:/var/lib/postgresql/data]
+    restart: on-failure
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      test: ["CMD", "pg_isready", "-U", "$$POSTGRES_USER"]
       interval: 30s
       timeout: 5s
       retries: 5
-    restart: on-failure
 
-  # ─── Redis ───
   redis:
     image: redis:7-alpine
-    env_file:
-      - .env
+    env_file: .env
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -57,31 +55,21 @@ services:
       retries: 3
     restart: on-failure
 
-  # ─── Pushgateway ───
   pushgateway:
     image: prom/pushgateway:latest
-    env_file:
-      - .env
-    ports:
-      - "9091:9091"
+    env_file: .env
+    ports: ["9091:9091"]
     restart: on-failure
 
-  # ─── Prometheus ───
   prometheus:
     image: prom/prometheus:latest
-    env_file:
-      - .env
-    volumes:
-      - prom_data:/prometheus
-    ports:
-      - "9090:9090"
+    env_file: .env
+    volumes: [ "prom_data:/prometheus" ]
+    ports: ["9090:9090"]
     restart: on-failure
 
-  # ─── Grafana ───
   grafana:
     image: grafana/grafana-oss:latest
-    env_file:
-      - .env
-    ports:
-      - "3015:3000"
+    env_file: .env
+    ports: ["3015:3000"]
     restart: on-failure
