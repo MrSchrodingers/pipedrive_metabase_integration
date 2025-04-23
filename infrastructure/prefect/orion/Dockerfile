@@ -18,12 +18,12 @@ RUN apt-get update && \
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH="$POETRY_HOME/bin:$PATH"
 
-# Corrigido para subir 3 níveis e voltar à raiz do projeto
-COPY ../../../pyproject.toml ../../../poetry.lock* ./
+# Copia apenas o que está dentro do contexto atual (já foi copiado previamente via script ou .dockerignore tratado)
+COPY ./pyproject.toml ./poetry.lock* ./
 RUN poetry install --no-root --no-ansi && \
     poetry run pip install prefect-sqlalchemy
 
-COPY ../../../ . 
+COPY . . 
 
 # ─── Etapa 2: Imagem Final ─────────────────────────────────────
 FROM python:3.12-slim AS final
@@ -40,8 +40,7 @@ RUN apt-get update && \
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
 
-# caminho corrigido baseado no contexto real de build
-COPY ../../../infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
+COPY ./entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
 RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
 
 RUN adduser --disabled-password --gecos '' app && chown -R app /app

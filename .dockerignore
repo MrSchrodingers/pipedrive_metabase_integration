@@ -1,0 +1,3 @@
+!infrastructure/prefect/orion/pyproject.toml
+!infrastructure/prefect/orion/poetry.lock
+!infrastructure/prefect/orion/entrypoint.sh
