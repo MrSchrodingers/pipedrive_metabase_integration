@@ -86,7 +86,7 @@ case "${APP_ROLE}" in
             python -m infrastructure.monitoring.metrics_server
         ;;
     orion)
-        prefect dev start --host 0.0.0.0 --port "${APP_PORTS[orion]}" --log-level WARNING &
+        prefect server start --host 0.0.0.0 --port "${APP_PORTS[orion]}" --log-level WARNING &
         
         sleep 5
         auto_deploy_flows
