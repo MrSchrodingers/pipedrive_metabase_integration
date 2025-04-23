@@ -19,22 +19,20 @@ services:
       retries: 3
     restart: on-failure
 
-  # ─── Prefect Agent ───
-  prefect-agent:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: final         # exige que o Dockerfile tenha "AS final"
-    image: pipedrive-metabase-integration-etl:latest
+  # ─── Prefect Worker ───
+  prefect-worker:
+    image: pipedrive-orion:latest  # ou outra imagem com Prefect CLI 3.x
     env_file:
       - .env
-    command: prefect agent start -q docker
     depends_on:
       - prefect-orion
-      - db
-      - redis
-    restart: on-failure
-
+    command: >
+      bash -c "
+        # Cria o pool (ignora erro se já existir)
+        prefect work-pool create --type docker docker-pool || true &&
+        # Inicia o worker para esse pool
+        prefect worker start --pool docker-pool --log-level INFO
+      "
   # ─── Postgres ───
   db:
     image: postgres:14
