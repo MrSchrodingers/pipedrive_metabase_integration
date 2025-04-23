@@ -87,7 +87,7 @@ case "${APP_ROLE}" in
         ;;
     orion)
         start_server "Prefect Orion" \
-            prefect orion start \
+            prefect server start \
                 --host 0.0.0.0 \
                 --port "${APP_PORTS[orion]}" \
                 --log-level WARNING &
