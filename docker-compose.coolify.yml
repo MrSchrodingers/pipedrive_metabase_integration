@@ -9,6 +9,9 @@ services:
   prefect-orion:
     build: infrastructure/prefect/orion
     env_file: .env
+    environment:
+      PREFECT_ORION_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
+      PREFECT_ORION_DATABASE_MIGRATE_ON_START: "true" 
     ports: ["4200:4200"]
     restart: on-failure
     healthcheck:
