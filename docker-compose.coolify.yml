@@ -1,3 +1,5 @@
+version: "3.8"
+
 networks:
   internal:
     driver: overlay
@@ -7,34 +9,22 @@ volumes:
   prom_data:
   metabase_data:
 
-secrets:secrets:
-  PIPEDRIVE_API_KEY:
-    external: true
-  POSTGRES_PASSWORD:
-    external: true
-
-configs:
-  prometheus_yaml:
-    file: ./infrastructure/k8s/prometheus.yml
-
 services:
   # ─── Prefect Orion ───
   prefect-orion:
     image: pipedrive-orion:latest
     build: infrastructure/prefect/orion
+    env_file:
+      - .env
     ports:
       - "4200:4200"
     networks: ["internal"]
-    env_file:
-      - .env
     deploy:
       replicas: 1
       restart_policy:
         condition: on-failure
-    environment:
-      PREFECT_API_URL: http://prefect-orion:4200/api
     healthcheck:
-      test: ["CMD","curl","-f","http://localhost:4200/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -46,25 +36,24 @@ services:
       dockerfile: Dockerfile
       target: final
     image: pipedrive-metabase-integration-etl:latest
-    command: >
-      prefect agent start -q docker
+    env_file:
+      - .env
+    command: prefect agent start -q docker
     depends_on:
       - prefect-orion
       - db
       - redis
     networks: ["internal"]
-    env_file:
-      - .env
     deploy:
       mode: global
       restart_policy:
         condition: on-failure
-    environment:
-      PREFECT_API_URL: http://prefect-orion:4200/api
 
   # ─── Postgres ───
   db:
     image: postgres:14
+    env_file:
+      - .env
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks: ["internal"]
@@ -72,15 +61,8 @@ services:
       replicas: 1
       restart_policy:
         condition: on-failure
-    env_file:
-      - .env
-    environment:
-      POSTGRES_DB: "${POSTGRES_DB}"
-      POSTGRES_USER: "${POSTGRES_USER}"
-    secrets:
-      - POSTGRES_PASSWORD
     healthcheck:
-      test: ["CMD","pg_isready","-U","${POSTGRES_USER}"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -88,15 +70,15 @@ services:
   # ─── Redis ───
   redis:
     image: redis:7-alpine
+    env_file:
+      - .env
     networks: ["internal"]
     deploy:
       replicas: 1
       restart_policy:
         condition: on-failure
-    env_file:
-      - .env
     healthcheck:
-      test: ["CMD","redis-cli","ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -104,11 +86,11 @@ services:
   # ─── Pushgateway ───
   pushgateway:
     image: prom/pushgateway:latest
+    env_file:
+      - .env
     ports:
       - "9091:9091"
     networks: ["internal"]
-    env_file:
-      - .env
     deploy:
       replicas: 1
       restart_policy:
@@ -117,16 +99,13 @@ services:
   # ─── Prometheus ───
   prometheus:
     image: prom/prometheus:latest
-    configs:
-      - source: prometheus_yaml
-        target: /etc/prometheus/prometheus.yml
+    env_file:
+      - .env
     volumes:
       - prom_data:/prometheus
     ports:
       - "9090:9090"
     networks: ["internal"]
-    env_file:
-      - .env
     deploy:
       replicas: 1
       restart_policy:
@@ -135,11 +114,11 @@ services:
   # ─── Grafana ───
   grafana:
     image: grafana/grafana-oss:latest
+    env_file:
+      - .env
     ports:
       - "3015:3000"
     networks: ["internal"]
-    env_file:
-      - .env
     deploy:
       replicas: 1
       restart_policy:
