@@ -43,7 +43,7 @@ services:
     volumes: [pgdata:/var/lib/postgresql/data]
     restart: on-failure
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "$$POSTGRES_USER"]
+      test: ["CMD", "pg_isready", "-U", "$POSTGRES_USER"]
       interval: 30s
       timeout: 5s
       retries: 5
