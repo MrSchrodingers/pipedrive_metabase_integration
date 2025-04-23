@@ -1,68 +1,54 @@
-# ---- Etapa 1: Builder ----
-    FROM python:3.12-slim as builder
+# ─── Etapa 1: Builder ───────────────────────────────────────────
+FROM python:3.12-slim AS builder
 
-    WORKDIR /app
-    ENV INTERNAL_ENV=${INTERNAL_ENV} \
-        PYTHONFAULTHANDLER=1 \
-        PYTHONUNBUFFERED=1 \
-        PYTHONHASHSEED=random \
-        PYTHONDONTWRITEBYTECODE=1 \
-        PIP_NO_CACHE_DIR=off \
-        PIP_DISABLE_PIP_VERSION_CHECK=on \
-        PIP_DEFAULT_TIMEOUT=100 \
-        POETRY_NO_INTERACTION=1 \
-        POETRY_VIRTUALENVS_CREATE=false \
-        POETRY_CACHE_DIR='/var/cache/pypoetry' \
-        POETRY_HOME='/usr/local' \
-        POETRY_VERSION=2.1.1
-    
-    RUN apt-get update && \
-        apt-get install -y curl gcc libpq-dev netcat-openbsd git && \
-        rm -rf /var/lib/apt/lists/*
-    
-    # Instalar o Poetry e configurá-lo para não criar virtualenv
-    RUN curl -sSL https://install.python-poetry.org | python3 -
-    ENV PATH="$POETRY_HOME/bin:$PATH"
-    RUN poetry config virtualenvs.create false
-    
-    # Copiar os arquivos de dependências e instalar os pacotes
-    COPY pyproject.toml poetry.lock* ./
-    RUN poetry install --no-root --no-interaction --no-ansi && \
-    poetry run pip install prefect-sqlalchemy --no-cache-dir
-
-    # Copiar o código-fonte completo
-    COPY . .
-    
-    # ---- Etapa 2: Imagem Final ----
-    FROM python:3.12-slim
-    
-    WORKDIR /app
-    ENV INTERNAL_ENV_FINAL=${INTERNAL_ENV_FINAL} \
-    PYTHONPATH=/app \
-    PYTHONFAULTHANDLER=1 \
+WORKDIR /app
+ENV PYTHONFAULTHANDLER=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONHASHSEED=random \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=off \
     PIP_DISABLE_PIP_VERSION_CHECK=on \
     PIP_DEFAULT_TIMEOUT=100 \
     POETRY_NO_INTERACTION=1 \
-    POETRY_VIRTUALENVS_CREATE=false
-    
-    RUN apt-get update && \
-        apt-get install -y curl gcc libpq-dev netcat-openbsd git && \
-        rm -rf /var/lib/apt/lists/*
-    
-    # Copiar os pacotes instalados e o código da etapa builder
-    COPY --from=builder /usr/local /usr/local
-    COPY --from=builder /app /app
-    
-    # Garantir que os scripts tenham permissão de execução
-    COPY infrastructure/k8s/wait-for-it.sh /app/wait-for-it.sh
-    COPY infrastructure/k8s/entrypoint.sh /app/entrypoint.sh
-    RUN chmod +x /app/wait-for-it.sh
-    RUN chmod +x /app/entrypoint.sh
-    
-    # Comando de entrada
-    CMD ["/app/entrypoint.sh"]
-    
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_HOME='/usr/local' \
+    POETRY_VERSION=2.1.1
+
+RUN apt-get update && \
+    apt-get install -y curl gcc libpq-dev netcat-openbsd git && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="$POETRY_HOME/bin:$PATH"
+
+COPY pyproject.toml poetry.lock* ./
+RUN poetry install --no-root --no-ansi && \
+    poetry run pip install prefect-sqlalchemy --no-cache-dir
+
+COPY . .
+
+# ─── Etapa 2: Imagem Final ─────────────────────────────────────
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONFAULTHANDLER=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=on
+
+RUN apt-get update && \
+    apt-get install -y curl gcc libpq-dev netcat-openbsd git && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local /usr/local
+COPY --from=builder /app /app
+
+# scripts utilitários
+COPY infrastructure/k8s/wait-for-it.sh /usr/local/bin/wait-for-it.sh
+RUN chmod +x /usr/local/bin/wait-for-it.sh
+
+# ─── Segurança: roda como usuário não-root ─────────────────────
+RUN adduser --disabled-password --gecos '' app && chown -R app /app
+USER app
+
+# ─── Healthcheck genérico ──────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
+  CMD curl -f http://localhost:8082/metrics || exit 1
+
+CMD ["python", "-m", "pipeldummy"]

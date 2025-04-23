@@ -1,0 +1,136 @@
+networks:
+  internal:
+    driver: overlay
+
+volumes:
+  pgdata:
+  prom_data:
+  metabase_data:
+
+secrets:
+  PIPEDRIVE_API_KEY:
+    external: true
+  POSTGRES_PASSWORD:
+    external: true
+  PREFECT_TOKEN:
+    external: true
+
+configs:
+  prometheus_yaml:
+    file: ./infrastructure/k8s/prometheus.yml
+
+services:
+  # ─── Prefect Orion ───
+  prefect-orion:
+    image: pipedrive-orion:latest
+    build: infrastructure/prefect/orion
+    ports:
+      - "4200:4200"
+    networks: ["internal"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    environment:
+      PREFECT_API_URL: http://prefect-orion:4200/api
+      PREFECT_TOKEN_FILE: /run/secrets/PREFECT_TOKEN
+    secrets:
+      - PREFECT_TOKEN
+    healthcheck:
+      test: ["CMD","curl","-f","http://localhost:4200/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── Prefect Agent ───
+  prefect-agent:
+    image: pipedrive-metabase-integration-etl:latest
+    command: >
+      prefect agent start -q docker
+    depends_on:
+      - prefect-orion
+      - db
+      - redis
+    networks: ["internal"]
+    deploy:
+      mode: global
+      restart_policy:
+        condition: on-failure
+    environment:
+      PREFECT_API_URL: http://prefect-orion:4200/api
+      PREFECT_TOKEN_FILE: /run/secrets/PREFECT_TOKEN
+    secrets:
+      - PREFECT_TOKEN
+
+  # ─── Postgres ───
+  db:
+    image: postgres:14
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: ["internal"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+    secrets:
+      - POSTGRES_PASSWORD
+    healthcheck:
+      test: ["CMD","pg_isready","-U","${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ───
+  redis:
+    image: redis:7-alpine
+    networks: ["internal"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ─── Pushgateway ───
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports:
+      - "9091:9091"
+    networks: ["internal"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # ─── Prometheus ───
+  prometheus:
+    image: prom/prometheus:latest
+    configs:
+      - source: prometheus_yaml
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - prom_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: ["internal"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # ─── Grafana ───
+  grafana:
+    image: grafana/grafana-oss:latest
+    ports:
+      - "3015:3000"
+    networks: ["internal"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
