@@ -28,10 +28,8 @@ services:
       - prefect-orion
     command: >
       bash -c "
-        # Cria o pool (ignora erro se já existir)
         prefect work-pool create --type docker docker-pool || true &&
-        # Inicia o worker para esse pool
-        prefect worker start --pool docker-pool --log-level INFO
+        prefect worker start --pool docker-pool
       "
   # ─── Postgres ───
   db:
