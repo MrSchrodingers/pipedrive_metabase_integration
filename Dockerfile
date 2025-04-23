@@ -25,7 +25,7 @@ RUN poetry install --no-root --no-ansi && \
 COPY . .
 
 # ─── Etapa 2: Imagem Final ─────────────────────────────────────
-FROM python:3.12-slim
+FROM python:3.12-slim AS final
 
 WORKDIR /app
 ENV PYTHONFAULTHANDLER=1 \
