@@ -12,8 +12,6 @@ secrets:secrets:
     external: true
   POSTGRES_PASSWORD:
     external: true
-  PREFECT_TOKEN:
-    external: true
 
 configs:
   prometheus_yaml:
@@ -35,8 +33,6 @@ services:
         condition: on-failure
     environment:
       PREFECT_API_URL: http://prefect-orion:4200/api
-    secrets:
-      - PREFECT_TOKEN
     healthcheck:
       test: ["CMD","curl","-f","http://localhost:4200/api/health"]
       interval: 30s
