@@ -6,13 +6,28 @@ volumes:
   metabase_data:
 
 services:
+  reverse-proxy:
+    image: nginx:alpine
+    restart: on-failure
+    ports:
+      - "80:80"
+    volumes:
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infrastructure/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+    depends_on:
+      - prefect-orion
+      - grafana
+
   prefect-orion:
     build: infrastructure/prefect/orion
     env_file: .env
     environment:
       PREFECT_ORION_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
-      PREFECT_ORION_DATABASE_MIGRATE_ON_START: "true" 
-    ports: ["4200:4200"]
+      PREFECT_ORION_DATABASE_MIGRATE_ON_START: "true"
+      PREFECT_API_URL: http://65.108.216.235/api
+      PREFECT_UI_URL: http://65.108.216.235
+    expose:
+      - "4200"
     restart: on-failure
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
@@ -40,10 +55,13 @@ services:
   db:
     image: postgres:14
     env_file: .env
-    volumes: [pgdata:/var/lib/postgresql/data]
+    expose:
+      - "5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     restart: on-failure
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "$POSTGRES_USER"]
+      test: ["CMD", "pg_isready", "-U", "$$POSTGRES_USER"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -51,6 +69,8 @@ services:
   redis:
     image: redis:7-alpine
     env_file: .env
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -61,18 +81,22 @@ services:
   pushgateway:
     image: prom/pushgateway:latest
     env_file: .env
-    ports: ["9091:9091"]
+    expose:
+      - "9091"
     restart: on-failure
 
   prometheus:
     image: prom/prometheus:latest
     env_file: .env
-    volumes: [ "prom_data:/prometheus" ]
-    ports: ["9090:9090"]
+    volumes:
+      - prom_data:/prometheus
+    expose:
+      - "9090"
     restart: on-failure
 
   grafana:
     image: grafana/grafana-oss:latest
     env_file: .env
-    ports: ["3015:3000"]
+    expose:
+      - "3000"
     restart: on-failure
