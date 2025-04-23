@@ -3,8 +3,11 @@ set -euo pipefail
 IFS=$'\n\t'
 
 ##############################
-# Configurações
+# Configurações Hardcoded
 ##############################
+export APP_ROLE="${APP_ROLE:-orion}"
+export AUTO_DEPLOY_ON_START="${AUTO_DEPLOY_ON_START:-true}"
+
 declare -A APP_PORTS=(
     ["orion"]="4200"
     ["metrics"]="8082"
@@ -21,7 +24,6 @@ log() {
 
 validate_env() {
     local REQUIRED_ENV=("POSTGRES_USER" "POSTGRES_PASSWORD" "PIPEDRIVE_API_KEY")
-    
     for var in "${REQUIRED_ENV[@]}"; do
         if [[ -z "${!var:-}" ]]; then
             log "error" "Variável de ambiente obrigatória não definida: $var"
@@ -33,9 +35,39 @@ validate_env() {
 start_server() {
     local APP="$1"
     shift
-    
     log "info" "Iniciando $APP..."
     exec "$@"
+}
+
+##############################
+# Deploy Automático
+##############################
+auto_deploy_flows() {
+    if [[ "${AUTO_DEPLOY_ON_START}" == "true" ]]; then
+        log "info" "AUTO_DEPLOY_ON_START está habilitado. Rodando 'prefect deploy --all'..."
+
+        export PREFECT_API_URL="http://localhost:${APP_PORTS[orion]}/api"
+
+        local health_check_url="http://localhost:${APP_PORTS[orion]}/api/health"
+        local attempts=0
+        local max_attempts=30
+
+        until curl -sf "$health_check_url" > /dev/null; do
+            if [[ $attempts -ge $max_attempts ]]; then
+                log "error" "Timeout esperando Prefect Orion ficar saudável."
+                return 1
+            fi
+            log "info" "Aguardando Prefect Orion ficar disponível... (tentativa $((++attempts)))"
+            sleep 2
+        done
+
+        log "info" "Prefect Orion está online. Aplicando deployments..."
+        if prefect deploy --all --prefect-file /infrastructure/k8s/prefect.yaml; then
+            log "success" "Deploy automático concluído com sucesso!"
+        else
+            log "error" "Falha ao aplicar os deployments via 'prefect deploy --all'"
+        fi
+    fi
 }
 
 ##############################
@@ -43,12 +75,10 @@ start_server() {
 ##############################
 cd /app
 
-case "${APP_ROLE:-}" in
+case "${APP_ROLE}" in
     etl)
         validate_env
-
-        # Executar fluxo ETL
-        log "info" "Iniciando fluxo ETL (dependências esperadas via Init Containers)..."
+        log "info" "Iniciando fluxo ETL..."
         poetry run python -u flows/pipedrive_metabase_etl.py
         ;;
     metrics)
@@ -60,7 +90,11 @@ case "${APP_ROLE:-}" in
             prefect orion start \
                 --host 0.0.0.0 \
                 --port "${APP_PORTS[orion]}" \
-                --log-level WARNING
+                --log-level WARNING &
+        
+        sleep 5
+        auto_deploy_flows
+        wait
         ;;
     *)
         log "error" "APP_ROLE inválido ou não definido. Valores permitidos: etl, metrics, orion"
