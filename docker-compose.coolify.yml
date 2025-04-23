@@ -6,25 +6,25 @@ volumes:
 services:
   # ─── Prefect Orion ───
   prefect-orion:
-    image: pipedrive-orion:latest
     build: infrastructure/prefect/orion
+    image: pipedrive-orion:latest
     env_file:
       - .env
     ports:
       - "4200:4200"
-    networks: ["internal"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: on-failure
 
   # ─── Prefect Agent ───
   prefect-agent:
     build:
       context: .
       dockerfile: Dockerfile
-      target: final
+      target: final         # exige que o Dockerfile tenha "AS final"
     image: pipedrive-metabase-integration-etl:latest
     env_file:
       - .env
@@ -33,11 +33,7 @@ services:
       - prefect-orion
       - db
       - redis
-    networks: ["internal"]
-    deploy:
-      mode: global
-      restart_policy:
-        condition: on-failure
+    restart: on-failure
 
   # ─── Postgres ───
   db:
@@ -46,24 +42,24 @@ services:
       - .env
     volumes:
       - pgdata:/var/lib/postgresql/data
-    networks: ["internal"]
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 30s
       timeout: 5s
       retries: 5
+    restart: on-failure
 
   # ─── Redis ───
   redis:
     image: redis:7-alpine
     env_file:
       - .env
-    networks: ["internal"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 5s
       retries: 3
+    restart: on-failure
 
   # ─── Pushgateway ───
   pushgateway:
@@ -72,7 +68,7 @@ services:
       - .env
     ports:
       - "9091:9091"
-    networks: ["internal"]
+    restart: on-failure
 
   # ─── Prometheus ───
   prometheus:
@@ -83,7 +79,7 @@ services:
       - prom_data:/prometheus
     ports:
       - "9090:9090"
-    networks: ["internal"]
+    restart: on-failure
 
   # ─── Grafana ───
   grafana:
@@ -92,4 +88,4 @@ services:
       - .env
     ports:
       - "3015:3000"
-    networks: ["internal"]
+    restart: on-failure
