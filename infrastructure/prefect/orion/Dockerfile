@@ -18,11 +18,12 @@ RUN apt-get update && \
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH="$POETRY_HOME/bin:$PATH"
 
-COPY ../../pyproject.toml ../../poetry.lock* ./
+# Corrigido para subir 3 níveis e voltar à raiz do projeto
+COPY ../../../pyproject.toml ../../../poetry.lock* ./
 RUN poetry install --no-root --no-ansi && \
     poetry run pip install prefect-sqlalchemy
 
-COPY ../../ . 
+COPY ../../../ . 
 
 # ─── Etapa 2: Imagem Final ─────────────────────────────────────
 FROM python:3.12-slim AS final
@@ -39,16 +40,14 @@ RUN apt-get update && \
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
 
-# garante que o entrypoint esteja no caminho certo
-COPY ../../infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
+# caminho corrigido baseado no contexto real de build
+COPY ../../../infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
 RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
 
 RUN adduser --disabled-password --gecos '' app && chown -R app /app
 USER app
 
-# Healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
   CMD curl -f http://localhost:8082/metrics || exit 1
 
-# Entrypoint atualizado
 ENTRYPOINT ["/app/infrastructure/k8s/entrypoint.sh"]
