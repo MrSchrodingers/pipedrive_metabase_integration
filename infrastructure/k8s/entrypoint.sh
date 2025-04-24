@@ -5,12 +5,12 @@ IFS=$'\n\t'
 export APP_ROLE="${APP_ROLE:-orion}"
 export AUTO_DEPLOY_ON_START="${AUTO_DEPLOY_ON_START:-true}"
 
-HOST_PREFECT_PORT="${HOST_PREFECT_PORT:-4200}"
-HOST_METRICS_PORT="${HOST_METRICS_PORT:-8082}"
+CONTAINER_PREFECT_PORT="${CONTAINER_PREFECT_PORT:-4200}"
+CONTAINER_METRICS_PORT="${CONTAINER_METRICS_PORT:-8082}"
 
 declare -A APP_PORTS=(
-  ["orion"]="${HOST_PREFECT_PORT}"
-  ["metrics"]="${HOST_METRICS_PORT}"
+  ["orion"]="${CONTAINER_PREFECT_PORT}"
+  ["metrics"]="${CONTAINER_METRICS_PORT}"
 )
 
 log() {
@@ -52,7 +52,7 @@ case "$APP_ROLE" in
     python -m infrastructure.monitoring.metrics_server
     ;;
   orion)
-    prefect server start --host 0.0.0.0 --port 4200 --log-level WARNING &
+    prefect server start --host 0.0.0.0 --port "${CONTAINER_PREFECT_PORT}" --log-level WARNING &
     sleep 5
     auto_deploy_flows
     wait
