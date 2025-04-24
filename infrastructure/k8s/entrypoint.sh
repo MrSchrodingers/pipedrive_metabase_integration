@@ -60,6 +60,7 @@ declare -A APP_PORTS=(
 
 # Função auto_deploy_flows
 auto_deploy_flows() {
+  sleep 20 
   if [[ "\${AUTO_DEPLOY_ON_START}" == "true" ]]; then
     log info "Automatic deploy enabled"
     export PREFECT_API_URL="http://localhost:\${APP_PORTS[orion]}/api"
@@ -102,7 +103,8 @@ case "\$APP_ROLE" in
     prefect server start \
       --host 0.0.0.0 \
       --port "${CONTAINER_PREFECT_PORT}" \
-      --log-level WARNING &
+      --log-level WARNING \
+      --keep-alive-timeout 60 &
     ORION_PID=\$!
     log INFO "Prefect Server started with PID \$ORION_PID. Waiting for it to become healthy..."
 
