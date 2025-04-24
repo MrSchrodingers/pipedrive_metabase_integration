@@ -103,7 +103,6 @@ case "\$APP_ROLE" in
       --host 0.0.0.0 \
       --port "${CONTAINER_PREFECT_PORT}" \
       --log-level WARNING \
-      --connection-timeout 120 \
       --database-timeout 300 \
       --migration-timeout 600 &
     ORION_PID=\$!
