@@ -62,7 +62,7 @@ auto_deploy_flows() {
         done
 
         log "info" "Prefect Orion está online. Aplicando deployments..."
-        if prefect deploy --all --prefect-file /infrastructure/k8s/prefect.yaml; then
+        if prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml; then
             log "success" "Deploy automático concluído com sucesso!"
         else
             log "error" "Falha ao aplicar os deployments via 'prefect deploy --all'"
