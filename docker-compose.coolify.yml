@@ -23,7 +23,7 @@ services:
       AUTO_DEPLOY_ON_START: "true"
       AUTO_CREATE_POOL: "true"
     ports:
-      - "44200:4200" 
+      - "${HOST_PREFECT_PORT}:4200" 
     restart: on-failure
     healthcheck:
       test:
@@ -62,7 +62,7 @@ services:
     image: postgres:14
     env_file: .env
     ports:
-      - "15432:5432"  
+      - "${HOST_POSTGRES_PORT}:5432"  
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: on-failure
@@ -104,5 +104,5 @@ services:
     image: grafana/grafana-oss:latest
     env_file: .env
     ports:
-      - "34444:3000"  
+      - "${HOST_GRAFANA_PORT}:3000"  
     restart: on-failure

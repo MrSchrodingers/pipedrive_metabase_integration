@@ -8,7 +8,13 @@ IFS=$'\n\t'
 export APP_ROLE="${APP_ROLE:-orion}"
 export AUTO_DEPLOY_ON_START="${AUTO_DEPLOY_ON_START:-true}"
 
-declare -A APP_PORTS=( ["orion"]="44200" ["metrics"]="8082" )
+HOST_PREFECT_PORT="${HOST_PREFECT_PORT:-4200}"
+HOST_METRICS_PORT="${HOST_METRICS_PORT:-8082}"
+
+declare -A APP_PORTS=(
+  ["orion"]="${HOST_PREFECT_PORT}"
+  ["metrics"]="${HOST_METRICS_PORT}"
+)
 
 log() {
   printf "[%s] [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "${1^^}" "$2"
