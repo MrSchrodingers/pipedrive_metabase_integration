@@ -21,7 +21,7 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_pull_policy: "ALWAYS"
+      image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
         PUSHGATEWAY_ADDRESS: "pushgateway:9091"
@@ -59,7 +59,7 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_pull_policy: "ALWAYS"
+      image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
         PUSHGATEWAY_ADDRESS: "pushgateway:9091"
@@ -98,7 +98,7 @@ deployments:
     work_queue_name: default
     job_variables: 
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_pull_policy: "ALWAYS"
+      image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
         PUSHGATEWAY_ADDRESS: "pushgateway:9091"
@@ -131,7 +131,7 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_pull_policy: "ALWAYS"
+      image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
         PUSHGATEWAY_ADDRESS: "pushgateway:9091"
@@ -169,7 +169,7 @@ deployments:
     work_queue_name: default
     job_variables: 
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_pull_policy: "ALWAYS"
+      image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
         PUSHGATEWAY_ADDRESS: "pushgateway:9091"
@@ -207,7 +207,7 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_pull_policy: "ALWAYS"
+      image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
         PUSHGATEWAY_ADDRESS: "pushgateway:9091"
