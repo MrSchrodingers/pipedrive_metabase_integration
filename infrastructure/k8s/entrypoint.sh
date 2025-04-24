@@ -64,13 +64,15 @@ auto_deploy_flows() {
             sleep 2
         done
 
-        log "info" "Prefect Orion está online. Aplicando deployments..."
+        log "info" "Criando/atualizando Prefect blocks..."
+        python /app/create_or_update_core_blocks.py
+
+        log "info" "Aplicando deployments..."
         if prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml; then
             log "success" "Deploy automático concluído com sucesso!"
         else
             log "error" "Falha ao aplicar os deployments via 'prefect deploy --all'"
         fi
-    fi
 }
 
 ##############################

@@ -40,6 +40,7 @@ COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
 
 COPY infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
+COPY infrastructure/k8s/create_or_update_core_blocks.py /app/create_or_update_core_blocks.py
 RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
 
 RUN adduser --disabled-password --gecos '' app \
