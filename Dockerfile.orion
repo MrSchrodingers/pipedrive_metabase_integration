@@ -33,7 +33,7 @@ ENV PYTHONFAULTHANDLER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=on
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl gcc libpq-dev netcat-openbsd git jq su-exec && \
+    apt-get install -y --no-install-recommends curl gcc libpq-dev netcat-openbsd git jq gosu && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local /usr/local

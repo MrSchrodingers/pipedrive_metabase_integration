@@ -39,7 +39,7 @@ fi
 
 log INFO "Entrypoint: Trocando para o usuário '$APP_USER' para executar a lógica principal."
 
-exec /sbin/su-exec $APP_USER bash << EOF_APP
+exec gosu $APP_USER bash << EOF_APP
 set -euo pipefail
 IFS=$'\n\t'
 
