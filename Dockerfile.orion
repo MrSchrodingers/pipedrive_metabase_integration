@@ -33,19 +33,19 @@ ENV PYTHONFAULTHANDLER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=on
 
 RUN apt-get update && \
-    apt-get install -y curl gcc libpq-dev netcat-openbsd git jq && \
+    apt-get install -y --no-install-recommends curl gcc libpq-dev netcat-openbsd git jq su-exec && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
 
-COPY infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
+COPY infrastructure/k8s/entrypoint.sh /app/entrypoint.sh
 COPY create_or_update_core_blocks.py /app/create_or_update_core_blocks.py
-RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-ARG DOCKER_GID_ARG=999 
+ARG DOCKER_GID_ARG=998 # Mantém o ARG para um GID padrão inicial
 RUN groupadd -g 1000 app || echo "Group app already exists or GID conflict" \
-    && groupadd -g ${DOCKER_GID_ARG} docker || echo "Docker group exists or GID conflict" \
+    && groupadd -r -g ${DOCKER_GID_ARG} docker || echo "Docker group exists or GID conflict" \
     && adduser --disabled-password --gecos '' --uid 1000 --ingroup app app \
     && adduser app docker \
     && chown -R app:app /app \
@@ -53,9 +53,10 @@ RUN groupadd -g 1000 app || echo "Group app already exists or GID conflict" \
     && chown -R app:app /usr/local/lib/python3.12/site-packages/prefect/server/ui_build \
     && chown -R app:app /home/app || echo "Could not chown /home/app"
 
-USER app
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
-  CMD curl -f http://localhost:8082/metrics || exit 1
+  CMD curl -f http://localhost:8082/metrics || exit 1 # Verifique se esta porta está correta para Orion
 
-ENTRYPOINT ["/app/infrastructure/k8s/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+CMD ["prefect", "orion", "start"]
