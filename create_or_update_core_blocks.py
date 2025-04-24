@@ -73,9 +73,11 @@ log.info("Saved DockerHost block 'docker-host'")
 
 # ─── 6. DockerContainer blocks para ETL, experiment e light-sync ──────────────
 etl_image = os.getenv("ETL_IMAGE")
+flow_run_api_url = "http://prefect-orion:4200/api"
+pushgateway_address = os.getenv("PUSHGATEWAY_ADDRESS")
 common_env = {
-    "PREFECT_API_URL": os.getenv("PREFECT_API_URL"),
-    "PUSHGATEWAY_ADDRESS": os.getenv("PUSHGATEWAY_ADDRESS")
+    "PREFECT_API_URL": flow_run_api_url,
+    "PUSHGATEWAY_ADDRESS": pushgateway_address
 }
 common_volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
 
