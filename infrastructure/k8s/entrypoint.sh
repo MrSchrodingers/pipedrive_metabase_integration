@@ -2,9 +2,6 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-##############################
-# Hardcoded settings
-##############################
 export APP_ROLE="${APP_ROLE:-orion}"
 export AUTO_DEPLOY_ON_START="${AUTO_DEPLOY_ON_START:-true}"
 
