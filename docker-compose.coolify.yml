@@ -42,7 +42,7 @@ services:
     build: infrastructure/prefect/worker
     env_file: .env
     environment:
-      PREFECT_API_URL: ${PREFECT_PUBLIC_API_URL}
+      PREFECT_API_URL: http://prefect-orion:4200/api
       PREFECT_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
     volumes:
