@@ -43,14 +43,15 @@ COPY infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
 COPY create_or_update_core_blocks.py /app/create_or_update_core_blocks.py
 RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
 
-ARG DOCKER_GID_ARG=999
-RUN groupadd -g ${DOCKER_GID_ARG} docker || echo "Docker group exists or GID conflict" \
-    && adduser --disabled-password --gecos '' --uid 1000 --gid 1000 app \
+ARG DOCKER_GID_ARG=999 
+RUN groupadd -g 1000 app || echo "Group app already exists or GID conflict" \
+    && groupadd -g ${DOCKER_GID_ARG} docker || echo "Docker group exists or GID conflict" \
+    && adduser --disabled-password --gecos '' --uid 1000 --ingroup app app \
     && adduser app docker \
     && chown -R app:app /app \
     && mkdir -p /usr/local/lib/python3.12/site-packages/prefect/server/ui_build \
     && chown -R app:app /usr/local/lib/python3.12/site-packages/prefect/server/ui_build \
-    && chown -R app:app /home/app || echo "Could not chown /home/app" # Garante permissão no home se ele for criado
+    && chown -R app:app /home/app || echo "Could not chown /home/app"
 
 USER app
 
