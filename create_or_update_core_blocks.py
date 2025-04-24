@@ -87,7 +87,13 @@ async def setup_all_blocks():
 
     # Postgres Pool JSON
     if database_url:
-        db_cfg = {"dsn": database_url, "minconn": db_min_conn, "maxconn": db_max_conn}
+        db_cfg = {
+                "dsn": database_url,
+                "min_size": 1,
+                "max_size": 10,
+                "max_queries": 500,
+                "max_inactive_connection_lifetime": 300
+            }
         await save_block_safe(JSON(value=db_cfg), POSTGRES_JSON_BLOCK_NAME)
     else:
         log.warn(f"{POSTGRES_JSON_BLOCK_NAME}: DATABASE_URL not set, skipping.")
