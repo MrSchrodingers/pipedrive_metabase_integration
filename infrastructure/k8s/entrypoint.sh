@@ -102,9 +102,7 @@ case "\$APP_ROLE" in
     prefect server start \
       --host 0.0.0.0 \
       --port "${CONTAINER_PREFECT_PORT}" \
-      --log-level WARNING \
-      --database-timeout 300 \
-      --migration-timeout 600 &
+      --log-level WARNING &
     ORION_PID=\$!
     log INFO "Prefect Server started with PID \$ORION_PID. Waiting for it to become healthy..."
 
