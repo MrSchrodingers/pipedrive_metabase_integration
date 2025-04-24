@@ -17,12 +17,12 @@ deployments:
   entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
   parameters: {}
   work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
+    name: docker-pool 
+    work_queue_name: default
     job_variables: {}
   infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/default-k8s-job
+    type: docker-container
+    block: docker-container/default-docker-container
   concurrency_limit: 1
   schedules:
   - interval: 1800.0
@@ -46,12 +46,12 @@ deployments:
     daily_deal_limit: 10000
     db_batch_size: 1000
   work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
+    name: docker-pool 
+    work_queue_name: default
     job_variables: {}
   infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/default-k8s-job
+    type: docker-container
+    block: docker-container/default-docker-container
   schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
@@ -76,12 +76,12 @@ deployments:
     - 1500
     test_data_size: 10000
   work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
+    name: docker-pool 
+    work_queue_name: default
     job_variables: {}
   infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/experiment-k8s-job
+    type: docker-container
+    block: docker-container/experiment-docker-container
   schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
@@ -100,12 +100,12 @@ deployments:
   entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_users_flow
   parameters: {}
   work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
+    name: docker-pool 
+    work_queue_name: default
     job_variables: {}
   infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/light-sync-k8s-job
+    type: docker-container
+    block: docker-container/light-sync-docker-container
   schedules:
   - cron: 0 3 * * *
     timezone: America/Sao_Paulo
@@ -129,12 +129,12 @@ deployments:
   entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_persons_orgs_flow
   parameters: {}
   work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
+    name: docker-pool 
+    work_queue_name: default
     job_variables: {}
   infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/default-k8s-job
+    type: docker-container
+    block: docker-container/default-docker-container
   schedules:
   - interval: 14400.0
     anchor_date: '2025-04-10T12:00:00+00:00'
@@ -158,12 +158,12 @@ deployments:
   entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_stages_pipelines_flow
   parameters: {}
   work_pool:
-    name: kubernetes-pool
-    work_queue_name: kubernetes
+    name: docker-pool 
+    work_queue_name: default
     job_variables: {}
   infrastructure:
-    type: kubernetes-job
-    block: kubernetes-job/light-sync-k8s-job
+    type: docker-container
+    block: docker-container/light-sync-docker-container
   schedules:
   - cron: 0 4 * * *
     timezone: America/Sao_Paulo

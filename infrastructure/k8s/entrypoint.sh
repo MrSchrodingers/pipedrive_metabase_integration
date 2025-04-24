@@ -11,11 +11,11 @@ log() {
 }
 
 auto_deploy_flows() {
-  if [ "$AUTO_DEPLOY_ON_START" = "true" ]; then
+  if [[ "${AUTO_DEPLOY_ON_START}" == "true" ]]; then
     log info "Deploy automático habilitado"
     export PREFECT_API_URL="http://localhost:${APP_PORTS[orion]}/api"
     export PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}"
-    prefect config set PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}" || true
+    prefect config set PREFECT_API_AUTH_STRING="${PREFECT_API_AUTH_STRING}" || true
 
     until curl -sf "$PREFECT_API_URL/health" > /dev/null; do
       log info "Aguardando Orion..."
