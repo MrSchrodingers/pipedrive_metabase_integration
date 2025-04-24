@@ -47,6 +47,7 @@ auto_deploy_flows() {
         log "info" "AUTO_DEPLOY_ON_START está habilitado. Rodando 'prefect deploy --all'..."
 
         export PREFECT_API_URL="http://localhost:${APP_PORTS[orion]}/api"
+        export PREFECT_API_KEY="${PREFECT_SERVER_API_AUTH_STRING}"
 
         local health_check_url="http://localhost:${APP_PORTS[orion]}/api/health"
         local attempts=0
