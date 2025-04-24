@@ -70,8 +70,7 @@ DockerHost().save(name="docker-host", overwrite=True)
 log.info("Saved DockerHost block 'docker-host'")
 
 # ─── 6. DockerWorker ───────────────────────────────────────────────────────────
-# Salvamos com o mesmo slug do work pool: 'docker-pool'
-DockerWorker().save(name="docker-pool", overwrite=True)
+DockerWorker(work_pool_name="docker-pool").save(name="docker-pool", overwrite=True)
 log.info("Saved DockerWorker block 'docker-pool'")
 
 # ─── 7. DockerContainer blocks para ETL, experiment e light-sync ──────────────
