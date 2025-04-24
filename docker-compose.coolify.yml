@@ -22,7 +22,8 @@ services:
       APP_ROLE: orion
       AUTO_DEPLOY_ON_START: "true"
       AUTO_CREATE_POOL: "true"
-    ports: ["4200:4200"]
+    ports:
+      - "44200:4200" 
     restart: on-failure
     healthcheck:
       test:
@@ -60,8 +61,8 @@ services:
   db:
     image: postgres:14
     env_file: .env
-    expose:
-      - "5432"
+    ports:
+      - "15432:5432"  
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: on-failure
@@ -102,6 +103,6 @@ services:
   grafana:
     image: grafana/grafana-oss:latest
     env_file: .env
-    expose:
-      - "3000"
+    ports:
+      - "34444:3000"  
     restart: on-failure
