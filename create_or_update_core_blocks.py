@@ -157,17 +157,9 @@ async def setup_all_blocks():
             await create_docker_container(
                 name=slug,
                 image=etl_image,
-                image_pull_policy="if-not-present", 
-                host=host_block,
-                registry_credentials=creds_block_loaded, 
-                env=common_env,
                 volumes=common_volumes,
                 network_mode=docker_network_name,
-                cpu_limit=cpu,
-                memory_limit=mem,
                 auto_remove=True, 
-                stream_output=True, 
-                overwrite=True, 
             )
             log.info(f"Successfully saved DockerContainer block '{slug}'")
         except Exception as e:
