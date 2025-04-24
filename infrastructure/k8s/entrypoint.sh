@@ -2,8 +2,12 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+##############################
+# Hardcoded settings
+##############################
 export APP_ROLE="${APP_ROLE:-orion}"
 export AUTO_DEPLOY_ON_START="${AUTO_DEPLOY_ON_START:-true}"
+
 declare -A APP_PORTS=( ["orion"]="4200" ["metrics"]="8082" )
 
 log() {
@@ -12,20 +16,23 @@ log() {
 
 auto_deploy_flows() {
   if [[ "${AUTO_DEPLOY_ON_START}" == "true" ]]; then
-    log info "Deploy automático habilitado"
+    log info "Automatic deploy enabled"
     export PREFECT_API_URL="http://localhost:${APP_PORTS[orion]}/api"
     export PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}"
     prefect config set PREFECT_API_AUTH_STRING="${PREFECT_API_AUTH_STRING}" || true
 
     until curl -sf "$PREFECT_API_URL/health" > /dev/null; do
-      log info "Aguardando Orion..."
+      log info "Waiting for Orion..."
       sleep 2
     done
 
-    log info "Criando/atualizando blocks"
+    log info "Creating/updating blocks"
     python /app/create_or_update_core_blocks.py
 
-    log info "Aplicando deployments"
+    log info "Creating Docker work pool"
+    prefect work-pool create --type docker docker-pool --overwrite
+
+    log info "Applying deployments"
     prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml
   fi
 }

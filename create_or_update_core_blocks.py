@@ -2,13 +2,13 @@
 import os
 from dotenv import load_dotenv
 import structlog
+
 from prefect.blocks.system import Secret, JSON
 from prefect_docker.credentials import DockerRegistryCredentials
 from prefect_docker.host import DockerHost
-from prefect_docker.worker import DockerWorker
 from prefect_docker.containers import create_docker_container
 
-# ─── Configure Logging ────────────────────────────────────────────────────────
+# ─── Configure Logging ─────────────────────────────────────────────────────────
 try:
     structlog.configure(
         processors=[
@@ -25,7 +25,7 @@ except structlog.exceptions.AlreadyConfiguredError:
     pass
 log = structlog.get_logger(__name__)
 
-# ─── Load .env ────────────────────────────────────────────────────────────────
+# ─── Load Environment ──────────────────────────────────────────────────────────
 load_dotenv()
 log.info("Starting Prefect block setup")
 
@@ -54,8 +54,10 @@ log.info("Saved JSON block 'redis-cache'")
 docker_user = os.getenv("DOCKER_USER")
 docker_pass = os.getenv("DOCKER_PASS")
 docker_url  = os.getenv("DOCKER_REGISTRY_URL", "")
+
+creds_block = None
 if docker_user and docker_pass:
-    DockerRegistryCredentials(
+    creds_block = DockerRegistryCredentials(
         username=docker_user,
         password=docker_pass,
         registry_url=docker_url,
@@ -63,34 +65,34 @@ if docker_user and docker_pass:
     ).save(name="docker-registry", overwrite=True)
     log.info("Saved DockerRegistryCredentials block 'docker-registry'")
 else:
-    log.info("No DOCKER_USER/PASS; skipping DockerRegistryCredentials block")
+    log.info("No DOCKER_USER/PASS; skipping registry credentials")
 
 # ─── 5. DockerHost ─────────────────────────────────────────────────────────────
-DockerHost().save(name="docker-host", overwrite=True)
+host_block = DockerHost().save(name="docker-host", overwrite=True)
 log.info("Saved DockerHost block 'docker-host'")
 
-# ─── 6. DockerWorker ───────────────────────────────────────────────────────────
-DockerWorker(work_pool_name="docker-pool").save(name="docker-pool", overwrite=True)
-log.info("Saved DockerWorker block 'docker-pool'")
-
-# ─── 7. DockerContainer blocks para ETL, experiment e light-sync ──────────────
-etl_image = os.getenv("ETL_IMAGE", "pipedrive_metabase_integration-etl:latest")
+# ─── 6. DockerContainer blocks para ETL, experiment e light-sync ──────────────
+etl_image = os.getenv("ETL_IMAGE", "")
 common_env = {
     "PREFECT_API_URL": os.getenv("PREFECT_API_URL", ""),
     "PUSHGATEWAY_ADDRESS": os.getenv("PUSHGATEWAY_ADDRESS", "")
 }
 common_volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
 
+# variants: (slug, cpu_limit, memory_limit)
 variants = [
     ("default-docker-container",    0.5,  "1Gi"),
     ("experiment-docker-container", 1.0,  "2Gi"),
     ("light-sync-docker-container", 0.25, "512Mi"),
 ]
 
-for name, cpu, mem in variants:
+# para cada variante, criamos um block do tipo DockerContainer
+for slug, cpu, mem in variants:
     create_docker_container(
-        name=name,
+        name=slug,
         image=etl_image,
+        host=host_block,
+        registry_credentials=creds_block,
         env=common_env,
         volumes=common_volumes,
         cpu_limit=cpu,
@@ -98,8 +100,7 @@ for name, cpu, mem in variants:
         auto_remove=True,
         stream_output=True,
         image_pull_policy="if-not-present",
-        image_registry="docker-registry" if docker_user else None
     )
-    log.info(f"Saved DockerContainer block '{name}'")
+    log.info(f"Saved DockerContainer block '{slug}'")
 
 log.info("Prefect block setup complete")
