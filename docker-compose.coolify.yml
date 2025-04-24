@@ -54,7 +54,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
     env_file: .env
     environment:
       PREFECT_API_URL: http://prefect-orion:4200/api

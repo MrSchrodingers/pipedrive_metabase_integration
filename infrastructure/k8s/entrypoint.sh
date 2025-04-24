@@ -104,31 +104,7 @@ case "\$APP_ROLE" in
       --host 0.0.0.0 \
       --port "${CONTAINER_PREFECT_PORT}" \
       --log-level WARNING \
-      --keep-alive-timeout 60 &
-    ORION_PID=\$!
-    log INFO "Prefect Server started with PID \$ORION_PID. Waiting for it to become healthy..."
-
-    until curl -sf "http://localhost:\${CONTAINER_PREFECT_PORT}/api/health" > /dev/null; do
-      log info "Waiting for Orion API..."
-      if ! kill -0 \$ORION_PID 2>/dev/null; then
-          log error "Orion server failed to start or terminated unexpectedly."
-          exit 1
-      fi
-      sleep 3
-    done
-    log INFO "Orion API is up. Waiting additional time for migrations/startup..."
-    sleep 15 
-
-    if ! kill -0 \$ORION_PID 2>/dev/null; then
-        log error "Orion server terminated unexpectedly before deployment."
-        exit 1
-    fi
-
-    auto_deploy_flows
-
-    log INFO "Orion setup complete. Tailing server process \$ORION_PID."
-    wait \$ORION_PID
-    log INFO "Orion server process \$ORION_PID finished."
+      --keep-alive-timeout 60
     ;;
   *)
     log error "Invalid APP_ROLE: \$APP_ROLE"
