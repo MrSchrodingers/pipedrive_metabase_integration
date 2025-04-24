@@ -1,10 +1,16 @@
+#!/usr/bin/env python3
 import os
-from prefect.blocks.system import Secret, JSON
-from prefect_kubernetes.jobs import KubernetesJob
 from dotenv import load_dotenv
 import structlog
-from typing import Optional, Dict
+from prefect import flow, get_run_logger
+from prefect.blocks.system import Secret, JSON
+from prefect_docker.containers import (
+    create_docker_container,
+    start_docker_container,
+    get_docker_container_logs,
+)
 
+# ─── Logging Setup ────────────────────────────────────────
 try:
     structlog.configure(
         processors=[
@@ -18,179 +24,45 @@ try:
         cache_logger_on_first_use=True,
     )
 except structlog.exceptions.AlreadyConfiguredError:
-    pass 
-log = structlog.get_logger(__name__)
+    pass
+log = get_run_logger()
 
 load_dotenv()
 
-print("--- Iniciando Criação/Atualização de Blocos Prefect ---")
+# ─── Flow Definition ──────────────────────────────────────
+@flow(name="block-creator")
+def create_or_update_blocks_flow():
+    log.info("Iniciando criação/atualização de blocks Prefect")
 
-# --- Bloco Secret ---
-secret_name = "github-access-token"
-github_pat = os.getenv("GITHUB_PAT")
-print(f"Processando Bloco Secret '{secret_name}'...")
-if github_pat:
-    try:
-        secret_block = Secret(value=github_pat)
-        secret_block.save(name=secret_name, overwrite=True)
-        print(f"-> Bloco Secret '{secret_name}' salvo com sucesso.")
-    except Exception as e:
-        print(f"Erro ao salvar Bloco Secret '{secret_name}': {e}")
-else:
-    print(f"AVISO: Variável de ambiente GITHUB_PAT não definida. Bloco '{secret_name}' não criado/atualizado.")
-
-# --- Bloco JSON para DB Pool ---
-db_block_name = "postgres-pool"
-db_config = {
-    "dsn": os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/pipedrive"),
-    "minconn": int(os.getenv("DB_MIN_CONN", 1)),
-    "maxconn": int(os.getenv("DB_MAX_CONN", 10)) 
-}
-print(f"Processando Bloco JSON '{db_block_name}'...")
-try:
-    json_block_db = JSON(value=db_config)
-    json_block_db.save(name=db_block_name, overwrite=True)
-    print(f"-> Bloco JSON '{db_block_name}' salvo com sucesso.")
-except Exception as e:
-    print(f"Erro ao salvar Bloco JSON '{db_block_name}': {e}")
-
-
-# --- Bloco JSON para Redis Cache ---
-redis_block_name = "redis-cache"
-redis_config = {
-    "connection_string": os.getenv("REDIS_URL", "redis://redis:6379/0")
-}
-print(f"Processando Bloco JSON '{redis_block_name}'...")
-try:
-    json_block_redis = JSON(value=redis_config)
-    json_block_redis.save(name=redis_block_name, overwrite=True)
-    print(f"-> Bloco JSON '{redis_block_name}' salvo com sucesso.")
-except Exception as e:
-    print(f"Erro ao salvar Bloco JSON '{redis_block_name}': {e}")
-
-
-# --- Blocos KubernetesJob ---
-# Configurações comuns que podem ser reutilizadas
-default_image = "pipedrive_metabase_integration-etl:latest"
-default_namespace = "default"
-default_env_from = [
-    {"secretRef": {"name": "app-secrets"}},
-    {"secretRef": {"name": "db-secrets"}},
-]
-default_env = {
-    "PUSHGATEWAY_ADDRESS": os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091"),
-    "PREFECT_API_URL": "http://prefect-orion:4200/api"
-}
-default_init_containers = [
-    { 
-        "name": "wait-for-db", 
-        "image": "busybox:1.36", 
-        "command": ['sh', '-c', 'echo Waiting for db...; while ! nc -z -w 1 db 5432; do sleep 2; done; echo DB ready.'] 
-    },
-    { 
-        "name": "wait-for-redis", 
-        "image": "busybox:1.36", 
-        "command": ['sh', '-c', 'echo Waiting for redis...; while ! nc -z -w 1 redis 6379; do sleep 2; done; echo Redis ready.'] 
-    },
-    { 
-        "name": "wait-for-orion", 
-        "image": "curlimages/curl:latest", 
-        "command": ['sh', '-c', 'echo Waiting for orion...; until curl -sf http://prefect-orion:4200/api/health > /dev/null; do echo -n "."; sleep 3; done; echo Orion ready.'] 
-    }
-]
-default_job_watch_timeout = 120
-
-# Função helper para criar o dicionário do Job Template
-def create_job_spec_dict(image: str, resources: dict, pod_labels: Optional[dict] = None) -> dict:
-    """Cria manualmente a estrutura do Job Kubernetes."""
-    labels = {"app.kubernetes.io/created-by": "prefect"}
-    if pod_labels:
-        labels.update(pod_labels)
-
-    job_spec = {
-        "metadata": {"labels": labels},
-        "spec": {
-            "template": {
-                "spec": {
-                    "initContainers": default_init_containers,
-                    "containers": [
-                        {
-                            "name": "prefect-job",
-                            "image": image,
-                            "resources": resources,
-                            "envFrom": default_env_from,
-                            "env": [{"name": k, "value": v} for k, v in default_env.items()],
-                        }
-                    ],
-                }
-            }
-        }
-    }
-    return job_spec
-
-# 1. Bloco para Infraestrutura K8s Padrão
-default_k8s_job_block_name = "default-k8s-job"
-print(f"Processando Bloco KubernetesJob '{default_k8s_job_block_name}'...")
-try:
-    default_resources = {
-        "requests": {"memory": "1Gi", "cpu": "500m"},
-        "limits": {"memory": "4Gi", "cpu": "2"}
-    }
-    # Gerar o dicionário completo do Job
-    default_job_dict = create_job_spec_dict(image=default_image, resources=default_resources)
-
-    # Instanciar o Bloco usando o parâmetro v1_job
-    default_k8s_job_block = KubernetesJob(
-        namespace=default_namespace,
-        v1_job=default_job_dict,
-        job_watch_timeout_seconds=default_job_watch_timeout
+    # 1. Cria o contêiner Docker que executa este script internamente
+    container = create_docker_container(
+        image=os.getenv("ETL_IMAGE", "pipedrive_metabase_integration-etl:latest"),
+        command=["python", "/app/create_or_update_core_blocks.py"],
+        name="prefect-block-creator",
+        detach=True,
+        volumes=[
+            f"{os.getcwd()}:/app",               
+            "/var/run/docker.sock:/var/run/docker.sock"  
+        ],
+        environment={
+            "GITHUB_PAT": os.getenv("GITHUB_PAT", ""),
+            "DATABASE_URL": os.getenv("DATABASE_URL", ""),
+            "REDIS_URL": os.getenv("REDIS_URL", ""),
+            "PREFECT_API_URL": os.getenv("PREFECT_API_URL", ""),
+        },
     )
-    default_k8s_job_block.save(name=default_k8s_job_block_name, overwrite=True)
-    print(f"-> Bloco KubernetesJob '{default_k8s_job_block_name}' salvo com sucesso.")
-except Exception as e:
-    log.error(f"Erro ao salvar Bloco KubernetesJob '{default_k8s_job_block_name}'", exc_info=True)
+    log.info(f"Container criado: {container.id}")
 
+    # 2. Inicia o contêiner para rodar o script de blocks
+    start_docker_container(container_id=container.id)
+    log.info("Container iniciado, aguardando conclusão")
 
-# 2. Bloco para Infraestrutura K8s do Experimento
-experiment_k8s_job_block_name = "experiment-k8s-job"
-print(f"Processando Bloco KubernetesJob '{experiment_k8s_job_block_name}'...")
-try:
-    experiment_resources = {
-        "requests": {"memory": "2Gi", "cpu": "1"},
-        "limits": {"memory": "8Gi", "cpu": "2"}
-    }
-    experiment_job_dict = create_job_spec_dict(image=default_image, resources=experiment_resources, pod_labels={"flow": "experiment"})
+    # 3. Captura e exibe os logs do contêiner
+    logs = get_docker_container_logs(container_id=container.id, stream=False)
+    log.info(f"Logs do block-creator container:\n{logs}")
 
-    experiment_k8s_job_block = KubernetesJob(
-        namespace=default_namespace,
-        v1_job=experiment_job_dict,
-        job_watch_timeout_seconds=default_job_watch_timeout
-    )
-    experiment_k8s_job_block.save(name=experiment_k8s_job_block_name, overwrite=True)
-    print(f"-> Bloco KubernetesJob '{experiment_k8s_job_block_name}' salvo com sucesso.")
-except Exception as e:
-    log.error(f"Erro ao salvar Bloco KubernetesJob '{experiment_k8s_job_block_name}'", exc_info=True)
+    # 4. Remoção automática já configurada pelo detach e pelo fluxo de limpeza do Docker
+    log.info("Criação/atualização de blocks concluída")
 
-
-# 3. Bloco para Syncs Leves
-light_sync_k8s_job_block_name = "light-sync-k8s-job"
-print(f"Processando Bloco KubernetesJob '{light_sync_k8s_job_block_name}'...")
-try:
-    light_sync_resources = {
-         "requests": {"memory": "512Mi", "cpu": "250m"},
-         "limits": {"memory": "1Gi", "cpu": "500m"}
-    }
-    light_sync_job_dict = create_job_spec_dict(image=default_image, resources=light_sync_resources, pod_labels={"flow": "light-sync"})
-
-    light_sync_k8s_job_block = KubernetesJob(
-        namespace=default_namespace,
-        v1_job=light_sync_job_dict,
-        job_watch_timeout_seconds=default_job_watch_timeout
-    )
-    light_sync_k8s_job_block.save(name=light_sync_k8s_job_block_name, overwrite=True)
-    print(f"-> Bloco KubernetesJob '{light_sync_k8s_job_block_name}' salvo com sucesso.")
-except Exception as e:
-    log.error(f"Erro ao salvar Bloco KubernetesJob '{light_sync_k8s_job_block_name}'", exc_info=True)
-
-
-print("--- Criação/Atualização de Blocos Prefect Concluída ---")
+if __name__ == "__main__":
+    create_or_update_blocks_flow()

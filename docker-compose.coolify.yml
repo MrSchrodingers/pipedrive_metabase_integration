@@ -54,7 +54,7 @@ services:
     command: >
       bash -c "
         prefect work-pool create --type docker docker-pool --overwrite &&
-        prefect worker start --pool docker-pool
+        prefect worker start --pool docker-pool --type docker
       "
 
   db:

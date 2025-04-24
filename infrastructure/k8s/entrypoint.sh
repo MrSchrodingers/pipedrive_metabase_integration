@@ -43,37 +43,24 @@ start_server() {
 # Deploy Automático
 ##############################
 auto_deploy_flows() {
-    if [[ "${AUTO_DEPLOY_ON_START}" == "true" ]]; then
-        log "info" "AUTO_DEPLOY_ON_START está habilitado. Rodando 'prefect deploy --all'..."
-        export PREFECT_API_URL="http://localhost:${APP_PORTS[orion]}/api"
-        export PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}"
-        unset PREFECT_API_KEY
-        prefect config unset PREFECT_API_KEY || true
-        prefect config set PREFECT_API_AUTH_STRING="${PREFECT_API_AUTH_STRING}"
+  if [[ "${AUTO_DEPLOY_ON_START}" == "true" ]]; then
+    log info "Deploy automático habilitado"
+    export PREFECT_API_URL="http://localhost:${APP_PORTS[orion]}/api"
+    export PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}"
+    prefect config set PREFECT_API_AUTH_STRING="${PREFECT_API_AUTH_STRING}" || true
 
-        local health_check_url="http://localhost:${APP_PORTS[orion]}/api/health"
-        local attempts=0
-        local max_attempts=30
+    # Espera orion up
+    until curl -sf "$PREFECT_API_URL/health" > /dev/null; do
+      log info "Aguardando Orion..."
+      sleep 2
+    done
 
-        until curl -sf "$health_check_url" > /dev/null; do
-            if [[ $attempts -ge $max_attempts ]]; then
-                log "error" "Timeout esperando Prefect Orion ficar saudável."
-                return 1
-            fi
-            log "info" "Aguardando Prefect Orion ficar disponível... (tentativa $((++attempts)))"
-            sleep 2
-        done
+    log info "Criando/atualizando blocks"
+    python /app/create_or_update_core_blocks.py
 
-        log "info" "Criando/atualizando Prefect blocks..."
-        python /app/create_or_update_core_blocks.py
-
-        log "info" "Aplicando deployments..."
-        if prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml; then
-            log "success" "Deploy automático concluído com sucesso!"
-        else
-            log "error" "Falha ao aplicar os deployments via 'prefect deploy --all'"
-        fi
-    fi
+    log info "Aplicando deployments"
+    prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml
+  fi
 }
 
 ##############################
