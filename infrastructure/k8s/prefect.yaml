@@ -21,7 +21,10 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_registry: "{{ prefect.blocks.docker-registry-credentials.docker-registry }}"
+      image_registry:
+        username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
+        password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
+        registry_url: "{{ prefect.blocks.docker-registry-credentials.docker-registry.registry_url }}"
       image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
@@ -60,7 +63,10 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_registry: "{{ prefect.blocks.docker-registry-credentials.docker-registry }}"
+      image_registry:
+        username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
+        password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
+        registry_url: "{{ prefect.blocks.docker-registry-credentials.docker-registry.registry_url }}"
       image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
@@ -100,7 +106,10 @@ deployments:
     work_queue_name: default
     job_variables: 
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_registry: "{{ prefect.blocks.docker-registry-credentials.docker-registry }}"
+      image_registry:
+        username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
+        password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
+        registry_url: "{{ prefect.blocks.docker-registry-credentials.docker-registry.registry_url }}"
       image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
@@ -134,7 +143,10 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_registry: "{{ prefect.blocks.docker-registry-credentials.docker-registry }}"
+      image_registry:
+        username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
+        password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
+        registry_url: "{{ prefect.blocks.docker-registry-credentials.docker-registry.registry_url }}"
       image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
@@ -173,7 +185,10 @@ deployments:
     work_queue_name: default
     job_variables: 
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_registry: "{{ prefect.blocks.docker-registry-credentials.docker-registry }}"
+      image_registry:
+        username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
+        password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
+        registry_url: "{{ prefect.blocks.docker-registry-credentials.docker-registry.registry_url }}"
       image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
@@ -212,7 +227,10 @@ deployments:
     work_queue_name: default
     job_variables:
       image: "mrschrodingers/pipedrive_metabase_integration:latest"
-      image_registry: "{{ prefect.blocks.docker-registry-credentials.docker-registry }}"
+      image_registry:
+        username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
+        password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
+        registry_url: "{{ prefect.blocks.docker-registry-credentials.docker-registry.registry_url }}"
       image_pull_policy: "Always"
       env:
         PREFECT_API_URL: "http://prefect-orion:4200/api"
