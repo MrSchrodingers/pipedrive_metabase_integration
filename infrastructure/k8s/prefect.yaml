@@ -32,7 +32,7 @@ deployments:
       volumes:
         - "/var/run/docker.sock:/var/run/docker.sock"
       network_mode: "prefect_internal_network"
-      mem_limit: "1Gi"
+      mem_limit: "1g"
       auto_remove: true
   concurrency_limit: 1
   schedules:
@@ -74,7 +74,7 @@ deployments:
       volumes:
         - "/var/run/docker.sock:/var/run/docker.sock"
       network_mode: "prefect_internal_network"
-      mem_limit: "1Gi"
+      mem_limit: "1g"
       auto_remove: true
   schedules: []
   pull:
@@ -117,7 +117,7 @@ deployments:
       volumes:
         - "/var/run/docker.sock:/var/run/docker.sock"
       network_mode: "prefect_internal_network"
-      mem_limit: "2Gi" 
+      mem_limit: "2g" 
       auto_remove: true
   schedules: []
   pull:
@@ -154,7 +154,7 @@ deployments:
       volumes:
         - "/var/run/docker.sock:/var/run/docker.sock"
       network_mode: "prefect_internal_network"
-      mem_limit: "512Mi" 
+      mem_limit: "512m" 
       auto_remove: true
   schedules:
   - cron: 0 3 * * *
@@ -196,7 +196,7 @@ deployments:
       volumes:
         - "/var/run/docker.sock:/var/run/docker.sock"
       network_mode: "prefect_internal_network"
-      mem_limit: "1Gi"
+      mem_limit: "1g"
       auto_remove: true
   schedules:
   - interval: 14400.0
@@ -238,7 +238,7 @@ deployments:
       volumes:
         - "/var/run/docker.sock:/var/run/docker.sock"
       network_mode: "prefect_internal_network"
-      mem_limit: "512Mi" 
+      mem_limit: "512m" 
       auto_remove: true
   schedules:
   - cron: 0 4 * * *
