@@ -64,7 +64,7 @@ auto_deploy_flows() {
     log info "Automatic deploy enabled"
     export PREFECT_API_URL="http://localhost:\${APP_PORTS[orion]}/api"
     log info "Setting Prefect API Auth String Config (silencing errors)..."
-    prefect config set PREFECT_API_AUTH_STRING="\${PREFECT_API_AUTH_STRING}" || true
+    prefect config set PREFECT_API_AUTH_STRING="\${PREFECT_SERVER_API_AUTH_STRING}" || true
 
     log info "Waiting for Orion API at \$PREFECT_API_URL..."
     until curl -sf "\$PREFECT_API_URL/health" > /dev/null; do
