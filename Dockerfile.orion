@@ -43,12 +43,14 @@ COPY infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
 COPY create_or_update_core_blocks.py /app/create_or_update_core_blocks.py
 RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
 
-RUN adduser --disabled-password --gecos '' app \
+RUN if ! getent group docker > /dev/null; then groupadd docker; fi \
+    && adduser --disabled-password --gecos '' --ingroup app --gid 1000 --uid 1000 app \
+    && adduser app docker \
     && chown -R app:app /app \
     && mkdir -p /usr/local/lib/python3.12/site-packages/prefect/server/ui_build \
     && chown -R app:app /usr/local/lib/python3.12/site-packages/prefect/server/ui_build
 
-USER app
+USER app # Muda para o usuário app DEPOIS de adicioná-lo ao grupo
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
   CMD curl -f http://localhost:8082/metrics || exit 1
