@@ -5,6 +5,10 @@ volumes:
   prom_data:
   metabase_data:
 
+networks:
+  prefect_internal_network:
+    driver: bridge
+
 services:
   prefect-orion:
     build:
@@ -19,11 +23,14 @@ services:
       PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
       PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION: ${PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION}
+      COMPOSE_NETWORK_NAME: ${COMPOSE_NETWORK_NAME}
       APP_ROLE: orion
       AUTO_DEPLOY_ON_START: "true"
       AUTO_CREATE_POOL: "true"
     ports:
       - "${HOST_PREFECT_PORT}:4200" 
+    networks:
+      - prefect_internal_network
     restart: on-failure
     healthcheck:
       test:
@@ -48,6 +55,8 @@ services:
       PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - prefect_internal_network
     restart: on-failure
     depends_on:
       prefect-orion:
@@ -61,6 +70,8 @@ services:
   db:
     image: postgres:14
     env_file: .env
+    networks:
+      - prefect_internal_network
     ports:
       - "${HOST_POSTGRES_PORT}:5432"  
     volumes:
@@ -74,6 +85,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    networks:
+      - prefect_internal_network
     env_file: .env
     expose:
       - "6379"
@@ -86,6 +99,8 @@ services:
 
   pushgateway:
     image: prom/pushgateway:latest
+    networks:
+      - prefect_internal_network
     env_file: .env
     expose:
       - "9091"
@@ -93,6 +108,8 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    networks:
+      - prefect_internal_network
     env_file: .env
     volumes:
       - prom_data:/prometheus
@@ -102,6 +119,8 @@ services:
 
   grafana:
     image: grafana/grafana-oss:latest
+    networks:
+      - prefect_internal_network
     env_file: .env
     ports:
       - "${HOST_GRAFANA_PORT}:3000"  

@@ -81,11 +81,13 @@ common_env = {
 }
 common_volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
 
-# variants: (slug, cpu_limit, memory_limit)
+docker_network_name = os.getenv("COMPOSE_NETWORK_NAME", "osgwgsgkw40wgos848g0k8g4") # Fallback para o nome visto
+log.info(f"Setting Docker network for flow runs: {docker_network_name}")
+
 variants = [
-    ("default-docker-container",    0.5,  "1Gi"),
-    ("experiment-docker-container", 1.0,  "2Gi"),
-    ("light-sync-docker-container", 0.25, "512Mi"),
+        ("default-docker-container",      0.5,  "1Gi"),
+        ("experiment-docker-container",   1.0,  "2Gi"),
+        ("light-sync-docker-container",   0.25, "512Mi"),
 ]
 
 # para cada variante, criamos um block do tipo DockerContainer
@@ -97,6 +99,7 @@ for slug, cpu, mem in variants:
         registry_credentials=creds_block,
         env=common_env,
         volumes=common_volumes,
+        network_mode=docker_network_name,
         cpu_limit=cpu,
         memory_limit=mem,
         auto_remove=True,
