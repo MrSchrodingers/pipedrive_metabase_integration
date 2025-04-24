@@ -38,7 +38,7 @@ else:
 
 # ─── 2. JSON: Postgres Pool ────────────────────────────────────────────────────
 db_cfg = {
-    "dsn": os.getenv("DATABASE_URL", ""),
+    "dsn": os.getenv("DATABASE_URL"),
     "minconn": int(os.getenv("DB_MIN_CONN", 1)),
     "maxconn": int(os.getenv("DB_MAX_CONN", 10)),
 }
@@ -46,14 +46,14 @@ JSON(value=db_cfg).save(name="postgres-pool", overwrite=True)
 log.info("Saved JSON block 'postgres-pool'")
 
 # ─── 3. JSON: Redis Cache ──────────────────────────────────────────────────────
-redis_cfg = {"connection_string": os.getenv("REDIS_URL", "")}
+redis_cfg = {"connection_string": os.getenv("REDIS_URL")}
 JSON(value=redis_cfg).save(name="redis-cache", overwrite=True)
 log.info("Saved JSON block 'redis-cache'")
 
 # ─── 4. DockerRegistryCredentials (private registry) ──────────────────────────
 docker_user = os.getenv("DOCKER_USER")
 docker_pass = os.getenv("DOCKER_PASS")
-docker_url  = os.getenv("DOCKER_REGISTRY_URL", "")
+docker_url  = os.getenv("DOCKER_REGISTRY_URL")
 
 creds_block = None
 if docker_user and docker_pass:
@@ -72,10 +72,10 @@ host_block = DockerHost().save(name="docker-host", overwrite=True)
 log.info("Saved DockerHost block 'docker-host'")
 
 # ─── 6. DockerContainer blocks para ETL, experiment e light-sync ──────────────
-etl_image = os.getenv("ETL_IMAGE", "")
+etl_image = os.getenv("ETL_IMAGE")
 common_env = {
-    "PREFECT_API_URL": os.getenv("PREFECT_API_URL", ""),
-    "PUSHGATEWAY_ADDRESS": os.getenv("PUSHGATEWAY_ADDRESS", "")
+    "PREFECT_API_URL": os.getenv("PREFECT_API_URL"),
+    "PUSHGATEWAY_ADDRESS": os.getenv("PUSHGATEWAY_ADDRESS")
 }
 common_volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
 

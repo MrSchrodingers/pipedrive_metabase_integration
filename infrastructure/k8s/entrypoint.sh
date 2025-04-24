@@ -51,12 +51,27 @@ case "$APP_ROLE" in
     log info "Starting metrics server"
     python -m infrastructure.monitoring.metrics_server
     ;;
-  orion)
-    prefect server start --host 0.0.0.0 --port "${CONTAINER_PREFECT_PORT}" --log-level WARNING &
-    sleep 5
-    auto_deploy_flows
-    wait
-    ;;
+orion)
+  prefect server start --host 0.0.0.0 --port "${CONTAINER_PREFECT_PORT}" --log-level WARNING &
+  ORION_PID=$!
+  log info "Waiting for Orion server to become healthy..."
+  until curl -sf "http://localhost:${CONTAINER_PREFECT_PORT}/api/health" > /dev/null; do
+    log info "Waiting for Orion API..."
+    if ! kill -0 $ORION_PID 2>/dev/null; then
+        log error "Orion server failed to start."
+        exit 1
+    fi
+    sleep 3
+  done
+  log info "Orion API is up. Waiting additional time for migrations..."
+  sleep 15 
+  if ! kill -0 $ORION_PID 2>/dev/null; then
+      log error "Orion server terminated unexpectedly before deployment."
+      exit 1
+  fi
+  auto_deploy_flows 
+  wait $ORION_PID 
+  ;;
   *)
     log error "Invalid APP_ROLE: $APP_ROLE"
     exit 1
