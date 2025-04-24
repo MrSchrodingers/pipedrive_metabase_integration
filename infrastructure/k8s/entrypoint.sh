@@ -49,7 +49,7 @@ auto_deploy_flows() {
         export PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}"
         unset PREFECT_API_KEY
         prefect config unset PREFECT_API_KEY || true
-        prefect config set PREFECT_API_AUTH_STRING "${PREFECT_API_AUTH_STRING}"
+        prefect config set PREFECT_API_AUTH_STRING="${PREFECT_API_AUTH_STRING}"
 
         local health_check_url="http://localhost:${APP_PORTS[orion]}/api/health"
         local attempts=0
