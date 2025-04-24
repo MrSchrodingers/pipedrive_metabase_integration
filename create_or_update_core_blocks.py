@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 import asyncio
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional
 
 from dotenv import load_dotenv
 import structlog
 
 from prefect.blocks.core import Block 
 from prefect.blocks.system import JSON, Secret
-from prefect_docker.containers import create_docker_container
 from prefect_docker.credentials import DockerRegistryCredentials
 from prefect_docker.host import DockerHost
 
@@ -63,7 +62,7 @@ async def load_block_safe(block_class: type[Block], name: str) -> Optional[Block
 
 
 async def setup_all_blocks():
-    """Função principal assíncrona para criar/atualizar todos os blocos."""
+    """Função principal assíncrona para criar/atualizar blocos PADRÃO."""
     log.info("--- Starting Prefect Block Setup ---")
     load_dotenv()
 
@@ -76,11 +75,8 @@ async def setup_all_blocks():
     docker_user = os.getenv("DOCKER_USER")
     docker_pass = os.getenv("DOCKER_PASS")
     docker_registry_url = os.getenv("DOCKER_REGISTRY_URL")
-    etl_image = os.getenv("ETL_IMAGE")
-    pushgateway_address = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
-    docker_network_name = os.getenv("COMPOSE_NETWORK_NAME", DEFAULT_NETWORK_NAME)
 
-    # --- 1. Criação/Atualização de Blocos Síncronos ---
+    # --- 1. Criação/Atualização de Blocos Padrão ---
     log.info("--- Setting up standard blocks ---")
 
     # GitHub PAT Secret
@@ -103,7 +99,7 @@ async def setup_all_blocks():
     else:
         log.warn(f"{REDIS_JSON_BLOCK_NAME}: REDIS_URL not set, skipping.")
 
-    creds_block_saved: Optional[DockerRegistryCredentials] = None
+    # Docker Registry Credentials Block
     if docker_user and docker_pass:
         creds_block_instance = DockerRegistryCredentials(
             username=docker_user,
@@ -111,59 +107,13 @@ async def setup_all_blocks():
             registry_url=docker_registry_url,
             reauth=True,
         )
-        creds_block_saved = await save_block_safe(creds_block_instance, DOCKER_REGISTRY_BLOCK_NAME)
+        await save_block_safe(creds_block_instance, DOCKER_REGISTRY_BLOCK_NAME)
     else:
-        log.info(f"{DOCKER_REGISTRY_BLOCK_NAME}: DOCKER_USER/PASS not set, skipping.")
+        log.info(f"{DOCKER_REGISTRY_BLOCK_NAME}: DOCKER_USER/PASS not set, skipping credentials block.")
 
-    host_block_saved: Optional[DockerHost] = await save_block_safe(DockerHost(), DOCKER_HOST_BLOCK_NAME)
-    if not host_block_saved:
-        log.error(f"Failed to save {DOCKER_HOST_BLOCK_NAME}. Cannot continue with DockerContainer blocks.")
-        return 
+    await save_block_safe(DockerHost(), DOCKER_HOST_BLOCK_NAME)
 
-    # --- 2. Criação/Atualização de Blocos DockerContainer (Async) ---
-    log.info("--- Setting up DockerContainer blocks ---")
-
-    if not etl_image:
-        log.error("ETL_IMAGE environment variable not set. Cannot create DockerContainer blocks.")
-        return
-
-    host_block = await load_block_safe(DockerHost, DOCKER_HOST_BLOCK_NAME)
-    if not host_block:
-        log.error(f"Failed to load required block {DOCKER_HOST_BLOCK_NAME}. Aborting DockerContainer setup.")
-        return
-
-    creds_block_loaded: Optional[DockerRegistryCredentials] = None
-    if creds_block_saved:
-        creds_block_loaded = await load_block_safe(DockerRegistryCredentials, DOCKER_REGISTRY_BLOCK_NAME)
-
-    flow_run_api_url = "http://prefect-orion:4200/api"
-    common_env: Dict[str, Optional[str]] = {
-        "PREFECT_API_URL": flow_run_api_url,
-        "PUSHGATEWAY_ADDRESS": pushgateway_address,
-    }
-    common_volumes: List[str] = ["/var/run/docker.sock:/var/run/docker.sock"]
-    log.info(f"Flow run containers will use API URL: {flow_run_api_url}")
-    log.info(f"Flow run containers will use Docker Network: {docker_network_name}")
-
-    variants: List[Tuple[str, float, str]] = [
-        ("default-docker-container", 0.5, "1Gi"),
-        ("experiment-docker-container", 1.0, "2Gi"),
-        ("light-sync-docker-container", 0.25, "512Mi"),
-    ]
-
-    for slug, cpu, mem in variants:
-        log.info(f"Processing DockerContainer block: {slug}")
-        try:
-            await create_docker_container(
-                name=slug,
-                image=etl_image,
-                volumes=common_volumes,
-                network_mode=docker_network_name,
-                auto_remove=True, 
-            )
-            log.info(f"Successfully saved DockerContainer block '{slug}'")
-        except Exception as e:
-            log.error(f"Failed to save DockerContainer block '{slug}'", error=str(e), exc_info=True)
+    log.info("--- Skipping DockerContainer 'pseudo-block' creation (handled by deployments) ---")
 
     log.info("--- Prefect Block Setup Finished ---")
 

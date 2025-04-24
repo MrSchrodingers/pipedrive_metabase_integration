@@ -4,7 +4,7 @@ prefect-version: 3.3.2
 name: pipedrive-etl
 
 deployments:
-# --- Main ETL Flow ---
+# --- Main ETL Flow (Default Config) ---
 - name: Pipedrive Sync
   version: '2.0'
   tags:
@@ -17,12 +17,19 @@ deployments:
   entrypoint: flows/pipedrive_metabase_etl.py:main_etl_flow
   parameters: {}
   work_pool:
-    name: docker-pool 
+    name: docker-pool
     work_queue_name: default
-    job_variables: {}
-  infrastructure:
-    type: docker-container
-    block: docker-container/default-docker-container
+    job_variables:
+      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image_pull_policy: "ALWAYS"
+      env:
+        PREFECT_API_URL: "http://prefect-orion:4200/api"
+        PUSHGATEWAY_ADDRESS: "pushgateway:9091"
+      volumes:
+        - "/var/run/docker.sock:/var/run/docker.sock"
+      network_mode: "prefect_internal_network"
+      mem_limit: "1Gi"
+      auto_remove: true
   concurrency_limit: 1
   schedules:
   - interval: 1800.0
@@ -34,6 +41,8 @@ deployments:
       repository: https://github.com/MrSchrodingers/pipedrive_metabase_integration.git
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
+
+# --- Backfill Flow (Default Config) ---
 - name: Pipedrive Backfill Stage History
   version: '1.0'
   tags:
@@ -46,12 +55,19 @@ deployments:
     daily_deal_limit: 10000
     db_batch_size: 1000
   work_pool:
-    name: docker-pool 
+    name: docker-pool
     work_queue_name: default
-    job_variables: {}
-  infrastructure:
-    type: docker-container
-    block: docker-container/default-docker-container
+    job_variables:
+      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image_pull_policy: "ALWAYS"
+      env:
+        PREFECT_API_URL: "http://prefect-orion:4200/api"
+        PUSHGATEWAY_ADDRESS: "pushgateway:9091"
+      volumes:
+        - "/var/run/docker.sock:/var/run/docker.sock"
+      network_mode: "prefect_internal_network"
+      mem_limit: "1Gi"
+      auto_remove: true
   schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
@@ -59,6 +75,8 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
+
+# --- Batch Size Experiment (Experiment Config) ---
 - name: Batch Size Experiment
   version: '1.0'
   tags:
@@ -76,12 +94,19 @@ deployments:
     - 1500
     test_data_size: 10000
   work_pool:
-    name: docker-pool 
+    name: docker-pool
     work_queue_name: default
-    job_variables: {}
-  infrastructure:
-    type: docker-container
-    block: docker-container/experiment-docker-container
+    job_variables: 
+      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image_pull_policy: "ALWAYS"
+      env:
+        PREFECT_API_URL: "http://prefect-orion:4200/api"
+        PUSHGATEWAY_ADDRESS: "pushgateway:9091"
+      volumes:
+        - "/var/run/docker.sock:/var/run/docker.sock"
+      network_mode: "prefect_internal_network"
+      mem_limit: "2Gi" 
+      auto_remove: true
   schedules: []
   pull:
   - prefect.deployments.steps.git_clone:
@@ -89,6 +114,8 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
+
+# --- Sync Users (Light Config) ---
 - name: Sync Pipedrive Users
   version: '1.0'
   tags:
@@ -100,12 +127,19 @@ deployments:
   entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_users_flow
   parameters: {}
   work_pool:
-    name: docker-pool 
+    name: docker-pool
     work_queue_name: default
-    job_variables: {}
-  infrastructure:
-    type: docker-container
-    block: docker-container/light-sync-docker-container
+    job_variables:
+      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image_pull_policy: "ALWAYS"
+      env:
+        PREFECT_API_URL: "http://prefect-orion:4200/api"
+        PUSHGATEWAY_ADDRESS: "pushgateway:9091"
+      volumes:
+        - "/var/run/docker.sock:/var/run/docker.sock"
+      network_mode: "prefect_internal_network"
+      mem_limit: "512Mi" 
+      auto_remove: true
   schedules:
   - cron: 0 3 * * *
     timezone: America/Sao_Paulo
@@ -117,6 +151,8 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
+
+# --- Sync Persons/Orgs (Default Config) ---
 - name: Sync Pipedrive Persons and Orgs
   version: '1.0'
   tags:
@@ -129,12 +165,19 @@ deployments:
   entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_persons_orgs_flow
   parameters: {}
   work_pool:
-    name: docker-pool 
+    name: docker-pool
     work_queue_name: default
-    job_variables: {}
-  infrastructure:
-    type: docker-container
-    block: docker-container/default-docker-container
+    job_variables: 
+      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image_pull_policy: "ALWAYS"
+      env:
+        PREFECT_API_URL: "http://prefect-orion:4200/api"
+        PUSHGATEWAY_ADDRESS: "pushgateway:9091"
+      volumes:
+        - "/var/run/docker.sock:/var/run/docker.sock"
+      network_mode: "prefect_internal_network"
+      mem_limit: "1Gi"
+      auto_remove: true
   schedules:
   - interval: 14400.0
     anchor_date: '2025-04-10T12:00:00+00:00'
@@ -146,6 +189,8 @@ deployments:
       branch: main
       access_token: '{{ prefect.blocks.secret.github-access-token }}'
   concurrency_limit: 1
+
+# --- Sync Stages/Pipelines (Light Config) ---
 - name: Sync Pipedrive Stages and Pipelines
   version: '1.0'
   tags:
@@ -158,12 +203,19 @@ deployments:
   entrypoint: flows/pipedrive_sync_aux.py:sync_pipedrive_stages_pipelines_flow
   parameters: {}
   work_pool:
-    name: docker-pool 
+    name: docker-pool
     work_queue_name: default
-    job_variables: {}
-  infrastructure:
-    type: docker-container
-    block: docker-container/light-sync-docker-container
+    job_variables:
+      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image_pull_policy: "ALWAYS"
+      env:
+        PREFECT_API_URL: "http://prefect-orion:4200/api"
+        PUSHGATEWAY_ADDRESS: "pushgateway:9091"
+      volumes:
+        - "/var/run/docker.sock:/var/run/docker.sock"
+      network_mode: "prefect_internal_network"
+      mem_limit: "512Mi" 
+      auto_remove: true
   schedules:
   - cron: 0 4 * * *
     timezone: America/Sao_Paulo
