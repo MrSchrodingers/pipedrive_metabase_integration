@@ -42,7 +42,11 @@ COPY --from=builder /app /app
 COPY infrastructure/k8s/entrypoint.sh /app/infrastructure/k8s/entrypoint.sh
 RUN chmod +x /app/infrastructure/k8s/entrypoint.sh
 
-RUN adduser --disabled-password --gecos '' app && chown -R app /app
+RUN adduser --disabled-password --gecos '' app \
+    && chown -R app:app /app \
+    && mkdir -p /usr/local/lib/python3.12/site-packages/prefect/server/ui_build \
+    && chown -R app:app /usr/local/lib/python3.12/site-packages/prefect/server/ui_build
+
 USER app
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s \
