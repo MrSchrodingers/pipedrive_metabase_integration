@@ -73,6 +73,7 @@ auto_deploy_flows() {
         else
             log "error" "Falha ao aplicar os deployments via 'prefect deploy --all'"
         fi
+    fi
 }
 
 ##############################
