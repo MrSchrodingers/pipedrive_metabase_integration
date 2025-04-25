@@ -20,7 +20,9 @@ deployments:
     name: docker-pool
     work_queue_name: default
     job_variables:
-      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image: "mrschrodingers/pmi-runtime:latest"
+      network: "prefect_internal_network"
+      host: "unix:///var/run/docker.sock"
       image_registry:
         username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
         password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
@@ -62,7 +64,9 @@ deployments:
     name: docker-pool
     work_queue_name: default
     job_variables:
-      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image: "mrschrodingers/pmi-runtime:latest"
+      network: "prefect_internal_network"
+      host: "unix:///var/run/docker.sock"
       image_registry:
         username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
         password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
@@ -105,7 +109,9 @@ deployments:
     name: docker-pool
     work_queue_name: default
     job_variables: 
-      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image: "mrschrodingers/pmi-runtime:latest"
+      network: "prefect_internal_network"
+      host: "unix:///var/run/docker.sock"
       image_registry:
         username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
         password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
@@ -142,7 +148,9 @@ deployments:
     name: docker-pool
     work_queue_name: default
     job_variables:
-      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image: "mrschrodingers/pmi-runtime:latest"
+      network: "prefect_internal_network"
+      host: "unix:///var/run/docker.sock"
       image_registry:
         username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
         password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
@@ -184,7 +192,9 @@ deployments:
     name: docker-pool
     work_queue_name: default
     job_variables: 
-      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image: "mrschrodingers/pmi-runtime:latest"
+      network: "prefect_internal_network"
+      host: "unix:///var/run/docker.sock"
       image_registry:
         username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
         password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"
@@ -226,7 +236,9 @@ deployments:
     name: docker-pool
     work_queue_name: default
     job_variables:
-      image: "mrschrodingers/pipedrive_metabase_integration:latest"
+      image: "mrschrodingers/pmi-runtime:latest"
+      network: "prefect_internal_network"
+      host: "unix:///var/run/docker.sock"
       image_registry:
         username: "{{ prefect.blocks.docker-registry-credentials.docker-registry.username }}"
         password: "{{ prefect.blocks.docker-registry-credentials.docker-registry.password }}"

@@ -1,0 +1,65 @@
+# Base Job Template para o work pool docker-pool no Prefect 3.2+
+
+job_configuration:
+  docker_host_url: "{{ docker_host_url }}"
+
+  image: "{{ image }}"
+
+  network_mode: "{{ network_mode }}"
+
+  image_pull_policy: "{{ image_pull_policy }}"
+
+  stream_output: true
+
+  auto_remove: true
+
+variables:
+  type: object
+  properties:
+    docker_host_url:
+      title: Docker Host URL
+      description: The URL of the Docker daemon to connect to, e.g., unix:///var/run/docker.sock or tcp://127.0.0.1:2375.
+      type: string
+      default: "unix:///var/run/docker.sock"
+
+    image:
+      title: Image
+      description: The Docker image to use for job runs.
+      type: string
+      default: "mrschrodingers/pmi-runtime:latest" 
+    network_mode:
+      title: Network Mode
+      description: The network mode for the Docker container (e.g., bridge, host, prefect_internal_network).
+      type: string
+      default: "prefect_internal_network" 
+
+    image_pull_policy:
+      title: Image Pull Policy
+      description: Docker image pull policy (Always, Never, IfNotPresent).
+      type: string
+      default: "Always" 
+
+    env:
+      title: Environment Variables
+      description: Environment variables to set in the job container.
+      type: object
+      default: {} 
+
+    mem_limit:
+      title: Memory Limit
+      description: Memory limit for the Docker container (e.g., 1g, 512m).
+      type: string
+      default: "1g"
+
+    volumes:
+      title: Volumes
+      description: Docker volumes to mount in the job container
+      type: array
+      items:
+        type: string
+      default: ["/var/run/docker.sock:/var/run/docker.sock"] 
+
+  required:
+    - docker_host_url
+    - image
+    - network_mode
