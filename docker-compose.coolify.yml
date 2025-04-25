@@ -10,7 +10,7 @@ volumes:
 # ──────────────────────────────── NETWORKS ───────────────────────────────
 networks:
   prefect_internal_network:
-    driver: bridge
+    external: true
     name: prefect_internal_network
 
 # ──────────────────────────────── SERVICES ───────────────────────────────
