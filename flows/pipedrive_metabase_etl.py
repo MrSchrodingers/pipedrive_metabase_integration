@@ -48,10 +48,7 @@ def initialize_components_no_maps() -> Tuple[PipedriveAPIClient, PipedriveReposi
     postgres_config = JSON.load("postgres-pool").value
     redis_config = JSON.load("redis-cache").value
     
-    # --- ADICIONAR LOG TEMPORÁRIO ---
     loaded_redis_cs = redis_config.get("connection_string", "NOT_FOUND_IN_BLOCK")
-    task_log.info(f"DEBUG: Redis connection string loaded from block: {loaded_redis_cs}")
-    # --- FIM DO LOG TEMPORÁRIO ---
 
     db_pool = DBConnectionPool(
         minconn=postgres_config.get("minconn", 1),
