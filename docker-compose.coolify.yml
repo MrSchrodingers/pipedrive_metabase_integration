@@ -21,48 +21,41 @@ services:
       dockerfile: Dockerfile.orion
     env_file: .env
     environment:
-      # Banco de dados
+      # DB
       PREFECT_API_DATABASE_CONNECTION_URL: ${DATABASE_URL}
       PREFECT_API_DATABASE_MIGRATE_ON_START: "true"
 
-      # URLs públicas (usadas apenas na UI ― NÃO influenciam o CLI)
-      PREFECT_PUBLIC_UI_URL: ${PREFECT_PUBLIC_UI_URL}          # ex.: http://65.108.216.235:${HOST_PREFECT_PORT}
+      # UI (gera o bundle)
+      PREFECT_PUBLIC_UI_URL: ${PREFECT_PUBLIC_UI_URL}
       PREFECT_UI_URL:        ${PREFECT_PUBLIC_UI_URL}
-      PREFECT_UI_SETTINGS__apiUrl: ${PREFECT_PUBLIC_API_URL}   # ex.: http://65.108.216.235:${HOST_PREFECT_PORT}/api
+      PREFECT_UI_API_URL:    ${PREFECT_UI_API_URL}
+      PREFECT_UI_SETTINGS__apiUrl: ${PREFECT_UI_API_URL}
 
       # Segurança
       PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
       PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION: ${PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION}
 
-      # Flags internas
+      # Outros flags
       COMPOSE_NETWORK_NAME: ${COMPOSE_NETWORK_NAME}
       APP_ROLE: orion
       AUTO_DEPLOY_ON_START: "true"
       AUTO_CREATE_POOL: "true"
-      #  >>> NÃO existe PREFECT_API_URL nem via .env nem aqui <<<
 
     ports:
       - "${HOST_PREFECT_PORT}:4200"
-    networks:
-      - prefect_internal_network
+    networks: [prefect_internal_network]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: on-failure
     depends_on:
-      db:
-        condition: service_healthy
+      db: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4200/health"]
       interval: 30s
       timeout: 10s
       retries: 15
       start_period: 60s
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: "1.5"
 
   # ─── Prefect Worker (Docker Work-Pool) ─────────────────────────────────
   prefect-worker:
