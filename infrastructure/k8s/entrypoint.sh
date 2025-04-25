@@ -10,7 +10,10 @@ log() { printf "[%s] [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "${1^^}" "$2"; }
 
 log INFO "Entrypoint: iniciado como $(whoami)"
 
-if [[ -n "${PREFECT__FLOW_RUN_ID:-}" ]]; then
+: "${PREFECT__FLOW_RUN_ID:=}"
+
+if [[ -n "${PREFECT__FLOW_RUN_ID}" ]]; then
+  log INFO "Variável PREFECT__FLOW_RUN_ID detectada, executando flow run..." 
   exec prefect flow-run execute "$@"
 fi
 
