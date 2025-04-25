@@ -37,6 +37,5 @@ except Exception as e:
     print(f"\nErro ao salvar o bloco: {e}")
     print("\nPossíveis causas:")
     print("- O servidor Prefect Orion não está acessível.")
-    print("- A variável de ambiente PREFECT_API_URL não está definida ou está incorreta.")
     print("  (Certifique-se que aponta para: http://localhost:4200/api)")
     sys.exit(1)

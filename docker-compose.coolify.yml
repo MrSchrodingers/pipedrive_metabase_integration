@@ -1,28 +1,40 @@
 version: "3.9"
 
+# ────────────────────────────── VOLUMES ──────────────────────────────
 volumes:
   pgdata:
   prom_data:
   metabase_data:
 
+# ────────────────────────────── NETWORKS ─────────────────────────────
 networks:
   prefect_internal_network:
     driver: bridge
 
+# ────────────────────────────── SERVICES ─────────────────────────────
 services:
+
+  # ─── Prefect Orion (API + UI) ──────────────────────────────────────
   prefect-orion:
     build:
       context: .
       dockerfile: Dockerfile.orion
     env_file: .env
     environment:
+      # Banco de dados (driver asyncpg)
       PREFECT_API_DATABASE_CONNECTION_URL: ${DATABASE_URL}
-      PREFECT_ORION_DATABASE_MIGRATE_ON_START: "true"
-      PREFECT_API_URL: ${PREFECT_PUBLIC_API_URL}
-      PREFECT_UI_URL: ${PREFECT_PUBLIC_UI_URL}
+      PREFECT_API_DATABASE_MIGRATE_ON_START: "true"
+
+      # Exposição pública
+      PREFECT_PUBLIC_API_URL: ${PREFECT_PUBLIC_API_URL}
+      PREFECT_PUBLIC_UI_URL: ${PREFECT_PUBLIC_UI_URL}
+
+      # Autenticação e segurança
       PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
       PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION: ${PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION}
+
+      # Flags de bootstrap
       COMPOSE_NETWORK_NAME: ${COMPOSE_NETWORK_NAME}
       APP_ROLE: orion
       AUTO_DEPLOY_ON_START: "true"
@@ -37,27 +49,24 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 4G 
-          cpus: '1.5'
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4200/health"] 
+      test: ["CMD", "curl", "-f", "http://localhost:4200/health"]
       interval: 30s
       timeout: 10s
       retries: 15
       start_period: 60s
-
-  prefect-worker:
-    build: infrastructure/prefect/worker
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
+          cpus: "1.5"
+
+  # ─── Prefect Worker (Docker Work-Pool) ─────────────────────────────
+  prefect-worker:
+    build: infrastructure/prefect/worker
     env_file: .env
     environment:
-      PREFECT_API_URL: http://prefect-orion:4200/api
+      PREFECT_API_URL: http://prefect-orion:4200/api   # apontando para o serviço Orion interno
       PREFECT_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
     volumes:
@@ -73,14 +82,19 @@ services:
         prefect work-pool create --type docker docker-pool --overwrite &&
         prefect worker start --pool docker-pool --type docker
       "
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
+  # ─── PostgreSQL ────────────────────────────────────────────────────
   db:
     image: postgres:14
     env_file: .env
     networks:
       - prefect_internal_network
     ports:
-      - "${HOST_POSTGRES_PORT}:5432"  
+      - "${HOST_POSTGRES_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: on-failure
@@ -90,45 +104,49 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── Redis ─────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
+    env_file: .env
     networks:
       - prefect_internal_network
-    env_file: .env
     expose:
       - "6379"
+    restart: on-failure
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 5s
       retries: 3
-    restart: on-failure
 
+  # ─── Pushgateway ───────────────────────────────────────────────────
   pushgateway:
     image: prom/pushgateway:latest
+    env_file: .env
     networks:
       - prefect_internal_network
-    env_file: .env
     expose:
       - "9091"
     restart: on-failure
 
+  # ─── Prometheus ────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
+    env_file: .env
     networks:
       - prefect_internal_network
-    env_file: .env
     volumes:
       - prom_data:/prometheus
     expose:
       - "9090"
     restart: on-failure
 
+  # ─── Grafana ───────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana-oss:latest
+    env_file: .env
     networks:
       - prefect_internal_network
-    env_file: .env
     ports:
-      - "${HOST_GRAFANA_PORT}:3000"  
+      - "${HOST_GRAFANA_PORT}:3000"
     restart: on-failure
