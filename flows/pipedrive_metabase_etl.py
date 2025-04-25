@@ -47,11 +47,16 @@ def initialize_components_no_maps() -> Tuple[PipedriveAPIClient, PipedriveReposi
     # Carregar configurações de conexão 
     postgres_config = JSON.load("postgres-pool").value
     redis_config = JSON.load("redis-cache").value
+    
+    # --- ADICIONAR LOG TEMPORÁRIO ---
+    loaded_redis_cs = redis_config.get("connection_string", "NOT_FOUND_IN_BLOCK")
+    task_log.info(f"DEBUG: Redis connection string loaded from block: {loaded_redis_cs}")
+    # --- FIM DO LOG TEMPORÁRIO ---
 
     db_pool = DBConnectionPool(
         minconn=postgres_config.get("minconn", 1),
         maxconn=postgres_config.get("maxconn", 10), 
-        dsn=postgres_config["dsn"]
+        dsn=postgres_config["dsn"].replace("+asyncpg", "")
     )
     redis_cache = RedisCache(connection_string=redis_config["connection_string"])
     pipedrive_client = PipedriveAPIClient(cache=redis_cache)
@@ -62,13 +67,13 @@ def initialize_components_no_maps() -> Tuple[PipedriveAPIClient, PipedriveReposi
         if not all_stages:
              task_log.warning("Fetched stage details list is empty!")
     except Exception as stage_err:
-        task_log.error("Failed to fetch stage details during initialization.", error=str(stage_err))
+        task_log.error("Failed to fetch stage details during initialization.", exc_info=True)
         raise stage_err
 
     try:
         custom_mapping = pipedrive_client.fetch_deal_fields_mapping()
     except Exception as mapping_err:
-        task_log.error("Failed to fetch custom field mapping.", error=str(mapping_err))
+        task_log.error("Failed to fetch custom field mapping.", exc_info=True)
         raise mapping_err
 
     # Repository garante o schema
