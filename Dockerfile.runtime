@@ -21,7 +21,9 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 
 # dependências nativas mínimas
-RUN apt-get update && apt-get install -y libpq-dev gosu && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git libpq-dev gosu && \
+    rm -rf /var/lib/apt/lists/*
 
 # traz tudo que já foi instalado no builder
 COPY --from=builder /usr/local /usr/local
