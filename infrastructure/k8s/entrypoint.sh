@@ -60,10 +60,17 @@ declare -A APP_PORTS=(
 
 # Função auto_deploy_flows
 auto_deploy_flows() {
-  sleep 20 
+  # a) diz ao CLI onde está o seu Orion real  
+  prefect config set PREFECT_API_URL="http://localhost:${CONTAINER_PREFECT_PORT}/api"
+
+  # b) injeta o token para chamadas autenticadas
+  prefect config set PREFECT_API_AUTH_STRING="${PREFECT_SERVER_API_AUTH_STRING}" || true
+
+  # c) agora já podemos criar/atualizar blocos
   python /app/create_or_update_core_blocks.py
-  if [[ "\${AUTO_DEPLOY_ON_START}" == "true" ]]; then
-    prefect config set PREFECT_API_AUTH_STRING="\${PREFECT_SERVER_API_AUTH_STRING}" || true
+
+  # d) e em seguida fazer o deploy
+  if [[ "${AUTO_DEPLOY_ON_START}" == "true" ]]; then
     prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml
   fi
 }
