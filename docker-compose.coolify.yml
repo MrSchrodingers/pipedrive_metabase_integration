@@ -122,17 +122,14 @@ services:
     networks:
       - prefect_internal_network
     volumes:
-      - type: bind
-        source: /data/coolify/applications/toowsogwkkg8w8wwwwccog0g/prometheus.yml
-        target: /etc/prometheus/prometheus.yml
-        read_only: true # Boa prática
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro 
       - prom_data:/prometheus 
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus/'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle' 
+      - '--web.enable-lifecycle'
     expose: ["9090"]
     restart: on-failure
 
