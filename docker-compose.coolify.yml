@@ -21,15 +21,22 @@ services:
       dockerfile: Dockerfile.orion
     env_file: .env
     environment:
-      # Banco de dados (driver asyncpg)
+      # Banco de dados
       PREFECT_API_DATABASE_CONNECTION_URL: ${DATABASE_URL}
       PREFECT_API_DATABASE_MIGRATE_ON_START: "true"
 
-      # Exposição pública
+      # URLs públicas - estas vão para a UI
       PREFECT_PUBLIC_API_URL: ${PREFECT_PUBLIC_API_URL}
       PREFECT_PUBLIC_UI_URL: ${PREFECT_PUBLIC_UI_URL}
+      PREFECT_API_URL:       ${PREFECT_PUBLIC_API_URL} 
+      PREFECT_UI_URL:        ${PREFECT_PUBLIC_UI_URL}
 
-      # Autenticação e segurança
+      # Host/porta que o próprio server expõe
+      PREFECT_SERVER_API_HOST: ${PREFECT_SERVER_API_HOST} 
+      PREFECT_SERVER_API_PORT: ${PREFECT_SERVER_API_PORT} 
+      PREFECT_SERVER_API_PATH: ${PREFECT_SERVER_API_PATH}   
+
+      # Segurança
       PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
       PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION: ${PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION}
@@ -66,7 +73,7 @@ services:
     build: infrastructure/prefect/worker
     env_file: .env
     environment:
-      PREFECT_API_URL: http://prefect-orion:4200/api   # apontando para o serviço Orion interno
+      PREFECT_API_URL: http://prefect-orion:4200/api 
       PREFECT_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
     volumes:
