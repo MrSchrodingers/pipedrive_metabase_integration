@@ -39,7 +39,7 @@ services:
       COMPOSE_NETWORK_NAME: ${COMPOSE_NETWORK_NAME}
       APP_ROLE: orion
       AUTO_DEPLOY_ON_START: "true"
-      AUTO_CREATE_POOL: "true"
+      AUTO_CREATE_POOL: "false"
 
     ports:
       - "${HOST_PREFECT_PORT}:4200"
@@ -68,7 +68,7 @@ services:
     networks: [prefect_internal_network]
     restart: on-failure
     depends_on: { prefect-orion: { condition: service_healthy } }
-    entrypoint: ["/app/infrastructure/prefect/worker/worker_entrypoint.sh"]  
+    entrypoint: ["/app/infrastructure/prefect/worker/start_worker_only.sh"]
     healthcheck:
       test: ["CMD", "prefect", "worker", "inspect"]
       interval: 30s

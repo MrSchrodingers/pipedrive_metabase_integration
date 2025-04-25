@@ -28,7 +28,7 @@ COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app /app
 
 # Copiar o entrypoint do worker e garantir permissões
-COPY infrastructure/prefect/worker/worker_entrypoint.sh /app/infrastructure/prefect/worker/worker_entrypoint.sh
-RUN chmod +x /app/infrastructure/prefect/worker/worker_entrypoint.sh
+COPY infrastructure/prefect/worker/start_worker_only.sh /app/infrastructure/prefect/worker/start_worker_only.sh
+RUN chmod +x /app/infrastructure/prefect/worker/start_worker_only.sh
 
 ENTRYPOINT ["python", "-m", "prefect.engine"]

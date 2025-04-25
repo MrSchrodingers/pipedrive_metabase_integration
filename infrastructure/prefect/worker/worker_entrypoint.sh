@@ -28,11 +28,11 @@ if [ ! -f "$TEMPLATE_FILE" ]; then
     exit 1
 fi
 
-if prefect work-pool create "$POOL_NAME" --type "$POOL_TYPE" --base-job-template "$TEMPLATE_FILE"; then
+if prefect work-pool create "$POOL_NAME" --type "$POOL_TYPE" --base-job-template "$TEMPLATE_FILE" --overwrite; then
   echo "Work Pool '$POOL_NAME' criado com sucesso."
 else
   echo "Work Pool '$POOL_NAME' já existe ou ocorreu um erro na criação. Tentando atualizar a configuração..."
-  if prefect work-pool edit "$POOL_NAME" --base-job-template "$TEMPLATE_FILE"; then
+  if prefect work-pool create "$POOL_NAME" --base-job-template "$TEMPLATE_FILE" --overwrite; then
     echo "Work Pool '$POOL_NAME' atualizado com sucesso com a configuração do template."
   else
     echo "ERRO: Falha ao criar ou editar o Work Pool '$POOL_NAME'. Verifique os logs e a configuração."

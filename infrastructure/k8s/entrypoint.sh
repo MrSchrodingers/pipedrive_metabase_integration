@@ -83,6 +83,31 @@ case "$APP_ROLE" in
       sleep 3
       kill -0 $ORION_PID 2>/dev/null || { log ERROR "Orion morreu antes do /health"; exit 1; }
     done
+
+    # Orion está saudável, podemos configurar o pool
+    log INFO "Configurando Work Pool 'docker-pool' a partir do entrypoint do Orion..."
+    POOL_NAME="docker-pool"
+    POOL_TYPE="docker"
+    TEMPLATE_FILE="/app/infrastructure/prefect/worker/docker-pool-template.yaml" # Caminho dentro do container Orion
+
+    if [ ! -f "$TEMPLATE_FILE" ]; then
+        log WARN "Arquivo de template do Work Pool '$TEMPLATE_FILE' não encontrado! Pulando configuração customizada do pool."
+    else
+        # Tenta criar, se falhar, tenta editar. Usa o 'prefect' CLI dentro deste container.
+        if prefect work-pool create "$POOL_NAME" --type "$POOL_TYPE" --base-job-template "$TEMPLATE_FILE"; then
+            log INFO "Work Pool '$POOL_NAME' criado com sucesso."
+        else
+            log INFO "Work Pool '$POOL_NAME' já existe ou criação falhou. Tentando editar..."
+            # Assumindo que a imagem base prefecthq/prefect tem o comando 'edit'
+            if prefect work-pool edit "$POOL_NAME" --base-job-template "$TEMPLATE_FILE"; then
+               log INFO "Work Pool '$POOL_NAME' atualizado com sucesso via edit."
+            else
+               log WARN "Falha ao criar ou editar Work Pool '$POOL_NAME'. Pode ser necessário verificar a versão do Prefect ou o template."
+               # Não vamos sair com erro aqui para permitir que o Orion continue, mas registramos o aviso.
+            fi
+        fi
+    fi
+
     sleep 15
     auto_deploy_flows
     wait $ORION_PID
