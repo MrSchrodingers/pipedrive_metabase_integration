@@ -1,20 +1,20 @@
+# docker-compose.yml
 version: "3.9"
 
-# ────────────────────────────── VOLUMES ──────────────────────────────
+# ──────────────────────────────── VOLUMES ────────────────────────────────
 volumes:
   pgdata:
   prom_data:
   metabase_data:
 
-# ────────────────────────────── NETWORKS ─────────────────────────────
+# ──────────────────────────────── NETWORKS ───────────────────────────────
 networks:
   prefect_internal_network:
     driver: bridge
 
-# ────────────────────────────── SERVICES ─────────────────────────────
+# ──────────────────────────────── SERVICES ───────────────────────────────
 services:
-
-  # ─── Prefect Orion (API + UI) ──────────────────────────────────────
+  # ─── Prefect Orion (API + UI) ──────────────────────────────────────────
   prefect-orion:
     build:
       context: .
@@ -25,22 +25,23 @@ services:
       PREFECT_API_DATABASE_CONNECTION_URL: ${DATABASE_URL}
       PREFECT_API_DATABASE_MIGRATE_ON_START: "true"
 
-      # URLs públicas - estas vão para a UI
-      PREFECT_PUBLIC_API_URL: ${PREFECT_PUBLIC_API_URL}
-      PREFECT_PUBLIC_UI_URL: ${PREFECT_PUBLIC_UI_URL}
+      # URLs públicas (usadas apenas na UI ― NÃO influenciam o CLI)
+      PREFECT_PUBLIC_UI_URL: ${PREFECT_PUBLIC_UI_URL}          # ex.: http://65.108.216.235:${HOST_PREFECT_PORT}
       PREFECT_UI_URL:        ${PREFECT_PUBLIC_UI_URL}
-      PREFECT_UI_SETTINGS__apiUrl: ${PREFECT_PUBLIC_API_URL}
+      PREFECT_UI_SETTINGS__apiUrl: ${PREFECT_PUBLIC_API_URL}   # ex.: http://65.108.216.235:${HOST_PREFECT_PORT}/api
 
       # Segurança
       PREFECT_SERVER_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
       PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION: ${PREFECT_SERVER_API_CSRF_TOKEN_EXPIRATION}
 
-      # Flags de bootstrap
+      # Flags internas
       COMPOSE_NETWORK_NAME: ${COMPOSE_NETWORK_NAME}
       APP_ROLE: orion
       AUTO_DEPLOY_ON_START: "true"
       AUTO_CREATE_POOL: "true"
+      #  >>> NÃO existe PREFECT_API_URL nem via .env nem aqui <<<
+
     ports:
       - "${HOST_PREFECT_PORT}:4200"
     networks:
@@ -63,12 +64,13 @@ services:
           memory: 4G
           cpus: "1.5"
 
-  # ─── Prefect Worker (Docker Work-Pool) ─────────────────────────────
+  # ─── Prefect Worker (Docker Work-Pool) ─────────────────────────────────
   prefect-worker:
     build: infrastructure/prefect/worker
     env_file: .env
     environment:
-      PREFECT_API_URL: http://prefect-orion:4200/api 
+      # Aqui SIM precisamos apontar para o serviço Orion
+      PREFECT_API_URL: "http://prefect-orion:4200/api"
       PREFECT_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
     volumes:
@@ -89,7 +91,7 @@ services:
         limits:
           memory: 2G
 
-  # ─── PostgreSQL ────────────────────────────────────────────────────
+  # ─── PostgreSQL ────────────────────────────────────────────────────────
   db:
     image: postgres:14
     env_file: .env
@@ -106,14 +108,13 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── Redis ─────────────────────────────────────────────────────────
+  # ─── Redis ─────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     env_file: .env
     networks:
       - prefect_internal_network
-    expose:
-      - "6379"
+    expose: ["6379"]
     restart: on-failure
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -121,17 +122,16 @@ services:
       timeout: 5s
       retries: 3
 
-  # ─── Pushgateway ───────────────────────────────────────────────────
+  # ─── Pushgateway ───────────────────────────────────────────────────────
   pushgateway:
     image: prom/pushgateway:latest
     env_file: .env
     networks:
       - prefect_internal_network
-    expose:
-      - "9091"
+    expose: ["9091"]
     restart: on-failure
 
-  # ─── Prometheus ────────────────────────────────────────────────────
+  # ─── Prometheus ────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     env_file: .env
@@ -139,11 +139,10 @@ services:
       - prefect_internal_network
     volumes:
       - prom_data:/prometheus
-    expose:
-      - "9090"
+    expose: ["9090"]
     restart: on-failure
 
-  # ─── Grafana ───────────────────────────────────────────────────────
+  # ─── Grafana ───────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana-oss:latest
     env_file: .env
