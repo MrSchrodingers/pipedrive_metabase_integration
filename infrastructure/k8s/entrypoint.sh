@@ -61,6 +61,7 @@ declare -A APP_PORTS=(
 # Função auto_deploy_flows
 auto_deploy_flows() {
   sleep 20 
+  python /app/create_or_update_core_blocks.py
   if [[ "\${AUTO_DEPLOY_ON_START}" == "true" ]]; then
     prefect config set PREFECT_API_AUTH_STRING="\${PREFECT_SERVER_API_AUTH_STRING}" || true
     prefect deploy --all --prefect-file infrastructure/k8s/prefect.yaml
