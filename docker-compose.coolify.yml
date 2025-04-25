@@ -122,7 +122,10 @@ services:
     networks:
       - prefect_internal_network
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml 
+      - type: bind
+        source: /data/coolify/applications/toowsogwkkg8w8wwwwccog0g/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true # Boa prática
       - prom_data:/prometheus 
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
