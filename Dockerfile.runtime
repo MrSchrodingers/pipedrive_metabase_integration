@@ -1,0 +1,30 @@
+# ────── Stage 1 – builder (aproveitamos o que já funciona) ──────
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+ENV PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=on PIP_DEFAULT_TIMEOUT=100
+ENV POETRY_NO_INTERACTION=1 POETRY_VIRTUALENVS_CREATE=false
+ENV POETRY_HOME="/usr/local" POETRY_VERSION=2.1.1
+
+RUN apt-get update && apt-get install -y gcc libpq-dev curl git && rm -rf /var/lib/apt/lists/*
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="$POETRY_HOME/bin:$PATH"
+
+COPY pyproject.toml poetry.lock* ./
+RUN poetry install --no-root --no-ansi && poetry run pip install prefect-sqlalchemy
+
+COPY . .
+
+# ────── Stage 2 – imagem enxuta para execução de flows ──────
+FROM python:3.12-slim AS runtime
+WORKDIR /app
+
+# dependências nativas mínimas
+RUN apt-get update && apt-get install -y libpq-dev gosu && rm -rf /var/lib/apt/lists/*
+
+# traz tudo que já foi instalado no builder
+COPY --from=builder /usr/local /usr/local
+COPY --from=builder /app /app
+
+ENTRYPOINT ["python", "-m", "prefect.engine"]

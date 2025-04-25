@@ -11,14 +11,13 @@ volumes:
 networks:
   prefect_internal_network:
     driver: bridge
+    name: prefect_internal_network
 
 # ──────────────────────────────── SERVICES ───────────────────────────────
 services:
   # ─── Prefect Orion (API + UI) ──────────────────────────────────────────
   prefect-orion:
-    build:
-      context: .
-      dockerfile: Dockerfile.orion
+    image: mrschrodingers/pmi-orion:latest
     env_file: .env
     environment:
       # DB
@@ -59,30 +58,22 @@ services:
 
   # ─── Prefect Worker (Docker Work-Pool) ─────────────────────────────────
   prefect-worker:
-    build: infrastructure/prefect/worker
+    image: mrschrodingers/pmi-runtime:latest 
     env_file: .env
     environment:
-      # Aqui SIM precisamos apontar para o serviço Orion
-      PREFECT_API_URL: "http://prefect-orion:4200/api"
+      PREFECT_API_URL:  http://prefect-orion:4200/api
       PREFECT_API_AUTH_STRING: ${PREFECT_SERVER_API_AUTH_STRING}
       PREFECT_CLIENT_CSRF_SUPPORT_ENABLED: "true"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - prefect_internal_network
+    volumes: [/var/run/docker.sock:/var/run/docker.sock]
+    networks: [prefect_internal_network]
     restart: on-failure
-    depends_on:
-      prefect-orion:
-        condition: service_healthy
-    command: >
-      bash -c "
-        prefect work-pool create --type docker docker-pool --overwrite &&
-        prefect worker start --pool docker-pool --type docker
-      "
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+    depends_on: { prefect-orion: { condition: service_healthy } }
+    entrypoint: ["/app/infrastructure/prefect/worker/worker_entrypoint.sh"]  
+    healthcheck:
+      test: ["CMD", "prefect", "worker", "inspect"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   # ─── PostgreSQL ────────────────────────────────────────────────────────
   db:
