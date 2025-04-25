@@ -1,0 +1,9 @@
+job_configuration:
+  env: {}
+  labels: {}
+  variables: {}
+  command: []
+  stream_output: true
+  working_dir: /app
+  image: "mrschrodingers/pmi-runtime:latest"  
+  networks: ["prefect_internal_network"]      

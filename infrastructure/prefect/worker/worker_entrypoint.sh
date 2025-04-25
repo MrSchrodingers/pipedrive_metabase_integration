@@ -5,11 +5,11 @@ POOL=docker-pool
 TYPE=docker
 NET=prefect_internal_network
 
-# cria/atualiza o pool sempre (overwrite é barato)
-prefect work-pool create --overwrite --type $TYPE \
-                         --default-docker-network $NET \
-                         --default-docker-image mrschrodingers/pmi-runtime:latest \
-                         "$POOL"
+# 1. Cria/atualiza o pool
+prefect work-pool create --overwrite --type docker "$POOL"
 
-# agora sim inicia o worker
-exec prefect worker start --pool "$POOL" --type $TYPE --network $NET
+# 2. Aplica o template
+prefect work-pool set-template "$POOL" --file infrastructure/prefect/worker/docker-worker-template.yml
+
+# 3. Inicia o worker (sem --network, configurado no template)
+exec prefect worker start --pool "$POOL" --type $TYPE
