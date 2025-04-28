@@ -78,12 +78,60 @@ sync_failure_counter    = Counter("pipedrive_aux_sync_failures_total", "Total de
 records_synced_counter  = Counter("pipedrive_aux_sync_records_synced_total", "Total de registros sincronizados", ["entity_type"])
 
 # --- Função de Push ---
-def push_metrics_to_gateway(job_name="pipedrive_etl_job", grouping_key=None):
+# --- Função de Push ---
+# infrastructure/monitoring/metrics.py
+# -----------------------------------
+def push_metrics_to_gateway(
+    flow_name: str | None = None,
+    *,
+    job_name: str = "pipedrive_metrics",
+    grouping_key: dict[str, str] | None = None,
+) -> None:
+    """
+    Envia métricas ao Pushgateway.
+
+    • `job_name` fica fixo em "pipedrive_metrics"                      (obrigatório p/ dashboard legado)
+    • `flow` é adicionado automaticamente (usa `flow_name` ou agrupa em "unknown")
+    • Qualquer `grouping_key` extra passado pelo chamador é mesclado
+      (ex.: {'flow_run_id': 'xyz'}).
+
+    Assim chamadas antigas funcionam:
+
+        push_metrics_to_gateway(job_name="batch_experiment",
+                                grouping_key={'flow_run_id': id})
+
+    …e chamadas novas podem usar só o `flow_name`:
+
+        push_metrics_to_gateway(flow_name="pipedrive_sync_stages_pipelines")
+    """
+    # 1) normaliza arguments ---------------------------------------------------
+    if grouping_key is None:
+        grouping_key = {}
+
+    if flow_name is None and "flow" not in grouping_key:
+        flow_name = "unknown"
+
+    if flow_name is not None:
+        grouping_key = {"flow": flow_name, **grouping_key}
+
+    job_name_fixed = "pipedrive_metrics"
+
+    # 2) push ------------------------------------------------------------------
     try:
-        push_log.info("Attempting to push metrics to Pushgateway...", address=PUSHGATEWAY_ADDRESS, job=job_name, grouping_key=grouping_key)
-        prometheus_push(gateway=PUSHGATEWAY_ADDRESS, job=job_name, registry=REGISTRY, grouping_key=grouping_key)
+        push_log.info(
+            "Pushing metrics",
+            address=PUSHGATEWAY_ADDRESS,
+            job=job_name_fixed,
+            grouping_key=grouping_key,
+        )
+        prometheus_push(
+            gateway=PUSHGATEWAY_ADDRESS,
+            job=job_name_fixed,
+            registry=REGISTRY,
+            grouping_key=grouping_key,
+        )
         etl_pushgateway_up.labels(instance=PUSHGATEWAY_ADDRESS).set(1)
-        push_log.info("Successfully pushed metrics to Pushgateway.")
     except Exception as e:
         etl_pushgateway_up.labels(instance=PUSHGATEWAY_ADDRESS).set(0)
-        push_log.error("Failed to push metrics to Pushgateway", error=str(e), address=PUSHGATEWAY_ADDRESS, job=job_name, exc_info=True)
+        push_log.error("Failed to push metrics", error=str(e), exc_info=True)
+
