@@ -117,27 +117,32 @@ services:
     restart: on-failure
 
   # ─── Prometheus ────────────────────────────────────────────────────────
-  prometheus:
-    image: prom/prometheus:v2.52.0
-    env_file: .env
-    networks: [prefect_internal_network]
-    configs:
-      - source: prometheus_cfg
-        target: /etc/prometheus/prometheus.yml      
-        mode: 0444                                
-    volumes:
-      - prom_data:/prometheus                     
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.enable-lifecycle"
-    expose: ["9090"]
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
+    prometheus:
+      image: prom/prometheus:v2.52.0
+      env_file: .env
+      networks: [prefect_internal_network]
+
+      configs:
+        - source: prometheus_cfg
+          target: /etc/prometheus/prometheus.yml 
+          mode: 0444
+
+      volumes:
+        - prom_data:/prometheus
+
+      command:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--storage.tsdb.path=/prometheus"
+        - "--web.enable-lifecycle"
+
+      expose: ["9090"]
+      restart: on-failure
+      healthcheck:
+        test: ["CMD", "wget", "-qO-", "localhost:9090/-/healthy"]
+        interval: 30s
+        timeout: 5s
+        retries: 5
+
 
   # ─── Grafana ───────────────────────────────────────────────────────────
   grafana:
