@@ -1,5 +1,4 @@
 import os
-import re
 import structlog
 from prometheus_client import (
     Counter,
@@ -13,11 +12,6 @@ from prometheus_client import (
 log = structlog.get_logger(__name__)
 PUSHGATEWAY_ADDRESS = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
 push_log = structlog.get_logger("push_metrics")
-_slug = re.compile(r"[^a-zA-Z0-9_-]+")
-
-def _safe(v: str) -> str:
-    "Substitui qualquer carácter proibido por _"
-    return _slug.sub("_", v).strip("_") or "unknown"
 
 # --- Counters ---
 etl_counter = Counter("pipedrive_etl_runs_total", "Total ETL executions initiated", ["flow_type"])
@@ -80,34 +74,12 @@ sync_failure_counter    = Counter("pipedrive_aux_sync_failures_total", "Total de
 records_synced_counter  = Counter("pipedrive_aux_sync_records_synced_total", "Total de registros sincronizados", ["entity_type"])
 
 # --- Função de Push ---
-# --- Função de Push ---
-# infrastructure/monitoring/metrics.py
-# -----------------------------------
-def push_metrics_to_gateway(
-    flow_name: str | None = None,
-    *,
-    job_name: str | None  = None,               # compatibilidade
-    grouping_key: dict[str, str] | None = None,
-) -> None:
-    """
-    Envia todas as métricas registradas no `REGISTRY` para o Pushgateway.
-
-    •  `job_name` é ignorado (mantido por compat), usamos sempre **pipedrive_metrics**  
-    •  Label `flow` é adicionada e *slugificada* automaticamente  
-    •  `grouping_key` extra do chamador é preservado
-    """
-    job = "pipedrive_metrics"                
-
-    grouping_key = dict(grouping_key or {})   
-    if flow_name or "flow" not in grouping_key:
-        grouping_key["flow"] = flow_name or grouping_key.get("flow", "unknown")
-
-    grouping_key = {k: _safe(v) for k, v in grouping_key.items()}
-
+def push_metrics_to_gateway(job_name="pipedrive_etl_job", grouping_key=None):
     try:
-        log.debug("push_metrics", url=PUSHGATEWAY_ADDRESS, job=job, labels=grouping_key)
-        prometheus_push(PUSHGATEWAY_ADDRESS, job=job, registry=REGISTRY, grouping_key=grouping_key)
-    except Exception as exc:
-        log.error("push_failed", msg=str(exc))
-        raise
-
+        push_log.info("Attempting to push metrics to Pushgateway...", address=PUSHGATEWAY_ADDRESS, job=job_name, grouping_key=grouping_key)
+        prometheus_push(gateway=PUSHGATEWAY_ADDRESS, job=job_name, registry=REGISTRY, grouping_key=grouping_key)
+        etl_pushgateway_up.labels(instance=PUSHGATEWAY_ADDRESS).set(1)
+        push_log.info("Successfully pushed metrics to Pushgateway.")
+    except Exception as e:
+        etl_pushgateway_up.labels(instance=PUSHGATEWAY_ADDRESS).set(0)
+        push_log.error("Failed to push metrics to Pushgateway", error=str(e), address=PUSHGATEWAY_ADDRESS, job=job_name, exc_info=True)
