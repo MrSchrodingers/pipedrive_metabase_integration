@@ -1,9 +1,8 @@
 # ──────────────────────────────── VOLUMES ────────────────────────────────
 volumes:
   pgdata:
-  prom_data:
-  metabase_data:
-  grafana_data:
+  prom-data:
+  grafana-data:
 
 
 # ──────────────────────────────── NETWORKS ───────────────────────────────
@@ -119,7 +118,7 @@ services:
     image: prom/prometheus:v2.52.0
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prom_data:/prometheus
+      - prom-data:/prometheus
     env_file: .env
     networks: [prefect_internal_network]
     command:
@@ -140,7 +139,7 @@ services:
   grafana:
     image: grafana/grafana-oss:latest
     volumes:
-    - grafana_data:/var/lib/grafana
+    - grafana-data:/var/lib/grafana
     env_file: .env
     networks:
       - prefect_internal_network
