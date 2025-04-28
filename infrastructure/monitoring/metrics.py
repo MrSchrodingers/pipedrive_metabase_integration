@@ -1,21 +1,23 @@
 import os
+import re
 import structlog
-import psutil
 from prometheus_client import (
     Counter,
     Gauge,
     Histogram,
     Summary,
     REGISTRY,
-    push_to_gateway as prometheus_push,
-    PROCESS_COLLECTOR,
-    GC_COLLECTOR,
-    PLATFORM_COLLECTOR,
+    push_to_gateway as prometheus_push
 )
 
 log = structlog.get_logger(__name__)
 PUSHGATEWAY_ADDRESS = os.getenv("PUSHGATEWAY_ADDRESS", "pushgateway:9091")
 push_log = structlog.get_logger("push_metrics")
+_slug = re.compile(r"[^a-zA-Z0-9_-]+")
+
+def _safe(v: str) -> str:
+    "Substitui qualquer carácter proibido por _"
+    return _slug.sub("_", v).strip("_") or "unknown"
 
 # --- Counters ---
 etl_counter = Counter("pipedrive_etl_runs_total", "Total ETL executions initiated", ["flow_type"])
@@ -84,54 +86,28 @@ records_synced_counter  = Counter("pipedrive_aux_sync_records_synced_total", "To
 def push_metrics_to_gateway(
     flow_name: str | None = None,
     *,
-    job_name: str = "pipedrive_metrics",
+    job_name: str | None  = None,               # compatibilidade
     grouping_key: dict[str, str] | None = None,
 ) -> None:
     """
-    Envia métricas ao Pushgateway.
+    Envia todas as métricas registradas no `REGISTRY` para o Pushgateway.
 
-    • `job_name` fica fixo em "pipedrive_metrics"                      (obrigatório p/ dashboard legado)
-    • `flow` é adicionado automaticamente (usa `flow_name` ou agrupa em "unknown")
-    • Qualquer `grouping_key` extra passado pelo chamador é mesclado
-      (ex.: {'flow_run_id': 'xyz'}).
-
-    Assim chamadas antigas funcionam:
-
-        push_metrics_to_gateway(job_name="batch_experiment",
-                                grouping_key={'flow_run_id': id})
-
-    …e chamadas novas podem usar só o `flow_name`:
-
-        push_metrics_to_gateway(flow_name="pipedrive_sync_stages_pipelines")
+    •  `job_name` é ignorado (mantido por compat), usamos sempre **pipedrive_metrics**  
+    •  Label `flow` é adicionada e *slugificada* automaticamente  
+    •  `grouping_key` extra do chamador é preservado
     """
-    # 1) normaliza arguments ---------------------------------------------------
-    if grouping_key is None:
-        grouping_key = {}
+    job = "pipedrive_metrics"                
 
-    if flow_name is None and "flow" not in grouping_key:
-        flow_name = "unknown"
+    grouping_key = dict(grouping_key or {})   
+    if flow_name or "flow" not in grouping_key:
+        grouping_key["flow"] = flow_name or grouping_key.get("flow", "unknown")
 
-    if flow_name is not None:
-        grouping_key = {"flow": flow_name, **grouping_key}
+    grouping_key = {k: _safe(v) for k, v in grouping_key.items()}
 
-    job_name_fixed = "pipedrive_metrics"
-
-    # 2) push ------------------------------------------------------------------
     try:
-        push_log.info(
-            "Pushing metrics",
-            address=PUSHGATEWAY_ADDRESS,
-            job=job_name_fixed,
-            grouping_key=grouping_key,
-        )
-        prometheus_push(
-            gateway=PUSHGATEWAY_ADDRESS,
-            job=job_name_fixed,
-            registry=REGISTRY,
-            grouping_key=grouping_key,
-        )
-        etl_pushgateway_up.labels(instance=PUSHGATEWAY_ADDRESS).set(1)
-    except Exception as e:
-        etl_pushgateway_up.labels(instance=PUSHGATEWAY_ADDRESS).set(0)
-        push_log.error("Failed to push metrics", error=str(e), exc_info=True)
+        log.debug("push_metrics", url=PUSHGATEWAY_ADDRESS, job=job, labels=grouping_key)
+        prometheus_push(PUSHGATEWAY_ADDRESS, job=job, registry=REGISTRY, grouping_key=grouping_key)
+    except Exception as exc:
+        log.error("push_failed", msg=str(exc))
+        raise
 
