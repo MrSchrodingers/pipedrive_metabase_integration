@@ -1,12 +1,10 @@
-configs:
-  prometheus_cfg:
-    file: ./infrastructure/k8s/prometheus.yml 
-
 # ──────────────────────────────── VOLUMES ────────────────────────────────
 volumes:
   pgdata:
   prom_data:
   metabase_data:
+  grafana_data:
+
 
 # ──────────────────────────────── NETWORKS ───────────────────────────────
 networks:
@@ -119,17 +117,11 @@ services:
   # ─── Prometheus ────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.52.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
     env_file: .env
     networks: [prefect_internal_network]
-
-    configs:
-      - source: prometheus_cfg
-        target: /etc/prometheus/prometheus.yml 
-        mode: 0444
-
-    volumes:
-      - prom_data:/prometheus
-
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -147,6 +139,8 @@ services:
   # ─── Grafana ───────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana-oss:latest
+    volumes:
+    - grafana_data:/var/lib/grafana
     env_file: .env
     networks:
       - prefect_internal_network
