@@ -1,12 +1,16 @@
 import os
 import structlog
+import psutil
 from prometheus_client import (
     Counter,
     Gauge,
     Histogram,
     Summary,
     REGISTRY,
-    push_to_gateway as prometheus_push
+    push_to_gateway as prometheus_push,
+    PROCESS_COLLECTOR,
+    GC_COLLECTOR,
+    PLATFORM_COLLECTOR,
 )
 
 log = structlog.get_logger(__name__)
